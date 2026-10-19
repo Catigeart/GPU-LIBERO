@@ -8,9 +8,11 @@
 
 </div>
 
-**WARNING:** GPU-LIBERO is slow now, the project is still developing.
+**Performance status:** In the recorded N=2, no-camera benchmark, GPU throughput
+is **0.721× CPU throughput** across 129 tasks with matching time events.
+See [performance results](#performance) for the suite breakdown and measurement scope.
 
-**Flash-LIBERO** adds GPU physics to [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), a benchmark for knowledge transfer in multitask and lifelong robot learning. Install this distribution and keep your existing LIBERO environment code: simulation uses the GPU by default.
+**GPU-LIBERO** adds GPU physics to [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), a benchmark for knowledge transfer in multitask and lifelong robot learning. Install this distribution and keep your existing LIBERO environment code: simulation uses the GPU by default.
 
 - Original LIBERO imports, task definitions, environment interfaces, and benchmark suites.
 - 130 manipulation tasks across **LIBERO-Spatial**, **LIBERO-Object**, **LIBERO-Goal**, and **LIBERO-100**, including the **LIBERO-90 / LIBERO-10** split.
@@ -20,6 +22,7 @@
 
 ## Contents
 
+- [Performance](#performance)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
 - [Datasets](#datasets)
@@ -30,6 +33,48 @@
 - [Contributing](#contributing)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
+
+## Performance
+
+Recorded on **2026-10-19**, using an **NVIDIA A100 SXM4 40GB**, **N=2**, FP64
+physics/state, and **no cameras**. Each task used 5 warmup control steps followed
+by 20 continuously timed control steps, measured once. GPU execution used the
+explicit single-physical-substep CUDA fusion and an outer control-step graph.
+CPU execution used MuJoCo 2.3.7 with two `SubprocVectorEnv` workers on distinct
+physical cores and one BLAS thread per worker.
+
+![LIBERO suite GPU-to-CPU throughput ratios, showing matching-time-event and all-recorded-task aggregates](media/benchmarks/libero-suite-speedup.svg)
+
+**Speedup = GPU throughput / CPU throughput.** Suite values are calculated from
+summed elapsed times for equal work: `sum(CPU seconds) / sum(GPU seconds)`.
+Values above 1× favor GPU; values below 1× favor CPU.
+
+| Task suite | Matching / recorded tasks | Matching time events | All recorded tasks |
+| --- | ---: | ---: | ---: |
+| LIBERO-Spatial | 10 / 10 | 0.623× | 0.623× |
+| LIBERO-Object | 10 / 10 | 0.718× | 0.718× |
+| LIBERO-Goal | 10 / 10 | 0.674× | 0.674× |
+| LIBERO-90 | 89 / 90 | 0.747× | 0.753× |
+| LIBERO-10 | 10 / 10 | 0.729× | 0.729× |
+| LIBERO-100 (90 + 10) | 99 / 100 | 0.745× | 0.750× |
+| **All distinct tasks** | **129 / 130** | **0.721×** | **0.725×** |
+
+LIBERO-100 combines the measured LIBERO-90 and LIBERO-10 tasks; it does not add
+another 100 measurements to the distinct-task total. One LIBERO-90 task
+(zero-based ID 85) had a pre-existing CPU/GPU reset/time-event difference. The
+matching-events column excludes it; the all-recorded column preserves its timing.
+The matching subset averages **44.97 CPU versus 32.44 GPU environment steps/s**.
+
+Throughput counts control steps summed over both worlds. A standard control step
+contains 25 physical substeps; the throughput is not multiplied by 25.
+Environment creation, reset, graph preparation and compilation are excluded.
+The recorded build used Release (`-O3 -DNDEBUG`) with `FLASH_FAST_COMPILE=ON`
+(`--Ofast-compile=min` for major CUDA units); runtime compilation was disabled.
+These are saved benchmark results, not a new measurement after documentation changes.
+
+[Aggregate CSV](media/benchmarks/suite-throughput.csv) ·
+[Measurement provenance](media/benchmarks/provenance.json).
+Regenerate the figure with `python tools/plot_suite_speedup.py`.
 
 ## Installation
 
@@ -307,7 +352,7 @@ This project builds on [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBER
 
 ## License
 
-Project-original Flash-LIBERO contributions are licensed under the **MIT License**, with copyright attributed to the Flash-LIBERO contributors. See the root [LICENSE](LICENSE) for the project license and component scope.
+Project-original GPU-LIBERO contributions are licensed under the **MIT License**, with copyright attributed to the GPU-LIBERO contributors. See the root [LICENSE](LICENSE) for the project license and component scope.
 
 Upstream LIBERO-derived code retains its original [MIT license and copyright notice](licenses/LIBERO-MIT.txt). Adapted MuJoCo code retains **Apache-2.0**, and libccd code retains **BSD-3-Clause**. These third-party terms are preserved and are not replaced by the project MIT license.
 

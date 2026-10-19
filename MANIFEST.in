@@ -9,4 +9,5 @@ recursive-include licenses *.txt
 recursive-include tests *.py *.md *.cu *.cuh *.h *.cpp *.json *.xml
 include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt
 recursive-include tools *.py *.json *.txt *.md
+recursive-include media *.svg *.csv *.json
 recursive-include .github *.yml

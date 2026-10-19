@@ -1,0 +1,35 @@
+{
+  "measured_date": "2026-10-19",
+  "source_run": "optimization_campaign_20261019/final130",
+  "source_task_summary_sha256": "f198892ede4e9cefada3d5d7cb557f32e0bca7aa3374f649ec8b3863425a1a3c",
+  "source_comparison_sha256": "813bd1ca1f77deb55d8fb7b10d65ef914307a5aa6fcaea3690a6bd7815c56d49",
+  "gpu": "NVIDIA A100-SXM4-40GB",
+  "cpu": "MuJoCo 2.3.7; SubprocVectorEnv; two distinct physical cores; BLAS threads=1",
+  "worlds": 2,
+  "arithmetic": "FP64 physics/state",
+  "cameras": false,
+  "warmup_control_steps": 5,
+  "timed_control_steps": 20,
+  "measurements_per_task": 1,
+  "physical_substeps_per_control_step": 25,
+  "gpu_path": "explicit single-physical-substep CUDA fusion with outer control-step graph",
+  "build": "Release; -O3 -DNDEBUG; FLASH_FAST_COMPILE=ON; major CUDA units --Ofast-compile=min",
+  "speedup": "sum(CPU elapsed seconds) / sum(GPU elapsed seconds), equal world-control-step work",
+  "excluded_from_step_timing": [
+    "creation",
+    "reset",
+    "graph preparation",
+    "compilation"
+  ],
+  "recorded_tasks": 130,
+  "time_event_matched_tasks": 129,
+  "reset_event_mismatch": {
+    "suite": "libero_90",
+    "zero_based_task_id": 85,
+    "task": "libero_90/STUDY_SCENE3_pick_up_the_white_mug_and_place_it_to_the_right_of_the_caddy.bddl",
+    "pre_existing": true
+  },
+  "libero_100": "Derived union of LIBERO-90 and LIBERO-10, not additional measurements",
+  "figure_command": "python tools/plot_suite_speedup.py",
+  "new_physics_executed": false
+}
