@@ -225,20 +225,29 @@ and bias results remain in their existing global owners. Later forwards reuse
 them only for the same state epoch and position-prefix generation. Every new
 substep clears readiness; any prefix-resume path computes these stages again,
 including a failed rebuild that did not advance the generation. Each forward
-still republishes the current stage and RNE-cache epochs. Actuation, smooth
-acceleration, Newton and warmstart continue on every admitted call.
+still republishes the current stage and RNE-cache epochs. Actuation, Newton and
+warmstart continue on every admitted call. The successful first-forward smooth
+force/acceleration can also be reused by the second forward before controller
+writes, after cold stride/span/alias qualification. The third forward recomputes
+smooth acceleration. This reduces the normal control step's factor-backed mass
+solves from 75 to 50. Prefix suspension/reentry clears this local eligibility;
+there is no cross-substep smooth cache.
 Binding qualifies that controller/Newton/Post writes cannot overlap retained
 numerical results or their successful status flags.
 
 The fixed native substep retains complete Post output on both intermediate
-policy-step forwards and the final forward of every physical substep. Other
+policy-step forwards and the final forward of the last physical substep. Other
 intermediate forwards defer unconsumed force/sensor work after the original
 Newton/D/state/forward admission succeeds. A deferred call still publishes
 working qacc, clears Post validity, and leaves its output stamp unchanged;
 intermediate forward completion uses the current Newton result. No stale Post
 payload is marked current. Diagnostics and failed admissions use complete Post.
 For the normal 25-substep schedule with three active forwards, this evaluates
-Post 27 times per control step instead of 75. Final full-body force and sensor
+Post 3 times per control step instead of 75. The explicit `defer_post=False`
+comparison path retains 27 calls. Deferral requires the exact built-in
+graph-eligible observation adapter; unknown or subclassed observers keep complete
+Post. The last publication remains before Euler at the original sampling point.
+Final full-body force and sensor
 outputs, observation sampling, reset forwards and all 75 Newton solves remain.
 
 With a valid velocity-bias cache and at most one block's worth of bodies,

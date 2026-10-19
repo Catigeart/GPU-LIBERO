@@ -30,6 +30,14 @@ def selected_files():
                     and p.name not in POLICY["excluded_filenames"] and rel.as_posix() not in POLICY["excluded_paths"]
                     and p.suffix.lower() in POLICY["source_extensions"]):
                 selected.add(p)
+    # MANIFEST.in cannot recover files absent from this staging tree. Check
+    # the build entry points independently of the publication allowlist.
+    build_inputs = {ROOT / "CMakeLists.txt", ROOT / "libero/libero/gpu/CMakeLists.txt"}
+    build_inputs.update((ROOT / "libero/libero/gpu/cmake").rglob("*.cmake"))
+    build_inputs.update((ROOT / "libero/libero/gpu/cmake").rglob("CMakeLists.txt"))
+    missing = sorted(str(p.relative_to(ROOT)) for p in build_inputs - selected)
+    if missing:
+        raise RuntimeError("Release policy omits CMake build inputs: " + repr(missing))
     return sorted(selected)
 
 

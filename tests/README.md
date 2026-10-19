@@ -63,6 +63,26 @@ The BoxBox tests compile the maintained contact function for host execution and 
 
 Historical algorithm experiments, evidence capture, and private data fixtures remain in the development workspace and are not part of this source release.
 
+## Maintained validation entry
+
+`python tools/validate_gpu.py` provides explicit `run`, `compare` and `summarize`
+commands. See [its protocol and examples](../tools/validation/README.md).
+It shares action generation, task selection, frozen-old error budgets and timing
+statistics across modules. N=2 is the default; optional N=1 diagnosis is limited
+to N=2 numerical/work failures with existing matching references. It never
+compiles products or uses dated experiment scripts.
+
+`test_release_inputs.py` checks the independent CMake staging closure;
+`test_gpu_substep_build.py` covers the installed CMake entry and stable load-only
+build directory; `test_validation_tools.py` covers frozen-reference envelopes,
+input selection and world-control-step throughput. These are CPU-only checks.
+
+`python tools/runtime_inventory.py --output <external-file.json>` writes a
+static module/import/source-composition inventory. Its unreached modules must
+not be treated as proven unused: cold assembly also uses callbacks and derived
+source templates. The human-maintained path index is
+[ARCHITECTURE.md](../libero/libero/gpu/ARCHITECTURE.md).
+
 The optional `flash_collision_tree_test` CMake target runs CUDA component tests
 for ordered parallel BVH requests, explicit-pair suppression, tiny and inactive
 inputs, and capacity/error fallbacks. It uses two worlds and 32, 64 and 128

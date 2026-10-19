@@ -25,7 +25,7 @@ def make_parallel_copy_adapter(static, plan, *, source_owner, source_paths,
     workspace = candidate_class(static, plan.nworld, device=device,
         borrow_detector_raw=borrow_detector_raw, **plan.workspace_kwargs())
     if capsule_source_root is not None:
-        from scripts.gpu_c_runtime.native_capsule_extension import prepare_workspace_extension
+        from libero.gpu.host.runtime.collision.capsule_extension import prepare_workspace_extension
         prepare_workspace_extension(workspace, capsule_source_root)
     adapter = CollisionRuntimeAdapter.from_workspace(workspace, stream=stream,
         source_owner=source_owner, source_paths=source_paths)

@@ -14,7 +14,13 @@ import numpy as np
 SOURCE = Path(__file__).resolve().parents[1] / 'libero/libero/gpu/host/adapters/environment/batch_env.py'
 spec = importlib.util.spec_from_file_location('_batch_api_tests', SOURCE)
 module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+# These orchestration tests inject all physics. Load the two stdlib-only build
+# helpers directly rather than importing GPU __init__ (and requiring Warp on CI).
+GPU = SOURCE.parents[3]
+helpers = {'libero.gpu.host.build.' + name: SimpleNamespace(**runpy.run_path(
+    str(GPU / 'host/build' / (name + '.py')))) for name in ('compilation', 'startup')}
+with patch.dict(sys.modules, helpers):
+    spec.loader.exec_module(module)
 
 
 GOAL_FIELDS = ('qpos', 'body_xpos', 'body_xquat', 'site_xpos', 'site_xmat', 'contact', 'ncon')
@@ -261,10 +267,12 @@ class BatchEnvTests(unittest.TestCase):
             'geom1': Array('geom1', [[4, 8], [9, 10], [12, 13], [14, 15]]),
             'geom2': Array('geom2', [[5, 9], [10, 11], [14, 15], [16, 17]]),
         }))
-        from libero.gpu.host.adapters.environment import boundary_downloads
-        with patch.multiple(boundary_downloads.wp, empty=empty, copy=copy,
-                synchronize_stream=lambda stream: None), patch.dict(sys.modules, {'libero.gpu.host.adapters.observations.boundary':
-                SimpleNamespace(GOAL_FIELDS=GOAL_FIELDS)}):
+        fake_warp = SimpleNamespace(empty=empty, copy=copy, synchronize_stream=lambda stream: None)
+        with patch.dict(sys.modules, {'warp': fake_warp}):
+            boundary_downloads = SimpleNamespace(**runpy.run_path(str(SOURCE.with_name('boundary_downloads.py'))))
+        with patch.dict(sys.modules, {
+                'libero.gpu.host.adapters.environment.boundary_downloads': boundary_downloads,
+                'libero.gpu.host.adapters.observations.boundary': SimpleNamespace(GOAL_FIELDS=GOAL_FIELDS)}):
             env._snapshot_cache = env._snapshot(('qpos',))
             held = env._snapshot_cache['qpos']
             self.assertEqual(downloads, ['qpos'])

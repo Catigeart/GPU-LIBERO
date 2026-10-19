@@ -6,7 +6,7 @@ recursive-exclude * __pycache__ *.pyc *.pyo *.so *.o *.a
 prune build
 prune dist
 recursive-include licenses *.txt
-recursive-include tests *.py *.md *.cu
+recursive-include tests *.py *.md *.cu *.cuh *.h *.cpp *.json *.xml
 include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt
-recursive-include tools *.py *.json *.txt
+recursive-include tools *.py *.json *.txt *.md
 recursive-include .github *.yml

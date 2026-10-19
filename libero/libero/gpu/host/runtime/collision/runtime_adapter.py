@@ -176,7 +176,7 @@ class CollisionRuntimeAdapter:
             **plan.workspace_kwargs())
         self.candidate_manifest = None
         if capsule_source_root is not None:
-            from scripts.gpu_c_runtime.native_capsule_extension import prepare_workspace_extension
+            from libero.gpu.host.runtime.collision.capsule_extension import prepare_workspace_extension
             self.candidate_manifest = prepare_workspace_extension(self.workspace, capsule_source_root)
         self.workspace.bind_device_inputs(source_owner, source_paths, stream=stream)
         self.contacts = self.workspace.contact_field_views()

@@ -39,7 +39,53 @@ Exact islands rebuild the graph from the current represented matrix, retaining e
 
 `host.runtime.newton.blocked_factor.BlockedFactorPlan` is an independently callable dense factor/direction plan: tile16, private global factor/vector storage, one CTA per world, and runtime n/ld. POTRF, right-side TRSM, trailing GEMM, and blocked vector solving run in one kernel. Its independent capacity128 scope does not establish full persistent Newton NV128 support; the complete solver still requires its Hessian, arena, and lifecycle capacity admission.
 
-The Newton default uses 128 threads. This does not change the general collision/constraint configuration or force a vector-copy choice. NV21/43 use scalar I/O; NV57 retains its selected mathematics and packet I/O. Small-capacity complete Cholesky remains on cuSOLVERDx.
+Standalone Newton defaults to 128 threads. The single-substep fused kernel uses
+`FLASH_SUBSTEP_THREADS` (64 by default); these are separate launch contracts.
+Neither changes the general collision/constraint configuration or forces a
+vector-copy choice. NV21/43 use scalar I/O; NV57 retains its selected mathematics
+and packet I/O. Small-capacity complete Cholesky remains on cuSOLVERDx.
+
+## Compiled Product Selection
+
+The maintained options live in `cmake/Substep.cmake`; both the source checkout
+and installed GPU package have a CMake entry. They select products in the same
+stable build tree, not a separate project per task. The 130 tasks currently use
+13 dimension families; exact scene identity remains separate from those sizes.
+
+| CMake option | Default | Meaning |
+| --- | --- | --- |
+| `FLASH_CUDA_ARCH` | `80` | Target SM, selected explicitly for another GPU. |
+| `FLASH_MATHDX_ROOT` | empty, required | SDK containing `lib/libcusolverdx.a` and headers. |
+| `FLASH_SUBSTEP_THREADS` | `64` | Threads per fused world block. |
+| `FLASH_FAST_COMPILE` | `OFF` | `ON` uses minimal assembler optimization in major units; independent reduction/cache units retain full optimization. This is not a different CMake build type: both profiles use Release. |
+| `FLASH_GLOBAL_DEVICE_LTO` | `OFF` | `OFF` keeps local MathDx prelink and ordinary device linking; requires NVCC >= 13.2. `ON` is a distinct whole-program LTO configuration. |
+| `FLASH_NEWTON_ATOMIC_REDUCTIONS` | `ON` | Default FP64 reduction policy; explicit ordered comparison targets coexist. |
+| `FLASH_NEWTON_JACOBIAN_CACHE` | `ON` | Position-generation sparse Jacobian/product/column cache. |
+| `FLASH_NEWTON_TRANSPOSE_METHOD` | `0` | Auto; 1 atomic, 2 direct, 3/4/5 shared 32/16/8, 6/7/8 CSC 1/4/8. |
+
+Python `fast_compile`, `device_lto`, `profile_newton` and `atomic_reductions`
+select matching prepared products. Load-only execution rejects missing/stale
+products instead of configuring, compiling or linking. Profile and ordered
+comparison targets are excluded from the normal build unless requested.
+
+## Model-Dependent Fast Paths
+
+Fast position computation uses 128 threads for NG >= 128, otherwise 64. It uses
+scalar-register vectors and omits unconsumed diagnostic stores. NV21 and NV27
+retain the original component-wise quaternion divisions to control observed
+error accumulation; other qualified fast dimensions use reciprocal multiplication.
+The compatible profile keeps its original normalization arithmetic.
+
+SAP uses stable register sorting up to 64 float events or 128 integer pairs.
+NaNs and larger inputs retain the original insertion path. Convex private
+contact storage is bounded by 5 from the retained MuJoCo MPR/MultiCCD algorithm;
+public capacity remains 50, and other detector families retain their own bounds.
+
+The qualified fused path reuses first-forward smooth outputs only until the
+second forward, before controller writes. Complete Post is deferred to its
+consumer boundaries (3 evaluations in a normal 25-substep control step), with
+explicit `defer_post=False` and observer fallbacks. See the
+[runtime index](ARCHITECTURE.md) for entry points and invalidation conditions.
 
 ## Collision and Constraints
 

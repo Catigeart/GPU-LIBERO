@@ -170,7 +170,7 @@ def _prepare_native(device):
                 'actual_native_mjContact_ABI':False,
                 'scope':'private raw contact adapter layout only'}
         for name,tool in [('nvcc',nvcc),('g++',gcc)]:
-            from scripts.gpu_phase06_collision.private_runtime import child_env
+            from libero.gpu.host.build.child_environment import child_env
             child=child_env(target);child['LD_LIBRARY_PATH']='/usr/lib/wsl/lib'
             result=subprocess.run([str(tool),'--version'],cwd=target,env=child,capture_output=True,text=True)
             record['versions'][name]={'exit_code':result.returncode,

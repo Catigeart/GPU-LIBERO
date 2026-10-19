@@ -25,6 +25,7 @@ class InstallationLayoutTests(unittest.TestCase):
         gpu = Path(spec.origin).parent
         for relative in ("cuda/newton/hessian.cuh", "host/factory.py",
                          "cuda/collision/native/native_kernel.cu",
+                         "CMakeLists.txt", "cmake/Substep.cmake",
                          "host/runtime/collision/native_originals/engine_collision_box.c.txt"):
             with self.subTest(source=relative):
                 self.assertTrue((gpu / relative).is_file())

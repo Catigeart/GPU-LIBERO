@@ -78,7 +78,7 @@ extern "C" int run(const double* size, const double* pos, const double* mat,
 
 class BoxContactGenerationTests(unittest.TestCase):
     def test_derivation_retains_the_maintained_contact_correction(self):
-        path = ROOT / 'scripts/gpu_phase06_collision/derive_native.py'
+        path = ROOT / 'libero/libero/gpu/host/build/box_contact_source.py'
         spec = importlib.util.spec_from_file_location('derive_box_contacts', path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

@@ -62,9 +62,7 @@ class ColdToolPathTests(unittest.TestCase):
     def test_compiler_child_config_default_and_explicit(self):
         warp_before = "warp" in sys.modules
         # Load this standalone stdlib-only helper without GPU package execution.
-        import importlib.util
-        script_spec = importlib.util.find_spec("scripts.gpu_phase06_collision.private_runtime")
-        helper = runpy.run_path(script_spec.origin)
+        helper = runpy.run_path(str(gpu_source() / "host/build/child_environment.py"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             default = root / "default"

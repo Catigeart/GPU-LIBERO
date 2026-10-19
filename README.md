@@ -37,10 +37,12 @@
 
 - Python **3.10 or newer**.
 - An NVIDIA GPU, NVIDIA driver, and CUDA Toolkit with `nvcc` available.
-- CMake and a C/C++ compiler for native dependencies.
+- CMake **3.24 or newer**, Ninja, and a C/C++ compiler for native dependencies.
 - NVIDIA MathDx. If no installation is configured, the runtime downloads its pinned **25.12.1 CUDA12** package on first use.
 
-The current development environment uses Ubuntu 22.04 under WSL2 and CUDA 13.1.
+The single-substep build's default local MathDx prelink requires **NVCC 13.2 or
+newer**. Older toolchains require the explicit whole-program device-LTO build
+configuration; see the [GPU build guide](libero/libero/gpu/README.md).
 
 From the repository root:
 
@@ -48,7 +50,7 @@ From the repository root:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install 'cmake>=3.22,<4'
+python -m pip install 'cmake>=3.24,<4' ninja
 python -m pip install .
 ```
 
@@ -156,8 +158,9 @@ This entry retains the low-level physics factory's diagnostic construction mode.
 Full-capacity Newton input snapshots (`entry_witness`) are disabled by default:
 normal execution allocates no witness buffers and launches no witness copies.
 `GpuBatchEnv(..., debug=False)` also disables recovery event recording and the
-prefix reuse cache (including model comparisons and cache snapshots). It captures
-one complete control step during preparation and replays that CUDA graph, avoiding
+diagnostic prefix comparisons and cache snapshots. The immutable-model fast path
+retains its qualified epoch-based position reuse. It captures
+one complete control step when needed and replays that CUDA graph, avoiding
 Python source/binding validation on every physical substep. Host boundary status
 packets and per-step numerical verification are disabled. `debug=True` enables
 these diagnostics and uses the original Python substep path. Cold construction
@@ -170,6 +173,12 @@ ordering, configured capacities and overflow/error handling are unchanged.
 Set `strict_build_receipts=True` to additionally use the product entry's full
 compiler/library dependency receipts and artifact cache; this can add substantial
 cold-build time. This option does not change `debug` or grant numerical qualification.
+
+For source ownership, ordinary versus explicitly fused graphs, and retained
+fallback paths, see the [runtime architecture index](libero/libero/gpu/ARCHITECTURE.md).
+For N=2 endpoint checks and single-measurement CPU/GPU comparisons, use the
+[stable validation tools](tools/validation/README.md). Historical experiment
+drivers and their evidence belong in the external development workspace.
 
 Batch execution loads a completed offline build, by default from
 `~/.cache/libero-gpu/project` (or `$LIBERO_GPU_CACHE_DIR/project`). Set `build_root`

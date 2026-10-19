@@ -4,7 +4,7 @@ Generated sources require their own numerical/compile acceptance. Candidate
 implementation status must not be interpreted as inheriting old fixed-domain
 qualification for a newly compiled CUDA module.
 """
-from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
+from libero.gpu.host.paths import GPU_ROOT
 from pathlib import Path
 import hashlib
 import json
@@ -63,8 +63,6 @@ def _source_text(raw):
 
 
 def generate_sources(destination):
-    root = (REPO_ROOT / '.')
-    module = (GPU_ROOT / 'host/runtime/collision')
     original = (GPU_ROOT / 'host/runtime/collision/native_originals/engine_collision_box.c.txt')
     native_root = GPU_ROOT / 'cuda/collision/native'
     copied, readset = _native_header_closure(native_root, GPU_ROOT)
@@ -116,7 +114,7 @@ def generate_sources(destination):
     identity = {
         'schema': 'capsule-native-candidate-source-v2',
         'candidate_routes': [list(route) for route in ROUTES],
-        'generator_file': str((REPO_ROOT / 'scripts/gpu_c_runtime/native_capsule_extension.py')), 'generator_sha256': sha(__file__),
+        'generator_file': str(Path(__file__).resolve()), 'generator_sha256': sha(__file__),
         'accepted_inputs': {str(path): hashlib.sha256(raw).hexdigest()
                             for path, raw in sorted(readset.items())},
         'quoted_dependency_policy': 'exact native bytes; absolute external GPU sources bound in place; external relative includes refused',
@@ -171,8 +169,6 @@ def prepare_workspace_extension(workspace, destination):
     if workspace._device_input_binding is not None or workspace._launch_started:
         raise ValueError('capsule extension must precede input binding and launches')
     target, identity = generate_sources(destination)
-    root = (REPO_ROOT / '.')
-    module = (GPU_ROOT / 'host/runtime/collision')
     # Isolated globals keep the fixed native module/cache untouched. Its normal
     # build program hashes both generated files and actual toolchain/artifacts.
     import os

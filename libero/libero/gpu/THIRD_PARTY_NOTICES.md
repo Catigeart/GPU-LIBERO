@@ -18,7 +18,7 @@ This file records upstream source origins, adaptation scope, and external depend
 
 `cuda/` includes both project implementations and adapted upstream source. Handwritten CUDA describes the implementation language, not exclusive authorship of every algorithm or source fragment.
 
-- [native_source.cuh](cuda/collision/native/native_source.cuh) contains CUDA device adaptations of retained MuJoCo/libccd C source. Its generator is [derive_native.py](../../../scripts/gpu_phase06_collision/derive_native.py).
+- [native_source.cuh](cuda/collision/native/native_source.cuh) contains CUDA device adaptations of retained MuJoCo/libccd C source. The historical generator named in its header is archived outside this distribution. The maintained source is compiled directly. Its geometric source correction is retained in [box_contact_source.py](host/build/box_contact_source.py) and checked against the CUDA body; this helper does not regenerate production sources.
 - [collision_detect_primitive.cuh](cuda/collision/collision_detect_primitive.cuh) directly adapts MuJoCo scalar collision mathematics.
 - CUDA fusion, layouts, thread organization, host bindings, caching, and restoration add project implementation work while retaining upstream attribution for inherited portions.
 - MathDx bridges call external libraries; they do not include or relicense the SDK's internal BLAS/LAPACK implementation.

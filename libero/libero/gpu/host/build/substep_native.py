@@ -20,9 +20,15 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
     variant = select_variant(nv)
     source = Path(source).resolve()
     sdk = Path(sdk).resolve()
-    compiler = Path(nvcc_path()).resolve()
     candidates = [p for p in source.parents if (p / 'CMakeLists.txt').is_file()]
-    project = next((p for p in candidates if (p / 'setup.py').is_file()), candidates[0])
+    project = next((p for p in candidates if (p / 'setup.py').is_file()), None)
+    if project is None:
+        # Wheels retain the GPU package's own CMakeLists.txt; a checkout
+        # prefers the repository entry above it.
+        project = next(iter(candidates), None)
+    if project is None:
+        raise FileNotFoundError('No maintained CMake project for CUDA source: ' + str(source))
+    compiler = Path(nvcc_path()).resolve()
     profile = ('dev' if fast_compile else 'release') + ('-lto' if device_lto else '')
     folder = Path(root).resolve() / f'sm{arch}-{profile}'
     folder.mkdir(parents=True, exist_ok=True)

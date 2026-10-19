@@ -39,6 +39,13 @@ Measure local performance against the current implementation using the relevant 
 
 Serialize GPU execution, nvcc, and LTO on a shared device. Reuse build products only under their existing source/toolchain/policy/owner binding and invalidation rules.
 
+Use the [runtime path index](libero/libero/gpu/ARCHITECTURE.md) to locate default,
+fallback and explicitly configured implementations. Product GPU modules must not
+import development scripts. Common model/build/runtime helpers belong in their
+own package; experiments and generated evidence stay outside the source checkout.
+Use the [stable validation entry](tools/validation/README.md) instead of creating
+another dated copy of actions, reference comparison or timing calculations.
+
 ## Releases
 
 Build one wheel and one source archive from the current source:

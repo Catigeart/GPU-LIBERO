@@ -55,7 +55,7 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
     from libero.gpu.host.runtime.dynamics.runtime_adapter import RuntimeControllerAdapter
     from libero.gpu.host.runtime.foundation.runtime_adapter import FoundationForwardAdapter
     from libero.gpu.host.runtime.collision.runtime_adapter import plan_model_capacity
-    from scripts.gpu_phase06_collision.local_cases import static_from_model
+    from libero.gpu.model.collision_static import static_from_model
     collision_factory, newton_factory, copy_choice = _cold_factories()
     from libero.gpu.host.runtime.core.generation import model_spec_for_native_metadata
     from libero.gpu.reference.integration.euler_integrator.generic_workspace import GenericEulerWorkspace

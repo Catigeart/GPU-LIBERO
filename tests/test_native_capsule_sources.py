@@ -15,7 +15,7 @@ def generator_namespace():
     import importlib.machinery
     spec = importlib.machinery.PathFinder.find_spec("libero.gpu", libero.__path__)
     gpu = Path(spec.origin).parent
-    script = Path(importlib.util.find_spec("scripts.gpu_c_runtime.native_capsule_extension").origin)
+    script = gpu / "host/runtime/collision/capsule_extension.py"
     tree = ast.parse(script.read_text())
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     namespace = {"GPU_ROOT": gpu, "REPO_ROOT": script.parents[2], "Path": Path,

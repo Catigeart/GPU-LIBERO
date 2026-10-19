@@ -26,7 +26,7 @@ def prepare_fixed_copy_tape_physics(pack, *, state, device='cuda:0', stream=None
     from libero.gpu.host.runtime.newton.parallel_tape_adapter import DiagnosticParallelTapeFixedAdapter as FixedNewtonRuntimeAdapter
     from libero.gpu.host.runtime.foundation.runtime_adapter import FoundationForwardAdapter
     from libero.gpu.reference.integration.euler_integrator import EulerWorkspace
-    from scripts.gpu_phase06_collision.local_cases import static_from_model
+    from libero.gpu.model.collision_static import static_from_model
     from .contact_transport import ContactTransport
     from .physics import FixedPhysicsForward
     from .runtime import ResidentStepRuntime

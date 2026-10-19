@@ -15,7 +15,8 @@ GPU = ROOT / "libero/libero/gpu"
 SKIP = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
 CPU_TESTS = ("test_installation_layout.py", "test_resource_paths.py", "test_product_tool_paths.py",
              "test_native_capsule_sources.py", "test_gpu_memory_budget.py", "test_gpu_batch_env.py",
-             "test_deferred_native_build.py")
+             "test_deferred_native_build.py", "test_release_inputs.py",
+             "test_validation_tools.py", "test_validation_runner.py")
 
 
 def source_files(root):
@@ -38,6 +39,9 @@ def check():
                     modules = ([node.module] if isinstance(node, ast.ImportFrom) and node.module else
                                [a.name for a in node.names] if isinstance(node, ast.Import) else [])
                     for module in modules:
+                        if p.is_relative_to(GPU) and (module == "scripts" or module.startswith("scripts.")):
+                            raise RuntimeError("GPU product code imports development scripts: " +
+                                               str(p.relative_to(ROOT)) + " -> " + module)
                         if module.startswith("libero.gpu."):
                             target = GPU.joinpath(*module.split(".")[2:])
                         elif module.startswith("scripts."):
@@ -54,6 +58,8 @@ def check():
         raise RuntimeError("Missing local import dependencies: " + repr(sorted(missing)))
     required = ("licenses/LIBERO-MIT.txt", "licenses/Apache-2.0.txt", "licenses/libccd-BSD-3-Clause.txt",
                 "LICENSE", "libero/libero/upstream_resources.json", "templates/scene_template.xml",
+                "CMakeLists.txt", "libero/libero/gpu/CMakeLists.txt",
+                "libero/libero/gpu/cmake/Substep.cmake",
                 "libero/libero/gpu/host/build/native.py", "benchmark_scripts/benchmark_gpu_batch.py")
     for relative in required:
         if not (ROOT / relative).is_file():

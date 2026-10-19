@@ -6,6 +6,26 @@ from unittest.mock import patch
 
 
 class SubstepBuildTests(unittest.TestCase):
+    def test_wheel_sources_find_the_packaged_cmake_entry_without_compiling(self):
+        from libero.gpu.host.build import substep_native
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gpu = root / 'site-packages/libero/gpu'
+            source = gpu / 'cuda/step/fused_substep.cu'
+            source.parent.mkdir(parents=True)
+            source.write_text('// installed CUDA source\n')
+            project = gpu
+            (project / 'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.24)\n')
+            with patch.object(substep_native, 'nvcc_path', return_value=str(root / 'nvcc')):
+                manifest = substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
+            self.assertEqual(manifest['config']['project'], str(project))
+            self.assertIn(str(project), manifest['commands'][0])
+            with patch.object(substep_native.subprocess, 'run') as execute:
+                source = root / 'no-project/kernel.cu'
+                with self.assertRaisesRegex(FileNotFoundError, 'No maintained CMake project'):
+                    substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
+                execute.assert_not_called()
+
     def test_source_edits_keep_the_cmake_build_tree_and_runtime_is_load_only(self):
         from libero.gpu.host.build import substep_native
         with tempfile.TemporaryDirectory() as directory:
