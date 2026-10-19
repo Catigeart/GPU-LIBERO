@@ -1,12 +1,12 @@
-include README.md LICENSE setup.py pyproject.toml
-recursive-include libero *.py *.cu *.cuh *.h *.hpp *.c *.cpp *.json *.txt *.md *.xml *.bddl *.yaml *.yml *.ps1
+include README.md LICENSE setup.py pyproject.toml CMakeLists.txt
+recursive-include libero *.cmake *.py *.cu *.cuh *.h *.hpp *.c *.cpp *.json *.txt *.md *.xml *.bddl *.yaml *.yml *.ps1
 recursive-include scripts *.py *.cu *.cuh *.h *.hpp *.c *.cpp *.xml *.json *.yaml *.yml *.ps1
 recursive-include templates *.py *.xml
 recursive-exclude * __pycache__ *.pyc *.pyo *.so *.o *.a
 prune build
 prune dist
 recursive-include licenses *.txt
-recursive-include tests *.py *.md
+recursive-include tests *.py *.md *.cu
 include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt
 recursive-include tools *.py *.json *.txt
 recursive-include .github *.yml

@@ -46,8 +46,8 @@ class BuiltTaskModel:
         return self.metadata["problem_name"]
 
 
-    def facade_metadata(self):
-        """Return actual copied model arrays/name indices for GpuSimFacade."""
+    def facade_metadata(self, *, copy_arrays=True):
+        """Return model metadata; borrowed arrays require immediate freezing."""
         model = self.native_model
         out = dict(self.metadata["dimensions"] )
         out["xml"] = self.xml
@@ -56,7 +56,8 @@ class BuiltTaskModel:
         out["stat"] = dict(self.metadata["stat"] )
         out["native_write_schema"] = dict(self.metadata.get("native_write_schema", {}))
         for name in self.metadata["static_array_inventory"]:
-            out[name] = np.array(getattr(model, name), copy=True)
+            value = getattr(model, name)
+            out[name] = np.array(value, copy=True) if copy_arrays else value
         for kind, mapping in self.metadata["name_maps"].items():
             out[kind + "_name_to_id"] = dict(mapping)
         out["joint_qpos_slices"] = dict(self.metadata["joint_qpos_slices"])
@@ -248,7 +249,8 @@ def task_segmentation_metadata(task_model, name_maps):
     return result
 
 
-def build_task_model(bddl_file_name, problem_name=None, *, xml_string_override=None, **domain_options):
+def build_task_model(bddl_file_name, problem_name=None, *, xml_string_override=None,
+                     compiled_model_file=None, static_model_setup=None, **domain_options):
     """Run original static task construction and native model compilation only.
 
     Caller must not use ``domain_shell`` for stepping or observation sampling.
@@ -301,7 +303,8 @@ def build_task_model(bddl_file_name, problem_name=None, *, xml_string_override=N
             xml = xml_string if xml_string else self.model.get_xml()
         if self._xml_processor is not None:
             xml = self._xml_processor(xml)
-        native = mujoco.MjModel.from_xml_string(xml)
+        native = (mujoco.MjModel.from_xml_string(xml) if compiled_model_file is None else
+                  mujoco.MjModel.from_binary_path(str(compiled_model_file)))
         result.update(xml=xml, native_model=native)
         self.sim = _NoSimulation()
         self.initialize_time(self.control_freq)
@@ -318,11 +321,16 @@ def build_task_model(bddl_file_name, problem_name=None, *, xml_string_override=N
     def forbidden(self, *args, **kwargs):
         raise ModelOnlyExecutionError("Model-only shell is not an initialized GPU environment")
 
+    # Preserve the resolved callable, including a legitimate instance override.
+    # deepcopy of a bound method rebinds its owner to each cloned world shell.
+    shell._gpu_original_setup_observables = shell._setup_observables
     for name, function in (("_initialize_sim", initialize_model),
                            ("initialize_renderer", no_renderer),
                            ("_reset_internal", no_reset),
                            ("_setup_observables", no_observables)):
         setattr(shell, name, MethodType(function, shell))
+    # Store the same method object so clones preserve this explicit shim alias.
+    shell._gpu_model_only_setup_observables_shim = shell._setup_observables
     with model_only_construction(task_class):
         if constructor_call is None:
             task_class.__init__(shell, path, **options)
@@ -332,6 +340,10 @@ def build_task_model(bddl_file_name, problem_name=None, *, xml_string_override=N
     if constructor_call is None: shell.renderer_config = renderer_config
     for name in ("step", "reset", "reset_from_xml_string", "_get_observations", "_update_observables"):
         setattr(shell, name, MethodType(forbidden, shell))
+    # Finalize fixed fixture poses before the one full native snapshot/hash.
+    # The callback may write cold model parameters, but must not run physics.
+    if static_model_setup is not None:
+        static_model_setup(shell, result['native_model'])
     metadata = native_model_metadata(result["native_model"])
     shell.obj_body_id = {name: metadata["name_maps"] ["body"] [obj.root_body]
                          for name, obj in {**shell.objects_dict, **shell.fixtures_dict}.items()}

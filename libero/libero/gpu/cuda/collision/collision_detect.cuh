@@ -25,6 +25,12 @@ struct Params {
  int box_private_capacity; // Reserved cold ABI; producer must admit exactly50.
  double mpr_tolerance;
 };
+// BoxBox's clipping/control body is scalar. A lane owns the whole query in
+// production; compatibility retains the historical collective diagnostics.
+__device__ __forceinline__ bool detect_collective(const Params& p,int bucket) {
+ return p.query_subgroup_width==32 && (bucket==5||bucket==11||bucket==12||bucket==13)
+     && !(p.diagnostic_profile!=0 && bucket==12);
+}
 __device__ void error(Params& p,int w,int j,int status,int code) {
  p.det_status[w*p.pairs+j]=status;p.fe_stage[w]=6;p.fe_code[w]=code;p.fe_item[w]=j;
 }
@@ -77,14 +83,18 @@ __device__ bool prepare_query(Params& p,int w,int slot,mjModel& m,mjData& d,
     (int*)p.mesh_graphadr,(int*)p.mesh_graph,{p.mpr_iterations,p.multiccd?1:0,p.mpr_tolerance},
     err,trace,fw,p.nvert,p.ngraph,p.nmesh,4096,0,p.mesh_edge_end};d={pos,mat};return true;
 }
-template<int Capacity> __device__ __noinline__ void native_query(Params& p,int w,int slot,int route) {
+template<int Capacity,int FixedRoute=0> __device__ __noinline__ void native_query(Params& p,int w,int slot,int route) {
+ if constexpr(FixedRoute!=0)route=FixedRoute;
  double* out=p.native_raw+(size_t)slot*500;
  const double* prior=p.raw+(size_t)slot*500;
  double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
  if(!prepare_query(p,w,slot,m,d,sz,rb,types,ids,pos,mat,&err,trace,&fw)){p.native_status[slot]=err;return;}
  for(int k=0;k<2;k++)if(types[k]==7&&ids[k]<0){p.native_status[slot]=7;return;}
- mjContact con[Capacity];contact_load_n<Capacity>(con,prior);
+ mjContact con[Capacity];
+ // BoxBox writes every published field, including the zero-contact frame.
+ // Its unobserved private capacity tail does not require a history mirror.
+ if(p.diagnostic_profile==0||route!=12)contact_load_n<Capacity>(con,prior);
  int n=route==12?mjc_BoxBox(&m,&d,con,0,1,p.call_margin[slot]):
        route==13?mjc_CapsuleBox(&m,&d,con,0,1,p.call_margin[slot]):
                   mjc_Convex(&m,&d,con,0,1,p.call_margin[slot]);
@@ -151,7 +161,9 @@ __device__ void detect_prepare_routes(Params& p,int w) {
   const size_t words=(size_t)p.pairs*500;
   libero_vec::copy_block(p.raw+base,p.native_raw+base,words);
  }
- for(int j=threadIdx.x;j<p.pairs;j+=64)detect_native_init(p,w,j,false);
+ const int initialize_count=p.diagnostic_profile!=0?
+     ((p.active[w]==1&&!p.fe_code[w]&&p.call_count[w]>=0&&p.call_count[w]<=p.pairs)?p.call_count[w]:0):p.pairs;
+ for(int j=threadIdx.x;j<initialize_count;j+=64)detect_native_init(p,w,j,false);
  const int count=(p.active[w]==1&&p.call_count[w]>=0&&p.call_count[w]<=p.pairs&&
                   !(p.diagnostic_profile!=0&&p.fe_code[w]))?p.call_count[w]:0;
  int* const offsets=p.bucket_offsets+16*w;
@@ -199,8 +211,7 @@ __device__ void detect_prepare_compact(Params& p,int w) {
   const int* offsets=p.bucket_offsets+16*w;
   int count=0;
   for(int bucket=0;bucket<15;bucket++) {
-   const bool collective=p.query_subgroup_width==32&&
-       (bucket==5||bucket==11||bucket==12||bucket==13);
+   const bool collective=detect_collective(p,bucket);
    const int width=collective?2:64;
    for(int start=offsets[bucket];start<offsets[bucket+1];start+=width) {
     p.task_bucket[base+count]=bucket;p.task_start[base+count]=start;count++;
@@ -252,8 +263,9 @@ __device__ void detect_primitive_slot(Params& p,int w,int j) {
 }
 // Separate collective entries: every lane of one FULL warp owns the same
 // original slot. Private model/data are identical; only lane 0 publishes.
-template<int Capacity> __device__ __noinline__ void native_query_warp(
+template<int Capacity,int FixedRoute=0> __device__ __noinline__ void native_query_warp(
  Params& p,int w,int slot,int route) {
+ if constexpr(FixedRoute!=0)route=FixedRoute;
  const bool leader=(threadIdx.x&31)==0;
  double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
@@ -322,7 +334,7 @@ __device__ int detect_admit_world(Params& p,int w) {
    int status=p.native_status[slot];if(status){error(p,w,j,100+status,status==6?9:8);return j;}
    n=p.native_count[slot];
    if(n<0||n>50){error(p,w,j,8,2);return j;}
-   for(int k=0;k<n*10;k++)if(!isfinite(p.native_raw[(size_t)slot*500+k])){error(p,w,j,8,8);return j;}
+   if(p.diagnostic_profile==0)for(int k=0;k<n*10;k++)if(!isfinite(p.native_raw[(size_t)slot*500+k])){error(p,w,j,8,8);return j;}
 
 
   } else {
@@ -351,7 +363,7 @@ __device__ __forceinline__ bool detect_admit_call(
   if(native_status){status=100+native_status;code=native_status==6?9:8;return false;}
   const int n=p.native_count[slot];
   if(n<0||n>50){status=8;code=2;return false;}
-  for(int k=0;k<n*10;k++)if(!isfinite(p.native_raw[(size_t)slot*500+k])) {
+  if(p.diagnostic_profile==0)for(int k=0;k<n*10;k++)if(!isfinite(p.native_raw[(size_t)slot*500+k])) {
    status=8;code=8;return false;
   }
  } else {
@@ -403,8 +415,10 @@ __device__ int detect_admit_world_block(Params& p,int w) {
 // become public. Blocks never synchronize across grid: tiled producer completes
 // in an earlier kernel, or the collective path uses its own block barrier.
 __device__ void detect_commit_world(Params& p,int w) {
+ const int clear_count=p.diagnostic_profile!=0?
+     ((p.call_count[w]>=0&&p.call_count[w]<=p.pairs)?p.call_count[w]:0):p.pairs;
  if(!p.fe_code[w]&&p.active[w]!=0)
-  for(int j=threadIdx.x;j<p.pairs;j+=blockDim.x) {
+  for(int j=threadIdx.x;j<clear_count;j+=blockDim.x) {
    p.raw_count[w*p.pairs+j]=0;p.det_status[w*p.pairs+j]=0;
   }
  __syncthreads();
@@ -441,8 +455,7 @@ __device__ void detect_world(Params& p,int w) {
  detect_prepare_routes(p,w);
  const int* offsets=p.bucket_offsets+16*w;
  for(int bucket=0;bucket<15;bucket++) {
-  const bool collective=p.query_subgroup_width==32&&
-       (bucket==5||bucket==11||bucket==12||bucket==13);
+  const bool collective=detect_collective(p,bucket);
   const int worker=collective?threadIdx.x/32:threadIdx.x;
   const int stride=collective?2:64;
   for(int q=offsets[bucket]+worker;q<offsets[bucket+1];q+=stride) {

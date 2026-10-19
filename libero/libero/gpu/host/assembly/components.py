@@ -3,9 +3,11 @@ from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import hashlib
 import importlib
 import os
+from contextlib import nullcontext
 from collections import deque
 from pathlib import Path
 import warp as wp
+from libero.gpu.host.build.startup import startup_phase
 
 COMPONENTS=('position','dynamics','osc','collision','collision_detect',
             'constraints','post','euler','recovery','copies','forward','capacity')
@@ -13,7 +15,7 @@ COMPONENTS=('position','dynamics','osc','collision','collision_detect',
 
 def _capture_reset_forward(loop):
     """Record a complete, explicitly begun forward using installed components."""
-    with wp.ScopedCapture(stream=loop.stream,force_module_load=True) as capture:
+    with wp.ScopedCapture(stream=loop.stream) as capture:
         wp.capture_if(getattr(loop,'reset_predicate',loop.recovery.reset_mask),
                       on_true=loop._reset_forward,stream=loop.stream)
     loop._reset_forward_graph=capture.graph
@@ -42,7 +44,8 @@ def _plans(bundle):
 def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
                          components=None,dataflow_profile="compatible",profile=None,
                          optimized_dataflow=False,nworld=None,newton_execution_config=None,
-                         algorithm_options=None,newton_algorithm_options=None,**kwargs):
+                         algorithm_options=None,newton_algorithm_options=None,debug=False,
+                         cache_collision_parameters=False,**kwargs):
     from libero.gpu.host.assembly.mathdx.factory import prepare_fused_physics as previous
     from libero.gpu.host.runtime.core.algorithm_config import normalize_algorithm_options
     algorithms=normalize_algorithm_options(algorithm_options,newton_algorithm_options=newton_algorithm_options)
@@ -54,6 +57,7 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
     if dataflow_profile=="compatibility":dataflow_profile="compatible"
     if dataflow_profile not in ("compatible","fast"):raise ValueError("unknown dataflow profile")
     if nworld is not None:kwargs['nworld']=nworld
+    kwargs.setdefault('capture_entry_witness', debug)
     selected=COMPONENTS if components is None else tuple(components)
     unknown=set(selected)-set(COMPONENTS)
     if unknown or len(set(selected))!=len(selected):
@@ -61,10 +65,24 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
     root=Path(cuda_build_root or os.environ.get('LIBERO_CUDA_FUSION_BUILD_ROOT') or
               Path.cwd()/'handwritten-cuda-fusion-build').resolve()
     # Newton remains the accepted handwritten core; every full factor uses Dx.
-    bundle=previous(*args,cuda_build_root=root/'newton',mathdx_root=mathdx_root,
-        diagnostic_profile=dataflow_profile,defer_cuda_core=('capacity' in selected),
-        newton_execution_config=newton_execution_config,newton_algorithm_options=policy['newton'],**kwargs)
+    with startup_phase('arena'):
+        bundle=previous(*args,cuda_build_root=root/'newton',mathdx_root=mathdx_root,
+            diagnostic_profile=dataflow_profile,defer_cuda_core=('capacity' in selected),
+            newton_execution_config=newton_execution_config,newton_algorithm_options=policy['newton'],**kwargs)
+    from libero.gpu.host.build.native import world_guard_scope
+    epoch_admitted=(optimized_dataflow and dataflow_profile=='fast' and not debug and cache_collision_parameters and
+                    {'position','collision','collision_detect','constraints','forward'}<=set(selected))
+    reuse_epoch=policy['forward_reuse'] in ('auto','epoch') and epoch_admitted
+    if policy['forward_reuse']=='epoch' and not epoch_admitted:
+        bundle.close()
+        raise ValueError('epoch position reuse requires an optimized immutable-model native batch')
+    prefix_guard=None
+    if reuse_epoch:
+        with wp.ScopedStream(bundle.stream):
+            prefix_guard=wp.ones(bundle.runtime.forward.capacity,dtype=wp.int32,device=bundle.dynamics.device)
+    bundle.cuda_position_reuse_guard=prefix_guard
     bundle.dataflow_profile=dataflow_profile
+    bundle.debug=debug
     bundle.cuda_algorithm_options=algorithms
     try:
         manifests={}
@@ -85,7 +103,12 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
                 installer=module.install
                 if name in ('dynamics','collision','constraints','post'):
                     options['dataflow_profile']=dataflow_profile
-                if name=='collision':options.update(policy['collision'])
+                if name=='collision':
+                    options.update(policy['collision'])
+                    options['diagnostics']=debug
+                    options['static_parameters']=cache_collision_parameters
+                    options['complete_only']=(optimized_dataflow and dataflow_profile=='fast' and
+                        'collision_detect' in selected)
                 if name=='post':options.update(policy['post'])
                 if name=='collision_detect':options['diagnostic_profile']=dataflow_profile
                 if name in ('position','osc') and optimized_dataflow:
@@ -97,7 +120,7 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
                         combine_entry=optimized_dataflow,newton_execution_config=newton_execution_config,
                         newton_algorithm_options=policy['newton'])
                     # S projection precedes retained before_constraint callbacks and
-                    # mandatory entry witness copies. Keep this ordered boundary
+                    # optional entry witness copies. Keep this ordered boundary
                     # until a combined prefix owns both callback and copy semantics.
                 if name=='capacity' and optimized_dataflow and 'post' in selected:
                     from libero.gpu.host.bindings.tail import prepare as prepare_tail
@@ -120,7 +143,10 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
                                 collective=True,world_strides={'source':0,'target':0}))
                         options['external_prefix']=schema
                         migrated_prefix=True
-                installed=installer(bundle,root/name,**options)
+                scope=(world_guard_scope(prefix_guard,('position_dataflow_','constraints_position'))
+                       if reuse_epoch and name in ('position','constraints') else nullcontext())
+                with startup_phase('bind_'+name),scope:
+                    installed=installer(bundle,root/name,**options)
                 if name=='capacity' and options.get('external_tail'):
                     from libero.gpu.host.bindings.tail import activate as activate_tail
                     manifests['newton_post_tail']=activate_tail(bundle,installed)
@@ -139,7 +165,13 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
                     dict(installed=True,manifest=installed.manifest))
         if 'collision' in selected and 'collision_detect' in selected:
             from libero.gpu.host.bindings.collision import install_combined
-            manifests['collision_complete']=install_combined(bundle,root/'collision_complete')
+            schedule=policy['collision_schedule']
+            if schedule=='auto':schedule='parallel' if bundle.runtime.forward.capacity<=32 else 'fused'
+            scope=(world_guard_scope(prefix_guard,('collision_complete','collision_query_'))
+                   if reuse_epoch else nullcontext())
+            with scope:
+                manifests['collision_complete']=install_combined(bundle,root/'collision_complete',
+                    query_schedule=schedule,producer_blocks=policy['collision_workers'],world_guard=prefix_guard)
         # Capture after all component methods have been replaced. Capturing the
         # old bound functions would retain the old forward in the recovery arm.
         loop=bundle.runtime
@@ -155,15 +187,24 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
              getattr(foundation.backend,name).__func__.__defaults__)
             for name,_,_,_ in foundation._backend_methods)
         foundation.validate_bindings()
-        if optimized_dataflow and 'forward' in selected:
+        if reuse_epoch:
+            # Establish the same explicit-begin cold contract as the exact
+            # cache before capturing a prefix-only conditional body.
+            _capture_reset_forward(loop)
+            from libero.gpu.host.bindings.position_reuse import install as install_position_reuse
+            manifests['reuse']=install_position_reuse(bundle,root/'position_reuse',prefix_guard)
+        elif optimized_dataflow and 'forward' in selected and (debug or policy['forward_reuse']=='exact') and policy['forward_reuse']!='off':
             # Prefix-only cache graphs require their caller's explicit begin.
             # Record the complete native forward first, after native Newton is
             # installed, rather than relying on a legacy solver capture.
             _capture_reset_forward(loop)
             from libero.gpu.host.bindings.reuse import install_dataflow
             manifests['reuse']=install_dataflow(bundle,root/'reuse',diagnostic_profile=dataflow_profile)
+        elif optimized_dataflow and 'forward' in selected:
+            manifests['reuse']=dict(installed=False, reason='explicit off or no immutable-batch admission')
         foundation.validate_bindings()
-        _capture_reset_forward(loop)
+        with startup_phase('reset_graph'):
+            _capture_reset_forward(loop)
         bundle.fusion_batch='cuda-r02' if optimized_dataflow else 'cuda-r01'
         bundle.cuda_selection_manifest=manifests
         bundle.cuda_algorithm_manifest=dict(configuration=policy,

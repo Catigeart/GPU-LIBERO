@@ -52,7 +52,7 @@ class _VisualModel:
         return getattr(self._model, name)
 
 @contextmanager
-def boundary_predicates(env, facade):
+def boundary_predicates(env, facade, *, fields=GOAL_FIELDS):
     """Pin original ObjectState/predicate reads to one coherent boundary snapshot.
 
     Execute the original check_success/post_process methods inside this context in
@@ -61,7 +61,9 @@ def boundary_predicates(env, facade):
     Visual site-alpha modifications are captured and published on exit, including
     when a predicate itself mutates object visual-affordance state.
     """
-    snapshot = facade.snapshot_fields(GOAL_FIELDS)
+    # A source-qualified batch plan can narrow this private read schema. Generic
+    # callers keep the original full schema; missing fields are never fabricated.
+    snapshot = facade.snapshot_fields(tuple(fields))
     model = _VisualModel(facade.model)
     old_sim = env.sim
     view = SimpleNamespace(model=model, data=_SnapshotData(snapshot, model))

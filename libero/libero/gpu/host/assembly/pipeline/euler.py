@@ -122,7 +122,7 @@ def runtime_type(base):
         base.__init__(self, **kwargs)
         self._fusion_euler_kernel = _runtime_kernel(self.integration_tape is None,
             self.expected_state_epoch is not None, hasattr(self, "integration_count"))
-        if issubclass(base, EventRecoveringRuntime):
+        if issubclass(base, EventRecoveringRuntime) and self.capture_events:
             self._fusion_warning_copy = event_warning_plan(self)
     return type("FusedEuler" + base.__name__, (base,), {
         "__init__": initialize, "_integrate": method, "__module__": __name__})

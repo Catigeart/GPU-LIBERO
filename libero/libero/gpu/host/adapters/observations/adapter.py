@@ -73,6 +73,111 @@ class GpuObservationAdapter:
             self.scene_packer=DeviceFieldPacker(packed_layout,nworld,device)
             scene_layout={name:(packed_layout[name][0],shape) for name,shape in shapes.items()}
             self.scene_cache=DeviceSampledScenes(self.plan.image_specs,scene_layout,nworld,device,metadata.get("segmentation_mappings"))
+        self._host_sampling_required=False
+        self._host_sampling_reasons=[]
+        self._sample_event_token=0
+        self._sample_event_hook=None
+        self._graph_guard=None
+        self._graph_configuration=self._sampling_graph_signature()
+
+    @staticmethod
+    def _array_signature(array):
+        return (id(array),int(array.ptr),array.dtype,tuple(array.shape),
+                tuple(array.strides),str(array.device),bool(array.is_contiguous),
+                getattr(array,'capacity',None))
+
+    def _sampling_graph_signature(self):
+        """Host-only capture contract; enabled/rate values live behind stable roots."""
+        low=self.lowdim
+        arrays=list(low.meta)+[getattr(low,name) for name in
+            ('cache','observed','sidequat','elapsed','sampled','present','events','all_worlds')]
+        arrays.append(self.raw_packer.buffer)
+        if self.scene_cache is not None:
+            arrays.extend(getattr(self.scene_cache,name) for name in
+                ('periods','enabled','elapsed','sampled','generation','parents',
+                 'parent_generation','captured','scenes','mask'))
+            arrays.append(self.scene_packer.buffer)
+        arrays.extend(self.visual_sources[name] for name in sorted(self.visual_sources))
+        structure=tuple((s.name,s.modality,s.operation,s.width,tuple(s.indices),
+                         tuple(s.dependencies),tuple(s.shape)) for s in self.plan.specs)
+        images=tuple(tuple(sorted((key,repr(value)) for key,value in spec.items()
+                                  if key not in ('enabled','active','period')))
+                     for spec in self.plan.image_specs)
+        layout=(id(low),id(self.raw_packer),repr(getattr(self.raw_packer,'layout',None)),
+                getattr(low,'source_stride',None),id(self.scene_cache),id(self.scene_packer),
+                getattr(self.scene_cache,'ncamera',None),getattr(self.scene_cache,'stride',None),
+                repr(getattr(self.scene_packer,'layout',None)))
+        return (self.nworld,float(self.metadata['model_timestep']),tuple(self.plan.order),layout,
+                structure,images,tuple(self._array_signature(a) for a in arrays))
+
+    @property
+    def requires_host_sampling(self):
+        return bool(self._host_sampling_required or self.host_observables or self._pending_renderers)
+
+    @property
+    def graph_eligible(self):
+        """Read-only guard checked before capture and replay; never reads GPU data."""
+        if self.closed or not self.valid or self.requires_host_sampling:
+            return False
+        try:
+            if self._sampling_graph_signature()!=self._graph_configuration:
+                return False
+            guard=self._graph_guard
+            return guard is None or bool(guard())
+        except (AttributeError,KeyError,TypeError,ValueError,RuntimeError):
+            return False
+
+    def bind_graph_guard(self,callback):
+        if callback is not None and not callable(callback):
+            raise TypeError('observation graph guard must be callable')
+        self._graph_guard=callback
+
+    def bind_sample_event_hook(self,callback):
+        if callback is not None and not callable(callback):
+            raise TypeError('observation sample event hook must be callable')
+        self._sample_event_hook=callback
+
+    @property
+    def sample_event_token(self):
+        """Ordered sample submission id; host readers retain their completion wait."""
+        return self._sample_event_token
+
+    def _require_host_sampling(self,reason):
+        self._host_sampling_required=True
+        if reason not in self._host_sampling_reasons:self._host_sampling_reasons.append(reason)
+
+    def assert_sampling_allowed(self,stream=None):
+        if self.closed or not self.valid:
+            raise RuntimeError('observation adapter is closed or quarantined')
+        if stream is not None and getattr(stream,'is_capturing',False) and not self.graph_eligible:
+            raise RuntimeError('observation sampling requires uncaptured host callbacks or current bindings')
+
+    def _record_sample_event(self,timestep,force=False,events=1):
+        self._last_sample=(float(timestep),bool(force))
+        self._sample_event_token+=events
+        if self._sample_event_hook is not None:self._sample_event_hook(self._sample_event_token)
+
+    def notify_control_graph_replay(self,timestep=None,substeps=1,stream=None):
+        """Record actual replay submission, never graph construction or a host sample."""
+        self.assert_sampling_allowed(stream)
+        if stream is not None and getattr(stream,'is_capturing',False):
+            raise RuntimeError('cannot notify observation replay during graph capture')
+        if type(substeps) is not int or substeps<0:raise ValueError('nonnegative substep count required')
+        if substeps==0:return
+        if not self.graph_eligible:raise RuntimeError('observation graph is no longer eligible')
+        dt=self.metadata['model_timestep'] if timestep is None else timestep
+        if not np.isfinite(dt) or dt<=0:raise ValueError('sampling timestep must be positive finite')
+        self.lowdim.last_stream=stream or wp.get_stream(self.device)
+        if self.scene_cache is not None:self.scene_cache.last_stream=self.lowdim.last_stream
+        self._record_sample_event(dt,False,substeps)
+
+    def _synchronize_sampling(self,stream=None):
+        streams=(stream,self.lowdim.last_stream,
+                 None if self.scene_cache is None else self.scene_cache.last_stream)
+        seen=set()
+        for value in streams:
+            if value is not None and id(value) not in seen:
+                wp.synchronize_stream(value);seen.add(id(value))
 
 
     @staticmethod
@@ -85,7 +190,7 @@ class GpuObservationAdapter:
         return result
 
     def sample(self,raw_fields,timestep=None,force=False,world_mask=None,stream=None):
-        if self.closed or not self.valid:raise RuntimeError("observation adapter is closed or quarantined")
+        self.assert_sampling_allowed(stream)
         fields=self._flat(raw_fields)
         timestep=self.metadata["model_timestep"] if timestep is None else timestep
         # Verify all required fields before enqueueing any sampler update.
@@ -122,7 +227,11 @@ class GpuObservationAdapter:
         Default built-ins only record the completed event. Synchronize and run
         original Python extensions only if an optional renderer/callback needs it.
         """
-        self._last_sample=(float(timestep),bool(force))
+        self.assert_sampling_allowed(stream)
+        # Python executes while recording a graph. No sampling event or Python
+        # Observable callback has happened until the recorded graph is launched.
+        if stream is not None and getattr(stream,'is_capturing',False):return
+        self._record_sample_event(timestep,force)
         if self._pending_renderers:
             if stream is not None:wp.synchronize_stream(stream)
             elif self.raw_packer.buffer.device.is_cuda:wp.synchronize_stream(wp.get_stream(self.device))
@@ -266,21 +375,48 @@ class GpuObservationAdapter:
         self.visual_generation+=1
     def snapshot_continuation(self,stream=None):
         from .continuation import snapshot
-        return snapshot(self,stream)
+        packet=snapshot(self,stream)
+        packet['requires_host_sampling']=self.requires_host_sampling
+        packet['sample_event_token']=self.sample_event_token
+        return packet
     def restore_continuation(self,packet,stream=None):
         from .continuation import restore
-        return restore(self,packet,stream)
+        token=packet.get('sample_event_token',0)
+        if type(token) is not int or token<0:raise ValueError('invalid observation sample event token')
+        result=restore(self,packet,stream)
+        self._sample_event_token=token
+        if self.host_observables or packet.get('requires_host_sampling',False):
+            self._require_host_sampling('restored custom observables')
+        return result
     def close(self):
+        if self.closed:return
+        errors=[]
+        try:self._synchronize_sampling()
+        except Exception as error:errors.append(error)
         for world,viewer in self._owned_viewers.items():
             if viewer is not None:
-                viewer.close()
+                try:viewer.close()
+                except Exception as error:errors.append(error)
                 env=self.host_environments.get(world)
                 if env is not None and env.viewer is viewer:env.viewer=None
         self._owned_viewers.clear()
         self.host_environments.clear();self.host_observables.clear()
-        for bridge in self.bridges.values():bridge.close()
+        for bridge in self.bridges.values():
+            try:bridge.close()
+            except Exception as error:errors.append(error)
         self.bridges.clear()
+        self._pending_renderers.clear()
+        self._sample_event_hook=None;self._graph_guard=None
+        sampler=getattr(self,'_cuda_direct_sampler',None)
+        if sampler is not None:
+            baseline=getattr(sampler,'baseline_sample',None)
+            if baseline is not None:self.sample=baseline
+            sampler.observer=None;sampler.baseline_sample=None;sampler.owner_arrays=()
+            sampler.plan=None
+            self._cuda_direct_sampler=None
+        self._cuda_batch_observations_registration=None
         self.closed=True
+        if errors:raise errors[0]
     def public_render_context(self):
         if self.closed or not self.valid:raise RuntimeError("observation adapter is closed or quarantined")
         if self._public_bridge is None:
@@ -426,7 +562,7 @@ class GpuObservationAdapter:
                 self.host_observables[world]=compat
 
     @property
-    def requires_host_callbacks(self):return bool(self.host_observables)
+    def requires_host_callbacks(self):return self.requires_host_sampling
 
     @property
     def observation_names(self):
@@ -442,8 +578,18 @@ class GpuObservationAdapter:
         return {s.name for s in self.plan.specs if s.active}|{s["name"] for s in self.plan.image_specs if s["active"]}
 
     def add_observable(self,observable,stream=None):
+        if self.closed or not self.valid:raise RuntimeError("observation adapter is closed or quarantined")
+        self._require_host_sampling('added observable')
         self._enable_host_observables()
-        for compat in self.host_observables.values():compat.add(observable)
+        import copy
+        owners=list(self.host_observables.values())
+        for compat in owners:
+            assert observable.name not in compat.observables,"Observable {} already exists".format(observable.name)
+        # Observable clocks and held readings belong to one world. Preserve the
+        # supplied object for the first owner and stage independent copies before
+        # publishing the rest; Python functions retain their usual closure identity.
+        copies=[observable]+[copy.deepcopy(observable) for _ in owners[1:]]
+        for compat,value in zip(owners,copies):compat.add(value)
 
     def modify_observable(self,name,attribute,modifier,stream=None):
         from .observable_compatibility import ATTRIBUTES
@@ -452,6 +598,7 @@ class GpuObservationAdapter:
         assert name in self.observation_names,"No valid observable with name {} found. Options are: {}".format(name,self.observation_names)
         if attribute not in ATTRIBUTES:raise ValueError("Invalid observable attribute specified: "+str(attribute))
         if attribute not in ("sampling_rate","enabled","active") or self.host_observables:
+            self._require_host_sampling('custom observable '+str(attribute))
             self._enable_host_observables()
             for compat in self.host_observables.values():compat.modify(name,attribute,modifier)
             return
@@ -464,28 +611,29 @@ class GpuObservationAdapter:
         specs=tuple(replace(s,**change) if s.name==name else s for s in self.plan.specs)
         images=tuple(dict(s,**change) if s["name"]==name else s for s in self.plan.image_specs)
         new_plan=replace(self.plan,specs=specs,image_specs=images)
-        if stream is not None:wp.synchronize_stream(stream)
+        self._synchronize_sampling(stream)
+        write_stream=stream or self.lowdim.last_stream or wp.get_stream(self.device)
         self.valid=False
         try:
-            with (wp.ScopedStream(stream) if stream is not None else nullcontext()):
-                self.lowdim.meta[9]=wp.array([int(s.enabled) for s in specs],dtype=wp.int32,device=self.device)
-                self.lowdim.meta[10]=wp.array([s.period for s in specs],dtype=wp.float64,device=self.device)
+            with wp.ScopedStream(write_stream):
+                self.lowdim.meta[9].assign(np.asarray([int(s.enabled) for s in specs],dtype=np.int32))
+                self.lowdim.meta[10].assign(np.asarray([s.period for s in specs],dtype=np.float64))
                 if self.scene_cache is not None:
-                    self.scene_cache.enabled=wp.array([int(s["enabled"]) for s in images],dtype=wp.int32,device=self.device)
-                    self.scene_cache.periods=wp.array([s["period"] for s in images],dtype=wp.float64,device=self.device)
+                    self.scene_cache.enabled.assign(np.asarray([int(s["enabled"]) for s in images],dtype=np.int32))
+                    self.scene_cache.periods.assign(np.asarray([s["period"] for s in images],dtype=np.float64))
                 if attribute=="enabled":
                     for i,s in enumerate(specs):
                         if s.name==name:
                             elapsed=self.lowdim.elapsed.numpy().reshape(self.nworld,-1);elapsed[:,i]=0
                             observed=self.lowdim.observed.numpy().reshape(self.nworld,-1)
                             at=self.plan.offsets[name];observed[:,at:at+s.width]=0
-                            wp.copy(self.lowdim.elapsed,wp.array(elapsed.reshape(-1),dtype=wp.float64,device=self.device))
-                            wp.copy(self.lowdim.observed,wp.array(observed.reshape(-1),dtype=wp.float64,device=self.device))
+                            self.lowdim.elapsed.assign(elapsed.reshape(-1))
+                            self.lowdim.observed.assign(observed.reshape(-1))
                     if self.scene_cache is not None:
                         for i,s in enumerate(images):
                             if s["name"]==name:
                                 scene=self.scene_cache;elapsed=scene.elapsed.numpy().reshape(self.nworld,-1);elapsed[:,i]=0
-                                wp.copy(scene.elapsed,wp.array(elapsed.reshape(-1),dtype=wp.float64,device=self.device))
+                                scene.elapsed.assign(elapsed.reshape(-1))
                                 generations=scene.generation.numpy().reshape(self.nworld,-1)
                                 for world in range(self.nworld):
                                     scene.images[world][i]=np.zeros(s["shape"])
@@ -493,5 +641,7 @@ class GpuObservationAdapter:
                 self.plan=new_plan;self.lowdim.plan=new_plan;self.lowdim._packing_recipe=None
                 if self.scene_cache is not None:self.scene_cache.specs=images
         except Exception:raise
-        if stream is not None:wp.synchronize_stream(stream)
+        self.lowdim.last_stream=write_stream
+        if self.scene_cache is not None:self.scene_cache.last_stream=write_stream
+        self._synchronize_sampling(write_stream)
         self.valid=True

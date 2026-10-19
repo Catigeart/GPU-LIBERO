@@ -46,6 +46,19 @@ import warp as wp
 
 MATHDX_ROOT = '/srv/libero-split-receive-20261004-r01/dependencies/mathdx-cuda12/nvidia-mathdx-25.12.1-cuda12/nvidia/mathdx/25.12'
 _strict_receipts_scope=ContextVar('strict_build_receipts',default=None)
+_world_guard_scope=ContextVar('native_plan_world_guard',default=None)
+
+
+@contextmanager
+def world_guard_scope(guard, prefixes):
+    """Cold-only guard for explicitly named kernel families, including tiles.
+
+    The generated kernel returns before scratch or public outputs
+    are touched. This is stronger than passing an inactive arithmetic mask.
+    """
+    token=_world_guard_scope.set((guard,tuple(prefixes)))
+    try:yield
+    finally:_world_guard_scope.reset(token)
 
 @contextmanager
 def strict_build_receipts_scope(enabled=True):
@@ -165,6 +178,8 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                     (library and file_record(library)!=identity['archive'])):
                 raise RuntimeError('CUDA toolchain/archive changed during admission')
         def build_completed_bytes():
+            from libero.gpu.host.build.compilation import require_compilation
+            require_compilation('receipted native CUDA library', target)
             output=[]
             for command in commands:
                 result=subprocess.run(command,capture_output=True,text=True)
@@ -185,6 +200,8 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
             log.write_text('Authorized completed product reused; no compiler build commands executed.\n')
     else:
         with product_lock(cache_folder):
+            from libero.gpu.host.build.compilation import require_compilation
+            require_compilation('receipted native CUDA library', target)
             # This entry issues only a new successful cold compile product.
             # Previously published self-hashed receipts grant no reuse authority.
             output=[]
@@ -286,6 +303,15 @@ def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx
         commands.append([nvcc]+flags+['-shared', str(src), '-o', str(target)])
     log = root/(stem+'.log')
     cache_source = None
+    reused = target.exists()
+    if reused:
+        previous = json.loads(target.with_suffix('.json').read_text())
+        if previous.get('sha256') != digest.hexdigest():
+            raise ValueError('cached native source identity differs')
+        binary_sha = previous.get('binary_sha256')
+        if binary_sha is not None and hashlib.sha256(target.read_bytes()).hexdigest() != binary_sha:
+            raise ValueError('cached native binary differs')
+        cache_source = str(target)
     if not target.exists():
         # Names distinguish plans and reports; the generic launch ABI depends
         # only on the complete source/dependency/policy digest. Reuse an
@@ -293,6 +319,10 @@ def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx
         cache_roots=[root]
         explicit_cache=os.environ.get('LIBERO_CUDA_FUSION_CACHE')
         if explicit_cache: cache_roots.append(Path(explicit_cache).resolve())
+        from libero.gpu.host.runtime.core.product_paths import current_build_project, cache_root
+        project = current_build_project()
+        if project is not None:
+            cache_roots.extend((project['root'] / 'cuda', cache_root() / 'builds'))
         candidates=sorted({path for folder in cache_roots for path in folder.rglob('*_'+key+'.so')})
         for candidate in candidates:
             metadata = candidate.with_suffix('.json')
@@ -301,10 +331,16 @@ def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx
             except (OSError, ValueError):
                 continue
             if identical:
+                recorded = json.loads(metadata.read_text()).get('binary_sha256')
+                if recorded is not None and hashlib.sha256(candidate.read_bytes()).hexdigest() != recorded:
+                    continue
                 shutil.copyfile(candidate,target)
                 cache_source = str(candidate)
+                reused = True
                 break
     if not target.exists():
+        from libero.gpu.host.build.compilation import require_compilation
+        require_compilation('native CUDA library', target)
         output = []
         for command in commands:
             result = subprocess.run(command, capture_output=True, text=True)
@@ -315,7 +351,9 @@ def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx
     manifest = {'name': name, 'sha256': digest.hexdigest(), 'source': str(src),
                 'library': str(target), 'compile_commands': commands,
                 'fma': True, 'fast_math': False, 'architecture': dev.arch,
-                'cache_source':cache_source}
+                'cache_source':cache_source,
+                'binary_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),
+                'compile_commands_executed':[] if reused else commands}
     (root/(stem+'.json')).write_text(json.dumps(manifest, indent=2))
     return ct.CDLL(str(target)), manifest
 
@@ -331,9 +369,14 @@ def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
     options=dict(device=device,mathdx=mathdx,defines=defines,bridges=bridges,
                  include_dirs=include_dirs,extra_flags=extra_flags)
     if enabled:options['required_symbols']=required_symbols
-    loaded,manifest=function(name,source,build_root,**options)
+    from libero.gpu.host.runtime.core.product_paths import build_unit_lock
+    with build_unit_lock(build_root):
+        loaded,manifest=function(name,source,build_root,**options)
     if enabled and not all(hasattr(loaded,symbol) for symbol in required_symbols):
         raise RuntimeError('native compiled launcher symbol ABI missing')
+    from libero.gpu.host.runtime.core.product_paths import record_build
+    record_build('native-cuda', manifest.get('sha256', name),
+                 manifest.get('compile_commands_executed', manifest['compile_commands']))
     return loaded,manifest
 
 
@@ -342,6 +385,9 @@ class NativePlan:
                  defines=None, mathdx=False, argument_specs=None, device=None,
                  bridges=(), extra_flags=(), track_execution=True, world_guard=None,
                  dynamic_shared_bytes=0, stage_barriers=None, work_tiles=1):
+        scoped_guard=_world_guard_scope.get()
+        if world_guard is None and scoped_guard is not None and name.startswith(scoped_guard[1]):
+            world_guard=scoped_guard[0]
         if not isinstance(nworld, int) or nworld < 1 or block_size not in (32,64,128,256):
             raise ValueError('positive world count and block size 32/64/128/256 required')
         from libero.gpu.host.runtime.core.tiled_execution import validate_tile_stages

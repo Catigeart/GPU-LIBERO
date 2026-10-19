@@ -4,6 +4,7 @@ namespace collision_cuda {
 
 // Local raw + pair parameters produce the final contact record. Returns the
 // same frame error as ordered assembly, before its capacity check.
+template<int Fields=65>
 __device__ inline bool cf_candidate_contact(const double* raw,const PairParams& p,double* f,int* flags){
     double x0=raw[4],x1=raw[5],x2=raw[6];
     const double nx=cf_norm3(x0,x1,x2);
@@ -20,7 +21,7 @@ __device__ inline bool cf_candidate_contact(const double* raw,const PairParams& 
     f[4]=x0;f[5]=x1;f[6]=x2;f[7]=y0;f[8]=y1;f[9]=y2;f[10]=z0;f[11]=z1;f[12]=z2;
     f[13]=p.f[11];
     libero_vec::copy_serial(p.f+12,f+14,14);
-    libero_vec::fill_serial(f+28,37,0.0);
+    if(Fields>28)libero_vec::fill_serial(f+28,Fields-28,0.0);
     for(int k=0;k<3;++k)flags[k]=p.flags[k];
     flags[3]=raw[0]<p.f[11]?0:1;flags[4]=-1;
     return true;
@@ -29,7 +30,8 @@ __device__ inline bool cf_candidate_contact(const double* raw,const PairParams& 
 // One lane owns a call. Compatible fixed-capacity public diagnostics are
 // materialized, while kept raw data feeds pair mixing and final contacts
 // directly. A small deterministic prefix separates the two parallel passes.
-__device__ void cf_dedup_params(int w,
+template<bool Diagnostics>
+__device__ void cf_dedup_params_impl(int w,
     double* raw,int* raw_count,int* call_count,int* active,int* types,int* route,int* geom_type,int ngeom,
     double* compact,int* compact_count,int* keep_index,int* status,int pairs,
     double* usermargin,int* counts,const int* priority,const int* condim,
@@ -38,7 +40,8 @@ __device__ void cf_dedup_params(int w,
     const int* pair_dim,const double* pair_friction,const double* pair_solref,const double* pair_solreffriction,
     const double* pair_solimp,const double* o_margin,const double* o_solref,const double* o_solimp,
     const int* override_enabled,double* out_f,int* out_i,int slots,int npair,
-    int* offsets,int* frame_error,double* candidate_f,int* candidate_i,int capacity) {
+    int* offsets,int* frame_error,double* candidate_f,int* candidate_i,int capacity,
+    const double* cached_f=nullptr,const int* cached_i=nullptr,int cached_geoms=0) {
     // Capacity diagnostics retain their exact tails, but tail initialization
     // no longer runs one 50-record serial copy loop per unused call.
     const int active_value=active[w],declared_calls=call_count[w];
@@ -46,12 +49,15 @@ __device__ void cf_dedup_params(int w,
         (declared_calls<0||declared_calls>pairs?2:0)):0;
     const int effective_calls=active_value==1&&declared_calls>=0&&declared_calls<=pairs?
         declared_calls:0;
-    for(int local=threadIdx.x;local<pairs;local+=blockDim.x){
+    const int materialized_calls=Diagnostics?pairs:effective_calls;
+    for(int local=threadIdx.x;local<materialized_calls;local+=blockDim.x){
         const int call=w*pairs+local;
         status[call]=initial_status;compact_count[call]=0;frame_error[call]=-1;
     }
-    libero_vec::fill_block(keep_index+w*pairs*50,size_t(pairs)*50,-1);
-    libero_vec::fill_block(compact+w*pairs*500,size_t(pairs)*500,0.0);
+    if(Diagnostics){
+        libero_vec::fill_block(keep_index+w*pairs*50,size_t(pairs)*50,-1);
+        libero_vec::fill_block(compact+w*pairs*500,size_t(pairs)*500,0.0);
+    }
     __syncthreads(); // initialization must finish before live rows overwrite it
     for(int local=threadIdx.x;local<effective_calls;local+=blockDim.x){
         const int call=w*pairs+local,g1=route[call*200],g2=route[call*200+1];
@@ -71,7 +77,7 @@ __device__ void cf_dedup_params(int w,
         status[call]=s;compact_count[call]=out;
         for(int r=0;r<out;++r){
             const int row=call*50+r;keep_index[row]=kept[r];
-            libero_vec::copy_serial(raw+(call*50+kept[r])*10,compact+row*10,10);
+            if(Diagnostics)libero_vec::copy_serial(raw+(call*50+kept[r])*10,compact+row*10,10);
         }
     }
     __syncthreads();
@@ -119,9 +125,78 @@ __device__ void cf_dedup_params(int w,
     __syncthreads();
     // All unused calls have zero count; their compatible offsets equal the
     // saturated sum of live calls. Materialize them without collective scans.
-    for(int local=effective_calls+threadIdx.x;local<pairs;local+=blockDim.x)
+    for(int local=effective_calls+threadIdx.x;local<materialized_calls;local+=blockDim.x)
         offsets[w*pairs+local]=cf_prefix_carry;
     __syncthreads();
+    if(!Diagnostics){
+        // Bound shared storage independently of world count and call capacity.
+        // One lane mixes each nonempty call, then all lanes consume a compact
+        // list of observed contact rows. Include each call's first overflowing
+        // row: frame failure must precede that call's capacity warning.
+        __shared__ PairParams live_params[32];
+        __shared__ int live_prefix[33],live_rows[32],live_error[32];
+        for(int tile=0;tile<effective_calls;tile+=32){
+            const int local=tile+threadIdx.x,call=w*pairs+local;
+            if(threadIdx.x<32){
+                int rows=0;
+                if(local<effective_calls){
+                    const int nr=compact_count[call];
+                    if(nr>0&&active[w]&&counts[w]>=0&&counts[w]<=slots){
+                        const int* rr=route+call*200;
+                        PairParams pp;
+                        if(cached_geoms==ngeom&&rr[0]>=0&&rr[0]<ngeom&&rr[1]>=0&&rr[1]<ngeom&&
+                                rr[2]==-1&&rr[3]==0){
+                            const int entry=rr[0]*ngeom+rr[1];
+                            libero_vec::fill_serial(pp.f,10,0.0);
+                            libero_vec::copy_serial(cached_f+entry*16,pp.f+10,16);
+                            pp.flags[0]=cached_i[entry*2];pp.flags[1]=rr[0];pp.flags[2]=rr[1];
+                            pp.flags[3]=-1;pp.flags[4]=cached_i[entry*2+1];pp.route_valid=true;
+                        }else pp=cf_pair_params(rr[0],rr[1],rr[2],rr[3],usermargin[call*50],
+                            priority,condim,geom_margin,geom_gap,geom_friction,geom_solmix,geom_solref,geom_solimp,
+                            pair_margin,pair_gap,pair_dim,pair_friction,pair_solref,pair_solreffriction,pair_solimp,
+                            o_margin,o_solref,o_solimp,override_enabled,ngeom,npair);
+                        live_params[threadIdx.x]=pp;
+                        // Ordered replay only consumes the parameter error.
+                        for(int r=0;r<nr;++r)out_i[(call*50+r)*5+4]=pp.flags[4];
+                        if(!pp.flags[4]){
+                            rows=min(nr,max(0,counts[w]-local*50));
+                            const int remaining=capacity-offsets[call];
+                            if(remaining<rows)rows=remaining+1;
+                        }
+                    }else if(nr>0){
+                        for(int r=0;r<nr;++r)out_i[(call*50+r)*5+4]=1;
+                    }
+                }
+                live_rows[threadIdx.x]=rows;live_error[threadIdx.x]=50;
+            }
+            __syncthreads();
+            if(threadIdx.x==0){
+                live_prefix[0]=0;
+                for(int j=0;j<32;++j)live_prefix[j+1]=live_prefix[j]+live_rows[j];
+            }
+            __syncthreads();
+            for(int row=threadIdx.x;row<live_prefix[32];row+=blockDim.x){
+                int lo=0,hi=32;
+                while(lo<hi){const int mid=(lo+hi)/2;
+                    if(live_prefix[mid+1]<=row)lo=mid+1;else hi=mid;}
+                const int call=w*pairs+tile+lo,r=row-live_prefix[lo];
+                const int kept=keep_index[call*50+r],base=offsets[call];
+                double contact[10];
+                if(kept>=0)libero_vec::copy_serial(raw+(call*50+kept)*10,contact,10);
+                else libero_vec::fill_serial(contact,10,0.0);
+                const int target=w*capacity+base+r;
+                const bool fits=base+r<capacity;
+                if(!cf_candidate_contact<28>(contact,live_params[lo],
+                        fits?candidate_f+target*28:nullptr,fits?candidate_i+target*5:nullptr))
+                    atomicMin(live_error+lo,r);
+            }
+            __syncthreads();
+            if(threadIdx.x<32&&local<effective_calls)
+                frame_error[call]=live_error[threadIdx.x]<50?live_error[threadIdx.x]:-1;
+            __syncthreads();
+        }
+        return;
+    }
     // Eight lanes share one call's immutable pair mixing. The physical
     // prefix remains bounded by nr/capacity, while all 50 diagnostic rows
     // (including unused tails) are materialized by independent row owners.
@@ -129,9 +204,9 @@ __device__ void cf_dedup_params(int w,
     __shared__ PairParams cf_row_params[32];
     const int row_group=threadIdx.x/8,row_lane=threadIdx.x&7;
     const int row_groups=blockDim.x/8;
-    for(int tile=0;tile<pairs;tile+=row_groups){
+    for(int tile=0;tile<materialized_calls;tile+=row_groups){
         const int local=tile+row_group,call=w*pairs+local;
-        if(row_lane==0&&local<pairs&&active[w]&&counts[w]>=0&&counts[w]<=slots){
+        if(row_lane==0&&local<materialized_calls&&active[w]&&counts[w]>=0&&counts[w]<=slots){
             const int* rr=route+call*200;
             cf_row_params[row_group]=cf_pair_params(rr[0],rr[1],rr[2],rr[3],usermargin[call*50],
                 priority,condim,geom_margin,geom_gap,geom_friction,geom_solmix,geom_solref,geom_solimp,
@@ -140,7 +215,7 @@ __device__ void cf_dedup_params(int w,
         }
         __syncthreads();
         int first_frame_error=50;
-        if(local<pairs){
+        if(local<materialized_calls){
         const int base=offsets[call],nr=compact_count[call];
         const PairParams& pp=cf_row_params[row_group];
         // Frame math keeps one row per lane; diagnostic stores below use
@@ -164,7 +239,7 @@ __device__ void cf_dedup_params(int w,
                 }
             }
         }
-        for(int r=row_lane;r<50;r+=8){
+        if(Diagnostics)for(int r=row_lane;r<50;r+=8){
             const int row=call*50+r,q=local*50+r;
             double* dst=out_f+row*26;
             if(active[w]&&counts[w]>=0&&counts[w]<=slots&&q<counts[w]){
@@ -175,7 +250,7 @@ __device__ void cf_dedup_params(int w,
                 libero_vec::copy_serial(pp.f+10,dst+10,16);
             }else libero_vec::fill_serial(dst,26,0.0);
         }
-        for(int field=row_lane;field<50*5;field+=8){
+        for(int field=row_lane;field<(Diagnostics?50:nr)*5;field+=8){
             const int r=field/5,k=field%5,row=call*50+r,q=local*50+r;
             int value=k<4?-1:0;
             if(active[w]){
@@ -197,15 +272,27 @@ __device__ void cf_dedup_params(int w,
             const int other=__shfl_down_sync(row_mask,first_frame_error,delta,8);
             if(row_lane+delta<8&&other<first_frame_error)first_frame_error=other;
         }
-        if(row_lane==0&&local<pairs)frame_error[call]=first_frame_error<50?first_frame_error:-1;
+        if(row_lane==0&&local<materialized_calls)frame_error[call]=first_frame_error<50?first_frame_error:-1;
         // Prevent one tile from replacing shared parameters still in use.
         __syncthreads();
     }
 }
 
+// Both schedules share the same contact math, ordered prefix and rejection
+// rules. Only the diagnostic form materializes unused capacity and params_f.
+template<class... Args>
+__device__ __forceinline__ void cf_dedup_params(Args... args){
+    cf_dedup_params_impl<true>(args...);
+}
+template<class... Args>
+__device__ __forceinline__ void cf_dedup_params_live(Args... args){
+    cf_dedup_params_impl<false>(args...);
+}
+
 // Candidate math is already complete. Keep the original ordered rejection,
 // attempts, per-call overflow and segment sort semantics without loading the
 // public params_f diagnostics or recomputing contact frames.
+template<int Fields=65>
 __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
     double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
@@ -221,7 +308,7 @@ __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,
         const int seg=segment[call];
         if(p==0){current_segment=seg;current_sort=sort_enabled[call];}
         if(seg!=current_segment){
-            if(current_sort)cf_contact_sort(w,start,ncon[w]-start,capacity,geom_type,candidate_f,candidate_i,
+            if(current_sort)cf_contact_sort<Fields>(w,start,ncon[w]-start,capacity,geom_type,candidate_f,candidate_i,
                                                scratch_f,scratch_i,order,order_scratch);
             start=ncon[w];current_segment=seg;current_sort=sort_enabled[call];
         }
@@ -233,7 +320,7 @@ __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,
             ++ncon[w];++appended[call];
         }
     }
-    if(current_sort)cf_contact_sort(w,start,ncon[w]-start,capacity,geom_type,candidate_f,candidate_i,
+    if(current_sort)cf_contact_sort<Fields>(w,start,ncon[w]-start,capacity,geom_type,candidate_f,candidate_i,
                                        scratch_f,scratch_i,order,order_scratch);
 }
 
@@ -242,14 +329,16 @@ __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,
 // A failed call returns uniformly before sorting its current partial segment,
 // exactly as the scalar prefix does. Shared commands live until the sort and
 // all its scratch writes finish; there is no leader-only collective call.
+template<int Fields=65>
 __device__ void cf_assemble_candidates_block_legacy(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
     double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
     int* appended,int* warnings,int* status,int pairs,int capacity,int* order,int* order_scratch){
     __shared__ int replay_n,replay_done,replay_start,replay_segment,replay_sort,replay_cursor;
     __shared__ int replay_sort_start,replay_sort_length,replay_do_sort;
-    // Every call owns its diagnostic counters; the leader owns world state.
-    for(int p=threadIdx.x;p<pairs;p+=blockDim.x)
+    // Live diagnostics have no contract on unused call slots.
+    const int clear_calls=Fields==28?max(0,min(call_count[w],pairs)):pairs;
+    for(int p=threadIdx.x;p<clear_calls;p+=blockDim.x)
         attempts[w*pairs+p]=appended[w*pairs+p]=0;
     if(threadIdx.x==0){
         ncon[w]=warnings[w]=status[w]=0;
@@ -300,7 +389,7 @@ __device__ void cf_assemble_candidates_block_legacy(int w,int* compact_count,int
         }
         __syncthreads();
         if(replay_done==1)return;
-        if(replay_do_sort)cf_contact_sort_block(w,replay_sort_start,replay_sort_length,capacity,
+        if(replay_do_sort)cf_contact_sort_block<Fields>(w,replay_sort_start,replay_sort_length,capacity,
             geom_type,candidate_f,candidate_i,scratch_f,scratch_i,order,order_scratch);
         __syncthreads();
         if(replay_done==2)return;
@@ -314,6 +403,7 @@ __device__ void cf_assemble_candidates_block_legacy(int w,int* compact_count,int
 // Summarize it in parallel, then preserve the original ordered prefix with
 // O(1) arithmetic per call. The first overflowing row is still checked before
 // warnings/attempts change; error precedence and segment sorting are unchanged.
+template<int Fields=65>
 __device__ void cf_assemble_candidates_block(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
     double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
@@ -321,7 +411,7 @@ __device__ void cf_assemble_candidates_block(int w,int* compact_count,int* call_
     const int n=call_count[w];
     if(LIBERO_CF_REPLAY_AGGREGATE_MIN_CALLS<=0||n<LIBERO_CF_REPLAY_AGGREGATE_MIN_CALLS||
             n>pairs||active[w]!=1||blockDim.x>256){
-        cf_assemble_candidates_block_legacy(w,compact_count,call_count,active,segment,sort_enabled,
+        cf_assemble_candidates_block_legacy<Fields>(w,compact_count,call_count,active,segment,sort_enabled,
             geom_type,params_i,dedup_status,frame_error,candidate_f,candidate_i,scratch_f,scratch_i,
             ncon,attempts,appended,warnings,status,pairs,capacity,order,order_scratch);
         return;
@@ -329,7 +419,8 @@ __device__ void cf_assemble_candidates_block(int w,int* compact_count,int* call_
     __shared__ int first_row[256],first_code[256];
     __shared__ int cursor,done,start,current_segment,current_sort,summary_base,prepare;
     __shared__ int do_sort,sort_start,sort_length;
-    for(int p=threadIdx.x;p<pairs;p+=blockDim.x)
+    const int clear_calls=Fields==28?n:pairs;
+    for(int p=threadIdx.x;p<clear_calls;p+=blockDim.x)
         attempts[w*pairs+p]=appended[w*pairs+p]=0;
     if(threadIdx.x==0){
         ncon[w]=warnings[w]=status[w]=0;cursor=done=start=0;
@@ -388,11 +479,17 @@ __device__ void cf_assemble_candidates_block(int w,int* compact_count,int* call_
         }
         __syncthreads();
         if(done==1)return;
-        if(do_sort)cf_contact_sort_block(w,sort_start,sort_length,capacity,geom_type,
+        if(do_sort)cf_contact_sort_block<Fields>(w,sort_start,sort_length,capacity,geom_type,
             candidate_f,candidate_i,scratch_f,scratch_i,order,order_scratch);
         __syncthreads();
         if(done==2)return;
     }
 }
+// The private live record omits mu/H; public commit writes their required zeros.
+template<class... Args>
+__device__ __forceinline__ void cf_assemble_candidates_live(Args... args){
+    cf_assemble_candidates_block<28>(args...);
+}
+
 }
 

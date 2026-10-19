@@ -5,7 +5,7 @@ No Warp ModuleBuilder, generated arithmetic, array descriptors or Warp C++
 headers are used. The old lowered core remains an independent reference.
 """
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
-from libero.gpu.host.runtime.core.product_paths import nvcc_path
+from libero.gpu.host.runtime.core.product_paths import nvcc_path, serialized_build
 import ctypes as ct
 import hashlib
 import inspect
@@ -106,13 +106,74 @@ def _expand(kernel, values):
     return result
 
 
+def _head_metadata_source(metadata, bind, ws, heads, mutable_arrays, *,
+                          diagnostic_profile, execution_config, has_blas,
+                          combined_entry):
+    """Bind optional ordinal operands without moving the S/N callback boundary.
+
+    This cold helper emits only pointer ABI and a post-validation gate. It does
+    not treat producer validity flags as an admission for current N contents.
+    """
+    result=dict(arguments=['nullptr']*3,gate='',shared='',enabled=False,
+                fallback_reason=None)
+    if metadata is None:return result
+    if (diagnostic_profile!='fast' or ws.nworld!=8 or
+            execution_config.strategy!='single_cta' or not has_blas or not combined_entry):
+        raise ValueError('ordinal head metadata requires fast N=8 single_cta cuBLASDx combined entry')
+    if (metadata.nworld,metadata.rows,metadata.contacts,metadata.nv)!=(
+            ws.nworld,ws.rows,ws.contacts,ws.qacc.shape[1]):
+        raise ValueError('ordinal head metadata dimensions differ from Newton')
+    metadata.validate()
+    if any(str(metadata[key].device)!=str(ws.device) for key in metadata):
+        raise ValueError('ordinal head metadata device differs from Newton')
+    pitches=dict(source_counts=5,source_ncon=1,compact_heads=ws.rows,
+        compact_count=1,compact_valid=1,head_type=ws.rows,head_id=ws.rows,
+        head_dim=ws.rows,head_mu=ws.rows,head_friction=5*ws.rows,valid=1)
+    if dict(metadata.world_strides)!=pitches:
+        raise ValueError('ordinal head metadata world pitches differ')
+    # Original callers may admit aliases. Only this optional reuse route is
+    # narrowed: a mutable N/S07 owner could otherwise change a compared operand
+    # later in the same invocation. Aliases retain the original nullptr path.
+    readonly=('J','aref','D','R','loss','efc_type','efc_id','cone_dim','cone_mu',
+              'cone_friction','qM','qfrc_smooth','qacc_smooth','nefc','ne','nf','ncon',
+              'contact_dim','contact_mu','contact_friction')
+    protected=[getattr(ws,key) for key in readonly]+[metadata[key] for key in pitches]
+    def span(value):
+        return value.ptr,value.ptr+value.size*int(value.strides[-1])
+    for value in mutable_arrays:
+        lo,hi=span(value)
+        for operand in protected:
+            left,right=span(operand)
+            if lo<right and left<hi:
+                result['fallback_reason']='mutable Newton/S07 owner overlaps an ordinal or current input owner'
+                return result
+    pointer={key:bind(metadata[key],'ordinal_'+key,world_stride=pitch)
+             for key,pitch in pitches.items()}
+    original=[bind(getattr(ws,key),key) for key in
+        ('active','status','count','nefc','ne','nf','ncon','efc_type','efc_id',
+         'contact_dim','contact_mu','contact_friction','cone_dim','cone_mu','cone_friction')]
+    original.insert(2,'&invariant_valid')
+    original.extend(bind(heads[key],key) for key in ('group_head','head_rows','head_count'))
+    order=('source_counts','source_ncon','compact_heads','compact_count','compact_valid',
+           'head_type','head_id','head_dim','head_mu','head_friction','valid')
+    gate_arguments=original+[pointer[key] for key in order]+[
+        '&ordinal_head_selected','ROWS',str(ws.contacts),'NV']
+    result.update(enabled=True,
+        arguments=['(ordinal_head_selected?'+pointer[key]+':nullptr)'
+                   for key in ('head_dim','head_mu','head_friction')],
+        gate='constraint_head_metadata_gate('+','.join(gate_arguments)+');',
+        shared='__shared__ int ordinal_head_selected;\nif(threadIdx.x==0)ordinal_head_selected=0;\n')
+    return result
+
+
 class HandwrittenCudaCore(PersistentCudaCore):
+    @serialized_build
     def __init__(self, solver, build_root, *, block_size=None, shared_state=True,
                  cholesky_backend='source', mathdx_root=None, blas_backend=None,
                  diagnostic_profile='compatible',adapter=None,external_prefix=None,external_tail=None,
-                 phase_profiling=False, execution_config=None,
+                 phase_profiling=False, phase_trace_capacity=0, execution_config=None,
                  cone_hessian_strategy='auto',cone_batch_threshold=None,
-                 rank_rebuild_threshold=None,newton_islands='off'):
+                 rank_rebuild_threshold=None,newton_islands='off',head_metadata=None):
         self.execution_config=newton_execution_config(block_size,execution_config)
         block_size=self.execution_config.block_threads
         ws=solver.ws
@@ -131,6 +192,11 @@ class HandwrittenCudaCore(PersistentCudaCore):
         self.diagnostic_profile=diagnostic_profile
         self.adapter=adapter
         self.phase_profiling=bool(phase_profiling)
+        if type(phase_trace_capacity) is not int or phase_trace_capacity<0:
+            raise ValueError('nonnegative integer phase trace capacity required')
+        if phase_trace_capacity and not self.phase_profiling:
+            raise ValueError('phase trace requires explicit phase profiling')
+        self.phase_trace_capacity=phase_trace_capacity
         if diagnostic_profile=='fast':solver.configure_diagnostic_profile('fast')
         elif getattr(solver,'diagnostic_profile','compatible')!='compatible':raise ValueError('compatible core requires compatible solver history')
         if block_size not in (32,64,128) or ws.maxiter<1:
@@ -165,6 +231,7 @@ class HandwrittenCudaCore(PersistentCudaCore):
         effective_cone_strategy=self.hessian_algorithm_configuration['cone_strategy']
         budget=newton_shared_budget(nv,cholesky_backend=cholesky_backend,blas_backend=blas_backend,
             prefix_static_bytes=int((external_prefix or {}).get('static_shared_bytes',0))+
+                (4 if head_metadata is not None else 0)+
                 (phase_profile.STATIC_SHARED_BYTES if self.phase_profiling else 0),
             tail_static_bytes=int((external_tail or {}).get('static_shared_bytes',0)),
             newton_islands=newton_islands)
@@ -240,14 +307,32 @@ class HandwrittenCudaCore(PersistentCudaCore):
         if newton_islands=='exact':
             self.islands_diagnostic=wp.zeros((ws.nworld,8),dtype=wp.int32,device=ws.device)
             islands_argument=bind(self.islands_diagnostic,'islands_diagnostic')
-        head_metadata=(external_prefix or {}).get('newton_head_metadata')
-        head_arguments=['nullptr']*3
+        self.head_metadata=head_metadata
         if head_metadata is not None:
-            gate=bind(head_metadata['valid'],'head_cone_valid',world_stride=1)
-            head_arguments=[]
-            for key,stride in (('head_dim',ws.rows),('head_mu',ws.rows),('head_friction',5*ws.rows)):
-                pointer=bind(head_metadata[key],key,world_stride=stride)
-                head_arguments.append('('+gate+'[0]?'+pointer+':nullptr)')
+            from .head_metadata import HeadMetadata
+            if not isinstance(head_metadata,HeadMetadata):raise TypeError('sealed HeadMetadata descriptor required')
+            self.external_binding_validators+=(head_metadata.validate,)
+        readonly={'J','aref','D','R','loss','efc_type','efc_id','cone_dim','cone_mu',
+            'cone_friction','qM','qfrc_smooth','qacc_smooth','nefc','ne','nf','ncon',
+            'contact_dim','contact_mu','contact_friction','madr','parentid','simplenum','model_scalars',
+            'mass_plan_offsets','mass_plan_coefficient','mass_plan_source','mass_plan_assign',
+            'mass_plan_madr_snapshot','mass_plan_parent_snapshot','mass_plan_simple_snapshot','smooth_qacc'}
+        mutable=[value for key,value in vars(ws).items()
+                 if isinstance(value,wp.array) and key not in readonly]
+        readonly_views={'_J_flat','_aref_flat','_D_flat','_R_flat','_loss_flat',
+            '_type_flat','_id_flat','_dim_flat','_mu_flat','_fr_flat',
+            '_cone_dim_flat','_cone_mu_flat','_cone_fr_flat','_qM_flat','_qacc_smooth_flat'}
+        mutable.extend(value for key,value in vars(solver).items()
+                       if isinstance(value,wp.array) and key not in readonly_views)
+        mutable.extend((self.constraint_group_heads,self.constraint_hessian_owner,
+            self.constraint_head_rows,self.constraint_head_count,self.constraint_tile_head_offset,
+            self.constraint_typed_head_rows,self.constraint_typed_head_offsets))
+        head_source=_head_metadata_source(head_metadata,bind,ws,
+            dict(group_head=self.constraint_group_heads,head_rows=self.constraint_head_rows,
+                 head_count=self.constraint_head_count),mutable,
+            diagnostic_profile=diagnostic_profile,execution_config=self.execution_config,
+            has_blas=use_blas,combined_entry=adapter is not None)
+        head_arguments=head_source['arguments']
         mass_plan=[]
         for key in ('mass_plan_offsets','mass_plan_coefficient','mass_plan_source','mass_plan_assign'):
             a=getattr(ws,key,None)
@@ -261,6 +346,7 @@ class HandwrittenCudaCore(PersistentCudaCore):
 
         calls={k:[] for k in ('prefix','loop','tail')}
         recorded_tail={}
+        head_gate_inserted=False
         tape_keys={'_tape_ls_input','_parallel_tape_ls_buffers','_tape_commit'}
         for mode,kernel,dim,args in stages:
             if kernel=='S07':
@@ -329,7 +415,14 @@ class HandwrittenCudaCore(PersistentCudaCore):
             else:code=f'for(int local=threadIdx.x;local<{perworld};local+=blockDim.x) {fn}(local,'+','.join(bound)+');'
             if self.phase_profiling:code=phase_profile.wrap_stage(code,kernel.key,mode)
             calls[mode].append(code+'\n__syncthreads();')
+            if kernel.key=='_update' and head_source['enabled'] and not head_gate_inserted:
+                if mode!='prefix':raise ValueError('ordinal metadata gate requires an ordinary prefix update')
+                # The first call used nullptr operands: only its completed
+                # original validation/list construction can admit the late gate.
+                calls[mode].append(head_source['gate']+'\n__syncthreads();')
+                head_gate_inserted=True
             if mode=='loop' and kernel.key in tape_keys:recorded_tail[kernel.key]=bound
+        if head_source['enabled'] and not head_gate_inserted:raise ValueError('ordinal metadata prefix update missing')
         # S07 is already handwritten CUDA. Bind its pointer ABI to local views.
         ls_fields=[]
         byptr={value.ptr:value for owner in (ws,solver) for value in vars(owner).values() if isinstance(value,wp.array)}
@@ -399,8 +492,30 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             for name in PUBLIC_FIELDS:
                 work=getattr(ws,name);canonical=adapter._canonical[name]
                 dst=bind(work,name);src=bind(canonical,'canonical_'+name);stride=work.size//ws.nworld
-                adapter_begin.append(f'libero_newton_io::copy_block({src},{dst},{stride});')
-                adapter_commit.append(f'libero_newton_io::copy_block({dst},{src},{stride});')
+                # Public row tails are held by prefix publication, not by the
+                # private seed. Clamp before validation so malformed counts can
+                # never turn the entry copy into an out-of-bounds access.
+                seed_extent=str(stride)
+                if diagnostic_profile=='fast':
+                    if name in ('force','state'):
+                        seed_extent=f'max(0,min({local(ws,"nefc")}[0],{stride}))'
+                    elif name in ('solver_stats_f','solver_stats_i'):
+                        # stats_stop overwrites complete records before commit;
+                        # base/iteration reset to zero in this combined entry.
+                        seed_extent=None
+                if seed_extent is not None:
+                    adapter_begin.append(f'libero_newton_io::copy_block({src},{dst},{seed_extent});')
+                # Publication has checked nefc. Records outside these extents
+                # retain their canonical bytes without reading private tails.
+                extent=str(stride)
+                if name in ('force','state'):
+                    extent=f'{local(ws,"nefc")}[0]'
+                elif name in ('solver_stats_f','solver_stats_i'):
+                    # The entry resets base=0. iteration counts complete stats
+                    # records; alpha==0 and empty entries can write no records.
+                    width=3 if name=='solver_stats_f' else 4
+                    extent=f'{width}*min({local(ws,"iteration")}[0],1000)'
+                adapter_commit.append(f'libero_newton_io::copy_block({dst},{src},{extent});')
                 seeded.add(work.ptr)
             reset=[f'{local(ws,name)}[0]=0;' for name in RESET_INT+RESET_FLOAT]
             reset.extend([f'{local(ws,"error_item")}[0]=-1;',f'{local(ws,"stage")}[0]=1;',
@@ -441,6 +556,26 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         if self.phase_profiling:
             self.phase_profile_values=wp.zeros((ws.nworld,len(phase_profile.PHASES),2),dtype=wp.int64,device=ws.device)
             profile_pointer=bind(self.phase_profile_values,'phase_profile_values',owner_only=True)
+            if self.phase_trace_capacity:
+                self.phase_trace_fields=list(phase_profile.TRACE_WORKSPACE_FIELDS)
+                metric_operands=[bind(getattr(ws,key),key)+'[0]'
+                                 for key in phase_profile.TRACE_WORKSPACE_FIELDS]
+                for name,width in (('potrf_diagnostic',4),('blas_diagnostic',7),
+                                   ('hessian_algorithm_diagnostic',8)):
+                    value=getattr(self,name,None)
+                    if value is None:continue
+                    pointer=bind(value,name)
+                    for index in range(width):
+                        self.phase_trace_fields.append(name+'.'+str(index))
+                        metric_operands.append(pointer+'['+str(index)+']')
+                self.phase_profile_trace=wp.zeros((ws.nworld,self.phase_trace_capacity,len(phase_profile.PHASES)*2),dtype=wp.int64,device=ws.device)
+                self.phase_trace_counts=wp.zeros(ws.nworld,dtype=wp.int64,device=ws.device)
+                self.phase_trace_metrics=wp.zeros((ws.nworld,self.phase_trace_capacity,len(metric_operands)),dtype=wp.int64,device=ws.device)
+                trace_pointer=bind(self.phase_profile_trace,'phase_profile_trace',owner_only=True)
+                counter_pointer=bind(self.phase_trace_counts,'phase_trace_counts',owner_only=True)
+                metric_pointer=bind(self.phase_trace_metrics,'phase_trace_metrics',owner_only=True)
+                trace_store=phase_profile.trace_store_source(profile_pointer,trace_pointer,
+                    counter_pointer,metric_pointer,self.phase_trace_capacity,metric_operands)
         Param=type('HandwrittenParameters',(ct.Structure,),{'_fields_':[(n,t) for n,t,_ in fields]})
         self.params=Param(*values)
         declarations='\n'.join(f'{kind} {name};' for name,_,kind in fields)
@@ -486,10 +621,15 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         source+=f'static_assert(sizeof(Parameters)=={ct.sizeof(Param)},"pointer ABI");\n'
         entry_decl=',const int* entry_upstream,const int* entry_enabled,const int* entry_publication,const int64_t* entry_plan,int entry_supplied' if adapter is not None else ''
         source+='__global__ void handwritten_newton(const Parameters* p'+entry_decl+'){\nint w=blockIdx.y;\n'
-        if self.phase_profiling:source+='libero_profile_init();\n'
+        if self.phase_profiling:
+            source+='libero_profile_init();\nlibero_profile_begin('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
+            loads=[phase_profile.wrap_stage('\n'.join(loads),'resident_load','prefix')] if loads else []
+            stores=[phase_profile.wrap_stage('\n'.join(stores),'resident_store','tail')] if stores else []
+            adapter_begin=[phase_profile.wrap_stage('\n'.join(adapter_begin),'entry_seed','prefix')] if adapter_begin else []
+            adapter_commit=[phase_profile.wrap_stage('\n'.join(adapter_commit),'public_commit','tail')] if adapter_commit else []
         profile_external_code=[phase_profile.wrap_stage('\n'.join(external_code),'external_prefix','prefix')] if self.phase_profiling and external_code else external_code
         profile_external_tail_code=[phase_profile.wrap_stage('\n'.join(external_tail_code),'external_tail','tail')] if self.phase_profiling and external_tail_code else external_tail_code
-        source+='extern __shared__ __align__(32) double shared[];\n__shared__ int invariant_valid,changed_count;\nif(threadIdx.x==0){invariant_valid=0;changed_count=0;}\n'+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
+        source+='extern __shared__ __align__(32) double shared[];\n__shared__ int invariant_valid,changed_count;\nif(threadIdx.x==0){invariant_valid=0;changed_count=0;}\n'+head_source['shared']+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
         if use_dx:
             # Align the device-library matrix workspace independently of views.
             shared_bytes=((shared_bytes+15)//16)*16
@@ -504,7 +644,10 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         if self.phase_profiling:
             end=source.rfind('\n}\n')
             if end<0:raise RuntimeError('profile kernel end missing')
-            source=source[:end]+f'\nlibero_profile_store(p->{profile_pointer}+w*{len(phase_profile.PHASES)*2});'+source[end:]
+            finish='\nlibero_profile_end('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
+            finish+=f'libero_profile_store(p->{profile_pointer}+w*{len(phase_profile.PHASES)*2});'
+            if self.phase_trace_capacity:finish+='\n'+trace_store
+            source=source[:end]+finish+source[end:]
         if adapter is None:
             source+=f'extern "C" int launch_persistent(const void* p,int worlds,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p);return (int)cudaGetLastError();}}\n'
         else:
@@ -551,6 +694,31 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                               str(dependency/'lib/libcusolverdx.a'),'-o',str(target)]]
         resource_usage=None
         product_result=None
+        dependency_inputs=None
+        dependency_receipt_file=None
+        from libero.gpu.host.runtime.core.product_paths import reuse_newton_binary, record_build, current_build_project
+        if product_authority is None:
+            project = current_build_project()
+            if project is not None and not target.exists() and dependency is not None:
+                from libero.gpu.host.build.aot import migrate_newton_path_alias, collect_newton_dependency_inputs
+                from libero.gpu.host.build.compilation import compilation_allowed
+                if compilation_allowed():
+                    dependency_inputs=collect_newton_dependency_inputs(commands,
+                        architecture=wp.get_device(ws.device).arch,
+                        mathdx_archive=dependency/'lib/libcusolverdx.a')
+                migrate_newton_path_alias(project['root'], target=target, identity=digest,
+                    source=source, bridge_source=bridge_source, stage_sources=stage_sources,
+                    mathdx_archive=dependency/'lib/libcusolverdx.a',
+                    architecture=wp.get_device(ws.device).arch, commands=commands,
+                    launch_command=command, nv=nv, nM=nm, dependency_inputs=dependency_inputs)
+            reuse_newton_binary(target, digest, hashlib.sha256(source.encode()).hexdigest(),
+                                wp.get_device(ws.device).arch)
+            from libero.gpu.host.build.aot import admit_newton_cached_product
+            admit_newton_cached_product(target, identity=digest,
+                source_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                architecture=wp.get_device(ws.device).arch,
+                preserve_root=project['root'] if project is not None else self.root)
+        reused_product = target.exists()
         def verify_completed_product():
             nonlocal resource_usage
             if use_dx:
@@ -578,15 +746,34 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                 outputs={'newton.so':target},architecture=wp.get_device(ws.device).arch,
                 source_closure=stage_sources,verify=verify_completed_product,
                 logs=compile_log,required_symbols=('launch_persistent','launch_entry') if adapter is not None else ('launch_persistent',))
+            record_build('newton-cuda', digest, product_result['compile_commands_executed'])
         else:
-            if not target.exists():
-                logs=[]
-                for invocation in commands:
-                    result=subprocess.run(invocation,capture_output=True,text=True)
-                    logs.append(result.stdout+result.stderr)
-                    (self.root/'compile.log').write_text('\n'.join(logs))
-                    if result.returncode:raise RuntimeError('handwritten CUDA compilation failed: '+str(self.root/'compile.log'))
-            verify_completed_product()
+            try:
+                if not target.exists():
+                    from libero.gpu.host.build.compilation import require_compilation
+                    require_compilation('Newton CUDA library', target)
+                    if dependency is not None and dependency_inputs is None:
+                        from libero.gpu.host.build.aot import collect_newton_dependency_inputs
+                        dependency_inputs=collect_newton_dependency_inputs(commands,
+                            architecture=wp.get_device(ws.device).arch,
+                            mathdx_archive=dependency/'lib/libcusolverdx.a')
+                    logs=[]
+                    for invocation in commands:
+                        result=subprocess.run(invocation,capture_output=True,text=True)
+                        logs.append(result.stdout+result.stderr)
+                        (self.root/'compile.log').write_text('\n'.join(logs))
+                        if result.returncode:raise RuntimeError('handwritten CUDA compilation failed: '+str(self.root/'compile.log'))
+                verify_completed_product()
+                if not reused_product and dependency_inputs is not None:
+                    from libero.gpu.host.build.aot import publish_newton_dependency_receipt
+                    dependency_receipt_file=publish_newton_dependency_receipt(target,
+                        identity=digest, inputs=dependency_inputs)
+            except BaseException:
+                # A failed fresh build/receipt may not become a later exact-key
+                # cache hit. Existing verified binaries are never removed.
+                if not reused_product:target.unlink(missing_ok=True)
+                raise
+            record_build('newton-cuda', digest, () if reused_product else commands)
         self.library=ct.CDLL(str(target));self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
         if adapter is not None:
             self.library.launch_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p]
@@ -614,6 +801,8 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             handwritten=True,warp_cpp_dependency=False,shared_bytes=shared_bytes,shared_fields=[e['name'] for e in selected],
             static_shared_reserve=static_reserve,compiled_resources=resource_usage,resource_budget=budget,
             phase_profiling={'enabled':self.phase_profiling,'phases':list(phase_profile.PHASES) if self.phase_profiling else [],
+                'trace_capacity':self.phase_trace_capacity,
+                'trace_fields':getattr(self,'phase_trace_fields',[]),
                 'clock':'globaltimer nanoseconds','scope':'world-private single CTA invocation; parent/child times overlap',
                 'perturbation':'extra shared/synchronization/register state; never substitute for uninstrumented step timing'},
             cholesky_backend=cholesky_backend,mathdx_root=None if dependency is None else str(dependency),
@@ -630,6 +819,10 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             source_bytes=len(source.encode()),diagnostic_tail_preserved=diagnostic_profile=='compatible',diagnostic_profile=diagnostic_profile,
             adapter_prefix_tail=adapter is not None,external_prefix_stages=len(external_code)//2,
             external_tail_stages=len(external_tail_code)//2,witness_slots=solver.tape_slots,
+            ordinal_head_metadata=dict(requested=head_metadata is not None,enabled=head_source['enabled'],
+                fallback_reason=head_source['fallback_reason'],
+                scope='fast single_cta N=8 cuBLASDx combined entry; qualification candidate',
+                gate='same invocation after first ordinary S04 update; exact current heads/G and both N numeric views'),
             scalar_io=self.scalar_io,
             io_execution_policy={'qualification_shapes':[21,43],
                 'path':'pre_vector_scalar' if self.scalar_io else 'algorithm_packet',
@@ -643,7 +836,13 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             stage_sources=stage_sources)
         self.manifest['library_file']=str(target.resolve())
         self.manifest['library_sha256']=hashlib.sha256(target.read_bytes()).hexdigest()
+        retained_dependency_receipt=target.with_suffix('.dependencies.json')
+        if dependency_receipt_file is not None or retained_dependency_receipt.is_file():
+            self.manifest['dependency_receipt_file']=str(retained_dependency_receipt)
+        self.manifest['compile_commands_executed'] = (product_result['compile_commands_executed']
+            if product_result is not None else ([] if reused_product else commands))
         if product_result is not None:self.manifest['product_build']=product_result
+        target.with_suffix('.json').write_text(json.dumps(self.manifest, indent=2)+'\n')
         (self.root/'MANIFEST.json').write_text(json.dumps(self.manifest,indent=2)+'\n')
 
     def profile_snapshot(self, *, stream=None):
@@ -651,6 +850,16 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         if not self.phase_profiling:raise RuntimeError('phase profiling not enabled')
         wp.synchronize_stream(stream or (self.adapter.stream if self.adapter is not None else self.ws.stream))
         return phase_profile.decode(self.phase_profile_values.numpy())
+
+    def profile_trace_snapshot(self, *, stream=None):
+        """Download bounded invocation records after the measured GPU work."""
+        if not self.phase_trace_capacity:raise RuntimeError('phase trace not enabled')
+        wp.synchronize_stream(stream or (self.adapter.stream if self.adapter is not None else self.ws.stream))
+        return dict(counts=self.phase_trace_counts.numpy(),
+                    phases=self.phase_profile_trace.numpy(),
+                    metrics=self.phase_trace_metrics.numpy(),
+                    phase_names=phase_profile.PHASES,metric_names=self.phase_trace_fields,
+                    capacity=self.phase_trace_capacity)
 
     def _validate_launch(self):
         # Retain inherited admission/capacity/root checks before external seals.

@@ -10,7 +10,7 @@ from libero.gpu.host.runtime.newton.handwritten_cuda import HandwrittenCudaCore
 def prepare_fused_physics(*args,cuda_build_root=None,mathdx_root=None,diagnostic_profile="compatible",defer_cuda_core=False,newton_execution_config=None,newton_algorithm_options=None,**kwargs):
     from libero.gpu.host.runtime.newton.algorithm_options import normalize_newton_algorithm_options
     algorithm_options=normalize_newton_algorithm_options(newton_algorithm_options)
-    bundle=previous(*args,**kwargs)
+    bundle=previous(*args,newton_diagnostic_profile=diagnostic_profile,**kwargs)
     try:
         root=Path(cuda_build_root) if cuda_build_root else Path.cwd()/'cusolverdx-newton-build'
         core=None

@@ -6,6 +6,7 @@ and cudaFuncGetAttributes at installation, rather than a fixed NV whitelist.
 """
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -131,7 +132,33 @@ def apply_gpu_report(inventory, report_path):
     return inventory
 
 
-def install(bundle, root, *, mathdx_root=None,dataflow_profile="compatible",combine_entry=False,external_prefix=None,external_tail=None,newton_execution_config=None,newton_algorithm_options=None):
+def _resolve_head_metadata(bundle, profile, combine_entry, config, explicit, *, environ=None):
+    """Cold opt-in only; a sealed descriptor still requires N's late gate."""
+    env = os.environ if environ is None else environ
+    enabled = int(env.get('LIBERO_CUDA_S_ORDINAL_METADATA', '0'))
+    if enabled not in (0, 1):
+        raise ValueError('S ordinal metadata must be 0 or 1')
+    if explicit is None and not enabled:
+        return None
+    ws = bundle.newton.solver.ws
+    if (profile != 'fast' or ws.nworld != 8 or not combine_entry or config.strategy != 'single_cta'):
+        raise ValueError('S ordinal metadata requires fast N8 single_cta combined N entry')
+    from libero.gpu.host.runtime.newton.head_metadata import HeadMetadata
+    if explicit is None:
+        from libero.gpu.host.bindings.constraints import newton_head_metadata
+        explicit = newton_head_metadata(bundle.runtime.forward)
+    if type(explicit) is not HeadMetadata:
+        raise TypeError('sealed HeadMetadata descriptor required')
+    explicit.validate()
+    if explicit.owner is not bundle.runtime.forward:
+        raise ValueError('S ordinal metadata belongs to another forward owner')
+    if (explicit.nworld, explicit.rows, explicit.contacts, explicit.nv) != (
+            ws.nworld, ws.rows, ws.contacts, ws.qacc.shape[1]):
+        raise ValueError('S ordinal metadata differs from N dimensions')
+    return explicit
+
+
+def install(bundle, root, *, mathdx_root=None,dataflow_profile="compatible",combine_entry=False,external_prefix=None,external_tail=None,newton_execution_config=None,newton_algorithm_options=None,head_metadata=None):
     """Install the parameterized existing handwritten CUDA core into a bundle."""
     from libero.gpu.host.runtime.newton.handwritten_cuda import HandwrittenCudaCore
     from libero.gpu.host.runtime.core.execution_config import newton_execution_config as resolve_newton_config
@@ -139,13 +166,14 @@ def install(bundle, root, *, mathdx_root=None,dataflow_profile="compatible",comb
     config=resolve_newton_config(execution_config=newton_execution_config)
     algorithm_options=normalize_newton_algorithm_options(newton_algorithm_options)
     ws=bundle.newton.solver.ws
+    head_metadata=_resolve_head_metadata(bundle,dataflow_profile,combine_entry,config,head_metadata)
     expected_algorithm=effective_newton_algorithm_configuration(algorithm_options,ws.qacc.shape[1])
     admission=qualify(ws.qacc.shape[1],ws.qM.shape[1],rows=ws.rows,contacts=ws.contacts,nworld=ws.nworld,
                       newton_islands=algorithm_options['newton_islands'])
     if not admission['admitted_by_formula']:
         raise ValueError(admission)
     existing=getattr(bundle,'persistent_cuda_core',None)
-    if existing is not None and existing.manifest.get('cholesky_backend')=='cusolverdx' and existing.manifest.get('diagnostic_profile','compatible')==dataflow_profile and not combine_entry and existing.block_size==config.block_threads and existing.manifest.get('hessian_algorithm')==expected_algorithm:
+    if existing is not None and existing.manifest.get('cholesky_backend')=='cusolverdx' and existing.manifest.get('diagnostic_profile','compatible')==dataflow_profile and not combine_entry and existing.block_size==config.block_threads and existing.manifest.get('hessian_algorithm')==expected_algorithm and bool(existing.manifest.get('ordinal_head_metadata',{}).get('requested',False))==(head_metadata is not None):
         bundle.cuda_newton_manifest=dict(existing.manifest,capacity_qualification=admission,resource_qualification=inspect_resources(existing))
         return existing
     solver=bundle.newton.solver
@@ -158,8 +186,9 @@ def install(bundle, root, *, mathdx_root=None,dataflow_profile="compatible",comb
                       getattr(existing,'solver',None) is solver else installed_launch)
     solver.launch_device=recording_launch
     try:
-        core=HandwrittenCudaCore(solver,root,cholesky_backend='cusolverdx',mathdx_root=mathdx_root,
-            diagnostic_profile=dataflow_profile,adapter=bundle.newton if combine_entry else None,external_prefix=external_prefix,external_tail=external_tail,execution_config=config,
+        core_root = Path(root) / ('nv%d_nm%d' % (ws.qacc.shape[1], ws.qM.shape[1]))
+        core=HandwrittenCudaCore(solver,core_root,cholesky_backend='cusolverdx',mathdx_root=mathdx_root,
+            diagnostic_profile=dataflow_profile,adapter=bundle.newton if combine_entry else None,external_prefix=external_prefix,external_tail=external_tail,execution_config=config,head_metadata=head_metadata,
             **algorithm_options)
     finally:
         solver.launch_device=installed_launch

@@ -81,7 +81,8 @@ class FixedPhysicsForward:
     capacities remain 15633 calls, 1900 contacts, 6000 rows.
     """
     def __init__(self, *, dynamics, collision, transport, constraints, newton,
-                 foundation, expected_forward, ctrl, ctrl_valid, stream):
+                 foundation, expected_forward, ctrl, ctrl_valid, stream,
+                 capture_entry_witness=False):
         self.d, self.c, self.transport = dynamics, collision, transport
         self.s, self.n, self.f = constraints, newton, foundation
         self.expected_forward, self.ctrl, self.ctrl_valid = expected_forward, ctrl, ctrl_valid
@@ -114,7 +115,10 @@ class FixedPhysicsForward:
         self.entry_sources = {name:getattr(w,name) for name in ('J','aref','D','R','loss','efc_type','efc_id',
             'qM','qfrc_smooth','qacc_smooth','nefc','ne','nf','ncon','contact_dim','contact_mu','contact_friction')}
         self.entry_sources['qacc_warmstart'] = newton.public_arrays['qacc_warmstart']
-        self.entry_witness = {name:wp.empty_like(a) for name,a in self.entry_sources.items()}
+        # Solver inputs remain live bindings. Full-capacity copies are only
+        # needed by an explicitly selected diagnostic recorder.
+        self.entry_witness = ({name:wp.empty_like(a) for name,a in self.entry_sources.items()}
+                              if capture_entry_witness else {})
 
     def _launch(self, kernel, inputs):
         wp.launch(kernel, dim=self.capacity, inputs=inputs, device=self.device, stream=self.stream)
@@ -168,8 +172,8 @@ class FixedPhysicsForward:
             n.cone_friction,self.projection_status,self.projection_item,n.rows,n.contacts])
         if self.before_constraint is not None:
             self.before_constraint(self.stream)
-        for name,a in self.entry_sources.items():
-            wp.copy(self.entry_witness[name],a,stream=self.stream)
+        for name,target in self.entry_witness.items():
+            wp.copy(target,self.entry_sources[name],stream=self.stream)
         self.n.enqueue(self.n_upstream,active=self.mask,expected_epoch=self.expected_forward,publication_status=self.projection_status)
         if self.acceleration_sensor is not None:
             self.acceleration_sensor(self.n_admitted,self.stream)

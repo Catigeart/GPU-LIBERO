@@ -51,7 +51,7 @@ def install(bundle,root):
     checks=stages+field_stages['qacc']
     acceleration_check=NativePlan('acceleration_admit_event_check',[*sources],checks,d.N,root,stage_barriers=_stage_barriers(checks))
     def validate_event(self):
-        if hasattr(self,'_event_owner_tokens') and (self._event_owner_tokens()!=self._event_tokens or self.forward.n.final_event is not self._event_solver):raise ValueError('event retained owner drift')
+        if getattr(self,'capture_events',False) and (self._event_owner_tokens()!=self._event_tokens or self.forward.n.final_event is not self._event_solver):raise ValueError('event retained owner drift')
         if before_copy is not None:before_copy.validate_bindings()
     def acceleration(self):
         validate_event(self)

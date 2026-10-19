@@ -115,17 +115,18 @@ def _argument_arrays(ws):
 def _handwritten_plans(ws):
     detector = getattr(ws.detect, '_cuda_detector_plan', None)
     complete = getattr(ws, '_cuda_collision_complete', None)
-    if detector is None or complete is None:
+    schedule=getattr(ws,'_cuda_collision_query_schedule','fused')
+    if detector is None or (schedule=='fused' and complete is None):
         raise DeviceBindingError('handwritten_only backend is not cold-installed')
-    plans = (detector, complete)
-    if getattr(ws, '_cuda_collision_query_schedule', 'fused') == 'compact':
+    plans = (detector, complete) if schedule=='fused' else (detector,)
+    if schedule in ('compact','parallel'):
         compact = ws._cuda_collision_compact
         plans += (compact['front'], compact['tail'])
     return plans
 
 
 def _plan_exports(plan, detector):
-    return ((plan.library.launch_collision_detect_tiled, plan.library.launch_collision_detect_compact_producer)
+    return ((plan.library.launch_collision_detect_tiled, plan.library.launch_collision_detect_compact_producer,plan.library.launch_collision_detect_parallel)
         if detector else (plan.library.launch,))
 
 
@@ -139,7 +140,7 @@ def _method_token(method):
 
 def _handwritten_methods(ws):
     return tuple((id(plan),tuple((name,_method_token(getattr(plan,name))) for name in
-        (('validate','launch','launch_compact_producer') if i == 0 else ('validate_bindings','launch'))))
+        (('validate','launch','launch_compact_producer','launch_parallel_producer') if i == 0 else ('validate_bindings','launch'))))
         for i,plan in enumerate(_handwritten_plans(ws)))
 
 

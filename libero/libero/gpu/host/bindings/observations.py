@@ -180,7 +180,9 @@ class DirectSampler:
         return a.size and b.size and a.ptr < b.ptr+b.size*wp.types.type_size_in_bytes(b.dtype) and b.ptr < a.ptr+a.size*wp.types.type_size_in_bytes(a.dtype)
 
     def sample(self,raw_fields,timestep=None,force=False,world_mask=None,stream=None):
-        ob=self.observer;fields=ob._flat(raw_fields)
+        ob=self.observer
+        ob.assert_sampling_allowed(stream)
+        fields=ob._flat(raw_fields)
         dt=ob.metadata['model_timestep'] if timestep is None else timestep
         mask=ob.lowdim.all_worlds if world_mask is None else world_mask
         self._validate(fields,mask,dt)
@@ -248,6 +250,144 @@ def install(observer,fields,build_root,*,dataflow_profile='compatible'):
     observer.sample=MethodType(sample,observer)
     observer._cuda_direct_sampler=sampler
     return sampler.manifest
+
+
+def _batch_array_token(value):
+    return (value.ptr,value.dtype,tuple(value.shape),tuple(value.strides),
+            value.device,value.ndim,value.is_contiguous)
+
+
+def _batch_scene_arrays(observer):
+    arrays=dict(observer.visual_sources)
+    trans=observer.scene_transforms
+    if trans is not None:
+        for name in ('cam_xpos','cam_xmat','light_xpos','light_xdir','all_worlds'):
+            arrays['scene.'+name]=getattr(trans,name)
+        for label in ('camera','light'):
+            for index,value in enumerate(getattr(trans,label+'_static')):
+                arrays[f'scene.{label}_static.{index}']=value
+            for index,value in enumerate(getattr(trans,'_scene_cache',{}).get(label,())):
+                arrays[f'scene.{label}_cache.{index}']=value
+    return arrays
+
+
+def _batch_feature_key(observer):
+    """Describe image ABI, independently of the physical model's identity."""
+    import hashlib
+    import json
+    specs=observer.plan.image_specs
+    if not specs:return 'no-camera'
+    descriptors=[dict(name=s['name'],shape=list(s['shape'])) for s in specs]
+    if sorted((d['name'],tuple(d['shape'])) for d in descriptors)==[
+            ('agentview_image',(128,128,3)),('robot0_eye_in_hand_image',(128,128,3))]:
+        return 'dual-rgb128'
+    encoded=json.dumps(descriptors,sort_keys=True,separators=(',',':')).encode()
+    return 'images-'+hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=None,
+                  debug=False,strict_build_receipts=False):
+    """Cold-install direct sampling before batch control graph capture.
+
+    An alternate observer may borrow this same physics arena without installing
+    its binding. This function never samples, captures, advances or renders.
+    The caller owns discarded reset/fallback captures during offline preparation.
+    """
+    from contextlib import nullcontext
+    from libero.gpu.host.runtime.core.product_paths import (
+        build_project,product_build,toolchain_scope,mathdx_root,cache_root)
+    from libero.gpu.host.build.native import strict_build_receipts_scope
+    from libero.gpu.host.build.product_cache import product_cache_scope
+    if type(debug) is not bool or type(strict_build_receipts) is not bool:
+        raise ValueError('batch observation debug/strict settings must be bool')
+    requested=getattr(bundle,'dataflow_profile','compatible') if dataflow_profile is None else dataflow_profile
+    if requested not in ('compatible','fast'):raise ValueError('unknown observation dataflow profile')
+    debug=debug or bool(getattr(bundle,'debug',False))
+    profile='compatible' if debug else requested
+    if binding.prepared is not bundle or binding.observer is not observer:
+        raise ValueError('batch observations require their retained physics binding')
+    if binding.stream is not bundle.stream or binding.stream.is_capturing:
+        raise ValueError('batch observations require the original cold stream')
+    fields=binding.fields()
+    previous=getattr(observer,'_cuda_batch_observations_registration',None)
+    if previous is not None:
+        if previous['bundle'] is not bundle or previous['binding'] is not binding or previous['profile']!=profile:
+            raise ValueError('batch observation installation owner/profile changed')
+        return previous['manifest']
+    options=getattr(bundle,'observation_build_options',{})
+    if options and options['strict_build_receipts']!=strict_build_receipts:
+        raise ValueError('batch observation receipt mode differs from physics')
+    report=getattr(bundle,'build_report',{})
+    directory=build_root if build_root is not None else options.get('build_root',report.get('directory'))
+    with build_project(directory,lock_key=observer.metadata['model_sha256']) as project:
+        expected=options.get('build_root',report.get('directory'))
+        if expected is not None and Path(expected).resolve()!=Path(project['root']).resolve():
+            raise ValueError('batch observation project differs from physics')
+        start=len(project['events'])
+        with product_build():
+            sdk=Path(options['mathdx_root']) if options.get('mathdx_root') else mathdx_root(download=False)
+            cache=product_cache_scope(cache_root()/'products') if strict_build_receipts else nullcontext()
+            with toolchain_scope(sdk),strict_build_receipts_scope(strict_build_receipts),cache,wp.ScopedStream(binding.stream):
+                root=project['root']/'cuda'/('sm'+str(observer.lowdim.observed.device.arch))/'batch-observations'/'v1'
+                manifest=install(observer,fields,root,dataflow_profile=profile)
+        events=list(project['events'][start:])
+    sampler=observer._cuda_direct_sampler
+    plans=[sampler.plan]
+    scene_plan=getattr(observer.scene_transforms,'_cuda_scene_plan',None)
+    if scene_plan is not None:plans.append(scene_plan)
+    native_plans=list(getattr(bundle,'cuda_native_plans',()))
+    manifests=list(getattr(bundle,'cuda_manifests',()))
+    for plan in plans:
+        if not any(plan is retained for retained in native_plans):native_plans.append(plan)
+        library=plan.manifest.get('library_file',plan.manifest.get('library'))
+        if not any((m.get('library_file',m.get('library'))==library if library else
+                    (m.get('name'),m.get('sha256'))==(plan.manifest.get('name'),plan.manifest.get('sha256')))
+                   for m in manifests):
+            manifests.append(plan.manifest)
+    bundle.cuda_native_plans=tuple(native_plans)
+    bundle.cuda_manifests=manifests
+    roots=dict(fields)
+    scene_roots=_batch_scene_arrays(observer)
+    tokens={name:_batch_array_token(value) for name,value in roots.items()}
+    scene_tokens={name:_batch_array_token(value) for name,value in scene_roots.items()}
+    scene_owner=observer.scene_transforms
+    scene_config=tuple(getattr(scene_owner,name,None) for name in
+        ('nbody','ncam','nlight','nworld','host_camlight'))
+    sample_callback=observer.sample
+    def graph_guard():
+        current=binding.fields()
+        current_scene=_batch_scene_arrays(observer)
+        return (observer._cuda_direct_sampler is sampler and sampler.plan is plans[0] and
+                observer.sample is sample_callback and observer.scene_transforms is scene_owner and
+                tuple(getattr(scene_owner,name,None) for name in
+                    ('nbody','ncam','nlight','nworld','host_camlight'))==scene_config and
+                current.keys()==roots.keys() and current_scene.keys()==scene_roots.keys() and
+                all(current[name] is value and _batch_array_token(value)==tokens[name]
+                    for name,value in roots.items()) and
+                all(current_scene[name] is value and _batch_array_token(value)==scene_tokens[name]
+                    for name,value in scene_roots.items()))
+    observer.bind_graph_guard(graph_guard)
+    feature=_batch_feature_key(observer)
+    selection=dict(manifest,installed=True,batch_observation_abi='direct-v1',
+        feature_key=feature,dataflow_profile=profile,requested_dataflow_profile=requested,debug=debug,
+        build_directory=str(root),
+        retained_field_roots=tuple(fields),runtime_hook_installed=bool(binding.installed),
+        graph_guard_registered=True,native_artifacts=[dict(plan.manifest) for plan in plans])
+    key=feature+'/'+profile
+    if not hasattr(bundle,'cuda_selection_manifest'):bundle.cuda_selection_manifest={}
+    profiles=bundle.cuda_selection_manifest.setdefault('batch_observations',{})
+    if key not in profiles or binding.installed or not profiles[key]['runtime_hook_installed']:
+        profiles[key]=selection
+    if binding.installed:bundle.cuda_selection_manifest['observations']=selection
+    if not hasattr(bundle,'build_report'):bundle.build_report=report
+    report.setdefault('directory',str(project['root']))
+    report.setdefault('events',[]).extend(events)
+    profiles=report.setdefault('observation_profiles',{})
+    if key not in profiles or binding.installed or not profiles[key]['runtime_hook_installed']:
+        profiles[key]=selection
+    observer._cuda_batch_observations_registration=dict(
+        bundle=bundle,binding=binding,profile=profile,manifest=selection)
+    return selection
 
 def install_environment(environment,build_root,*,dataflow_profile='compatible'):
     components=getattr(environment,'components',environment)

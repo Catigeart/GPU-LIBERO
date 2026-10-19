@@ -67,7 +67,7 @@ setup(
     package_data={
         "libero.libero": source_data("libero/libero", {".xml", ".bddl"}) + ["upstream_resources.json"],
         "libero.configs": source_data("libero/configs", {".yaml", ".yml", ".json"}),
-        "libero.gpu": source_data("libero/libero/gpu", {".cu", ".cuh", ".h", ".hpp", ".c", ".cpp", ".json", ".txt", ".md", ".ps1"}),
+        "libero.gpu": source_data("libero/libero/gpu", {".cu", ".cuh", ".h", ".hpp", ".c", ".cpp", ".cmake", ".json", ".txt", ".md", ".ps1"}),
         "scripts": source_data("scripts", {".cu", ".cuh", ".h", ".hpp", ".c", ".cpp", ".xml", ".yaml", ".yml", ".json"}),
         "templates": ["scene_template.xml"],
     },

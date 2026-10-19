@@ -7,6 +7,7 @@ from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ast
 import hashlib
 from pathlib import Path
+from functools import partial
 from types import SimpleNamespace
 
 from libero.gpu.host.assembly.compose import factory as first
@@ -187,16 +188,20 @@ def _validate_selection(bundle):
     assert all(isinstance(hold, FusedNoForwardHold) for hold in bundle.dynamics._holds.values())
     assert hasattr(loop.forward.s.workspace, "_fusion_s_before")
     assert loop.recovery._fusion_protocol_owner is loop
-    assert hasattr(loop, "_fusion_euler_kernel") and hasattr(loop, "_fusion_warning_copy")
+    assert hasattr(loop, "_fusion_euler_kernel")
+    assert not loop.capture_events or hasattr(loop, "_fusion_warning_copy")
     return True
 
 
-def prepare_fused_physics(*args, **kwargs):
+def prepare_fused_physics(*args, newton_diagnostic_profile='compatible', **kwargs):
     if kwargs.get("mode", "diagnostic") != "diagnostic":
         raise ValueError("large fusion candidate requires explicit diagnostic mode")
     transform = _ColdImports()
+    def cold_factories():
+        return (make_fused_adapter,
+                partial(_newton_factory, diagnostic_profile=newton_diagnostic_profile), 'cn')
     prepare = first._derive(recovery_event_factory.prepare_recovery_event_physics,
-        {"_event_cold_factories": _cold_factories, "_recovery_loop": _recovery_loop,
+        {"_event_cold_factories": cold_factories, "_recovery_loop": _recovery_loop,
          "_fused_s_workspace_type": fused_workspace_type}, transform)
     if (transform.dynamics, transform.euler, transform.inserted) != (1, 1, 1):
         raise ValueError("exact original cold substitutions required")

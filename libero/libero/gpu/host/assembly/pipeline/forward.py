@@ -180,10 +180,10 @@ def _shape_enqueue(step1=False):
     # Keep n/x local aliases because the final forward publication consumes n.
     function.body[begin:end + 1] = ast.parse('n, x = self.n.ws, self._s_views\nself._fusion_project_newton()').body
     copies = [i for i, node in enumerate(function.body) if isinstance(node, ast.For)
-              and ast.unparse(node.iter) == 'self.entry_sources.items()']
+              and ast.unparse(node.iter) == 'self.entry_witness.items()']
     if len(copies) != 1:
         raise ValueError('one retained r01 backup copy loop required')
-    function.body[copies[0]] = ast.parse('self._fusion_entry_copy.launch(self.stream)').body[0]
+    function.body[copies[0]] = ast.parse('if self._fusion_entry_copy is not None:\n    self._fusion_entry_copy.launch(self.stream)').body[0]
     ast.fix_missing_locations(tree)
     namespace = dict(ShapePhysicsForward.enqueue.__globals__)
     exec(compile(tree, __file__ + ':shape', 'exec'), namespace)

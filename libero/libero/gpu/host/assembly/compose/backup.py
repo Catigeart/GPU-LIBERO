@@ -126,6 +126,8 @@ class MultiFieldCopyPlan:
 class FusedEventRecoveringRuntime(EventRecoveringRuntime):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        if not self.capture_events:
+            return
         self._fusion_event_plans = {id(outputs): MultiFieldCopyPlan(
             [(self.event_sources[name], target) for name, target in outputs.items()], slot=self.event_slot)
             for outputs in (self.event_before, self.event_after, self.event_after_euler)}
@@ -149,9 +151,9 @@ def _entry_enqueue():
     class Replace(ast.NodeTransformer):
         count = 0
         def visit_For(self, node):
-            if isinstance(node.iter, ast.Call) and ast.unparse(node.iter) == "self.entry_sources.items()":
+            if isinstance(node.iter, ast.Call) and ast.unparse(node.iter) == "self.entry_witness.items()":
                 self.count += 1
-                return ast.parse("self._fusion_entry_copy.launch(self.stream)").body[0]
+                return ast.parse("if self._fusion_entry_copy is not None:\n    self._fusion_entry_copy.launch(self.stream)").body[0]
             return self.generic_visit(node)
     replace = Replace()
     tree = replace.visit(tree)
@@ -166,9 +168,10 @@ def _entry_enqueue():
 class FusedShapePhysicsForward(ShapePhysicsForward):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._fusion_entry_copy = MultiFieldCopyPlan(
-            [(source, self.entry_witness[name]) for name, source in self.entry_sources.items()])
-        self._fusion_entry_owners = tuple((name, source, self.entry_witness[name]) for name, source in self.entry_sources.items())
+        self._fusion_entry_copy = (MultiFieldCopyPlan(
+            [(self.entry_sources[name], target) for name, target in self.entry_witness.items()])
+            if self.entry_witness else None)
+        self._fusion_entry_owners = tuple((name, source, self.entry_witness.get(name)) for name, source in self.entry_sources.items())
 
     def validate(self):
         super().validate()

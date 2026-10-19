@@ -75,6 +75,7 @@ RuntimeControllerAdapter.enqueue=_derived_method(d_original.RuntimeControllerAda
 
 class ShapePhysicsForward(f_original.ShapePhysicsForward):
     def __init__(self,*args,**kwargs):
+        kwargs['capture_entry_witness'] = True
         super().__init__(*args,**kwargs)
         n=self.n
         extra={k:getattr(n.ws,k) for k in ("cone_dim","cone_mu","cone_friction")}

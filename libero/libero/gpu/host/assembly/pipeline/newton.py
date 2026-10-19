@@ -21,12 +21,17 @@ _INLINE = {"_warmstart_select", "_jacvec_sub", "_mulM", "_gauss", "_count",
            "_s08c", "_s08d"}
 
 
-def _compile_schedule(original, method_name, terminal=(), extra_namespace=None, identity_suffix=""):
+def _compile_schedule(original, method_name, terminal=(), extra_namespace=None, identity_suffix="",
+                      kernel_identity_suffix=None):
     method = getattr(original, method_name)
     namespace = dict(method.__globals__)
     namespace.update(extra_namespace or {})
     fn = ast.parse(textwrap.dedent(inspect.getsource(method))).body[0]
     identity = hashlib.sha256((original.__module__ + identity_suffix).encode()).hexdigest()[:16]
+    # Compiled kernels take owner arrays as arguments. Only the Python launcher
+    # captures a process-local owner and therefore needs a unique module name.
+    kernel_identity = (identity if kernel_identity_suffix is None else
+        hashlib.sha256((original.__module__ + kernel_identity_suffix).encode()).hexdigest()[:16])
     kernels, groups = [], []
 
     def expand(statements):
@@ -110,7 +115,7 @@ def _compile_schedule(original, method_name, terminal=(), extra_namespace=None, 
                 stages.append((kernel, mapping))
                 bindings.update({mapping[p]: expression for p, expression in zip(params, expressions)})
             index = len(kernels)
-            kernel = compose("newton_r03_%s_%s_%d" % (identity, method_name, index), stages)
+            kernel = compose("newton_r03_%s_%s_%d" % (kernel_identity, method_name, index), stages)
             kernels.append(kernel)
             groups.append(tuple(k.key for k, _ in pending))
             statement = ast.parse("wp.launch(_schedule_kernels[0], ws.nworld, inputs=[], device=ws.device, stream=ws.stream)").body[0]
@@ -148,8 +153,10 @@ def _compile_schedule(original, method_name, terminal=(), extra_namespace=None, 
     ast.fix_missing_locations(fn)
     namespace["_schedule_kernels"] = tuple(kernels)
     source = ast.unparse(fn) + "\n"
+    # This module contains a Python launcher only. Registering an empty Warp
+    # module would trigger a dummy compilation for every unique owner name.
     function = getattr(_load("newton_r03_launcher_" + identity + "_" + method_name,
-                             source, namespace), method_name)
+                             source, namespace, warp_module=False), method_name)
     return function, tuple(groups), tuple(kernels), source
 
 
@@ -190,7 +197,8 @@ class FusedFinalEventAdapter(FusedNewtonMixin, FinalEventAdapter):
         terminal = ((_final_event, event_args), (publish_newton,
                     [publication_values[p] for p in publish_newton.fusion_argument_names]))
         compiled = _compile_schedule(original, "launch_device", terminal,
-                                     {"owner": owner}, ":event-owner:" + str(id(owner)))
+                                     {"owner": owner}, ":event-owner:" + str(id(owner)),
+                                     kernel_identity_suffix=":event-publication")
         launch = compiled[0]
 
         def launch_device(self):

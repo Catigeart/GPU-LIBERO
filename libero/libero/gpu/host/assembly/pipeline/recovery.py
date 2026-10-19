@@ -88,6 +88,8 @@ class RecoveryRuntimeMixin:
         self.recovery.validate_protocol(self)
 
     def _admit_current_acceleration(self):
+        if not self.capture_events:
+            return runtime.CurrentWrittenRecoveringRuntime._admit_current_acceleration(self)
         if self._event_owner_tokens()!=self._event_tokens or self.forward.n.final_event is not self._event_solver:
             raise ValueError("event retained owner drift")
         n=self.forward.n; event=n.final_event

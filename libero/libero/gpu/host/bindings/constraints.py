@@ -28,6 +28,46 @@ ORDER = ('_position_gate', '_reset_stage_status', '_produce', '_contact_incoming
          '_assemble', '_prediag', '_impedance', '_merge_stage_status', '_commit_position')
 REF_ORDER = ('_reference_gate', '_reference', '_commit_reference')
 
+def constraint_feature_selection(profile, nv, nworld, mapping, *, qualification_mode=None, environ=None):
+    """Resolve cold candidate flags without claiming new GPU qualification.
+
+    Unset mode retains the previous shape defaults and per-flag overrides.
+    Explicit N8 modes isolate unified metadata and group parameter reuse; a
+    conflicting experimental flag is rejected rather than silently combined.
+    """
+    env = os.environ if environ is None else environ
+    mode = qualification_mode if qualification_mode is not None else env.get('LIBERO_CUDA_S_QUALIFICATION_MODE')
+    candidates = {'baseline': (0, 0), 'unified': (1, 0),
+                  'group': (0, 1), 'unified_group': (1, 1)}
+    if mode is not None:
+        if mode not in candidates:
+            raise ValueError('S qualification mode must be baseline/unified/group/unified_group')
+        if profile != 'fast' or nworld != 8 or mapping != 'single_cta':
+            raise ValueError('S qualification modes require fast N8 single_cta')
+    names = ('BATCH_COMPACT', 'GROUP_PARAMETER_REUSE', 'UNIFIED_METADATA',
+             'STATIC_CANDIDATES', 'INTERNAL_OWNER_RECEIPT', 'COMMON_ANCESTOR_ZERO')
+    selected_defaults = ('BATCH_COMPACT', 'GROUP_PARAMETER_REUSE',
+                         'UNIFIED_METADATA', 'INTERNAL_OWNER_RECEIPT')
+    retained_shape_default = profile == 'fast' and nv == 43 and nworld in (1, 2)
+    desired = {name: 0 for name in names}
+    if mode is not None:
+        desired['UNIFIED_METADATA'], desired['GROUP_PARAMETER_REUSE'] = candidates[mode]
+    flags = {}
+    for name in names:
+        default = desired[name] if mode is not None else int(retained_shape_default and name in selected_defaults)
+        env_name = 'COMMON_ZERO' if name == 'COMMON_ANCESTOR_ZERO' else name
+        value = int(env.get('LIBERO_CUDA_S_' + env_name, default))
+        if value not in (0, 1):
+            raise ValueError('S ' + name + ' must be 0 or 1')
+        if mode is not None and value != desired[name]:
+            raise ValueError('S qualification mode conflicts with ' + name)
+        flags[name] = value
+    return dict(mode=mode or 'retained_defaults', flags=flags,
+                candidate_pending_gpu=mode is not None,
+                domain=dict(profile=profile, nv=int(nv), nworld=int(nworld), mapping=mapping),
+                qualification='existing defaults retained; explicit N8 modes require separate numerical qualification')
+
+
 def _original_method(obj, name):
     # Cold fused subclasses wrap the accepted schedule; inspect its base method.
     for cls in type(obj).__mro__:
@@ -152,7 +192,7 @@ class ContactGroupPositionPlan:
 
 
 class ConstraintPlans:
-    def __init__(self, workspace, build_root, adapter=None, dataflow_profile=None, execution_config=None):
+    def __init__(self, workspace, build_root, adapter=None, dataflow_profile=None, execution_config=None, qualification_mode=None):
         self.workspace = workspace
         profile = dataflow_profile or os.environ.get('LIBERO_CUDA_DATAFLOW_PROFILE', 'compatible')
         if profile == 'compatibility': profile = 'compatible'
@@ -198,20 +238,10 @@ class ConstraintPlans:
         nv,nq,nj,nb = (facts[k] for k in ('nv','nq','njnt','nbody'))
         nf = workspace.s02.friction_pos.size // workspace.nworld
         nl = workspace.s02.limit_pos.size // workspace.nworld
-        # Paired existing-input timing: cache helps, common-zero regresses.
-        # Keep the guarded zero path explicit opt-in for future workloads.
-        common_zero=int(os.environ.get('LIBERO_CUDA_S_COMMON_ZERO','0'))
-        if common_zero not in (0,1):
-            raise ValueError('S common ancestor zero must be 0 or 1')
-        # Qualified original-baseline selected function domain. Other shapes
-        # retain old branches; explicit overrides remain experimental.
-        qualified_fast=profile=='fast' and nv==43 and workspace.nworld in (1,2)
-        selected_defaults=('BATCH_COMPACT','GROUP_PARAMETER_REUSE','UNIFIED_METADATA','INTERNAL_OWNER_RECEIPT')
-        def experiment_flag(name):
-            default='1' if qualified_fast and name in selected_defaults else '0'
-            value=int(os.environ.get('LIBERO_CUDA_S_'+name,default))
-            if value not in (0,1):raise ValueError('S '+name+' must be 0 or 1')
-            return value
+        self.feature_selection = constraint_feature_selection(profile, nv, workspace.nworld,
+            mapping, qualification_mode=qualification_mode)
+        experiment_flag = self.feature_selection['flags'].__getitem__
+        common_zero = experiment_flag('COMMON_ANCESTOR_ZERO')
         defines = dict(NV=nv,NQ=nq,NJ=nj,NF_CAP=nf,NL_CAP=nl,
                        S_NBODY=nb,S_ROWS=workspace.rows,S_CONTACTS=workspace.contacts,
                        CF_S_COMPATIBLE=int(profile == 'compatible'),CF_S_KBIP_PLANES=int(profile == 'fast'),CF_S_WARPS=2,
@@ -434,6 +464,8 @@ class ConstraintPlans:
         self.scalar_stage=ORDER.index('_impedance')
         self.scalar_indices=tuple(stage_parameters['impedance'].index(k) for k in ('timestep','impratio','refsafe'))
         for plan in (self.position, self.reference):
+            plan.manifest['feature_selection'] = dict(self.feature_selection,
+                model_sha256=workspace.s01.static.model_sha256)
             plan.manifest['dataflow'] = dict(profile=profile,
                 unified_private_J=True, group_impedance=True,
                 parallel_transaction_commit=True, diagnostic_writes=profile == 'compatible')
@@ -489,12 +521,12 @@ def contact_tile_config(contact_capacity, *, contact_tile=32, block_threads=128)
         contact_tile=contact_tile,workers_per_world=max(1,(contact_capacity+contact_tile-1)//contact_tile))
 
 
-def install(bundle, build_root, dataflow_profile=None, execution_config=None):
+def install(bundle, build_root, dataflow_profile=None, execution_config=None, qualification_mode=None):
     adapter=bundle.runtime.forward.s
     workspace=adapter.workspace
     # Validate the original seal before changing its explicitly selected entries.
     adapter.validate()
-    plans=ConstraintPlans(workspace,build_root,adapter,dataflow_profile=dataflow_profile,execution_config=execution_config)
+    plans=ConstraintPlans(workspace,build_root,adapter,dataflow_profile=dataflow_profile,execution_config=execution_config,qualification_mode=qualification_mode)
     workspace._cuda_constraint_plans=plans
     # Keep the actual installed launch handles reachable without inspecting
     # method closures. The central manifest/trace walker has a bounded depth.
@@ -512,6 +544,7 @@ def install(bundle, build_root, dataflow_profile=None, execution_config=None):
     _install_private_validation(adapter, plans)
     adapter.validate()
     forward=bundle.runtime.forward
+    metadata=newton_head_metadata(forward)
     projection=projection_plan(forward,build_root)
     forward._cuda_s_projection=projection
     forward._fusion_project_newton=types.MethodType(lambda self: projection.launch(self.stream),forward)
@@ -520,6 +553,7 @@ def install(bundle, build_root, dataflow_profile=None, execution_config=None):
             'kernels':len(plans.position.plans)+2 if plans.mapping == 'contact_tiles' else 3,'family':'dense elliptic friction/hinge-slide limits/contact',
             'arithmetic':'handwritten','fma':True,
             'dataflow_profile':plans.profile,'position_mapping':plans.mapping,
+            'feature_selection':plans.feature_selection,'head_metadata':metadata.manifest(),
             'projection_admission_interface':'projection_stages(forward)'}
 
 def projection_stages(forward):
@@ -556,6 +590,47 @@ def projection_plan(forward,build_root):
     plan.launch=types.MethodType(launch,plan)
     return plan
 
+def _head_metadata_arrays(workspace):
+    storage = workspace._cuda_constraints_storage
+    return dict(source_counts=workspace.counts, source_ncon=workspace.ncon,
+                compact_heads=storage['compact_heads'], compact_count=storage['compact_count'],
+                compact_valid=storage['compact_valid'], head_type=storage['head_type'],
+                head_id=storage['head_id'], head_dim=storage['head_dim'],
+                head_mu=storage['head_mu'], head_friction=storage['head_friction'],
+                valid=storage['head_cone_valid'])
+
+
+def newton_head_metadata(forward):
+    """Return sealed original head owners independently of prefix migration.
+
+    This cold descriptor does not read values or authenticate current numeric
+    data. N retains its admission, current validation and per-launch fallback.
+    """
+    from libero.gpu.host.runtime.newton.head_metadata import HeadMetadata
+    existing = getattr(forward, '_cuda_s_head_metadata', None)
+    if existing is not None:
+        if type(existing) is not HeadMetadata or existing.owner is not forward:
+            raise ValueError('S head metadata descriptor owner changed')
+        existing.validate()
+        return existing
+    adapter = forward.s
+    workspace = adapter.workspace
+    plans = workspace._cuda_constraint_plans
+    dimensions = (workspace.nworld, workspace.rows, workspace.contacts, int(forward.runtime_shape.nv))
+    def validate_owner():
+        if forward.s is not adapter or adapter.workspace is not workspace or workspace._cuda_constraint_plans is not plans:
+            raise ValueError('S head metadata producer root changed')
+        if (workspace.nworld, workspace.rows, workspace.contacts, int(forward.runtime_shape.nv)) != dimensions:
+            raise ValueError('S head metadata producer dimensions changed')
+        forward.s.validate()
+        plans.validate_private_bindings()
+    result = HeadMetadata.create(owner=forward, nworld=dimensions[0], rows=dimensions[1],
+        contacts=dimensions[2], nv=dimensions[3], provider=lambda: _head_metadata_arrays(workspace),
+        validate_owner=validate_owner, array_type=wp.array, int32_dtype=wp.int32, float64_dtype=wp.float64)
+    forward._cuda_s_head_metadata = result
+    return result
+
+
 def projection_prefix(forward):
     """Cold typed prefix schema consumed by a combined handwritten N entry.
 
@@ -578,12 +653,9 @@ def projection_prefix(forward):
             collective=mode == 'block', perworld=1,
             world_strides={name:(value.size // forward.capacity)
                 for name,value in zip(parameters,values) if isinstance(value,wp.array)}))
+    metadata = newton_head_metadata(forward)
     return dict(headers=[(GPU_ROOT / 'cuda/constraints/constraints_projection.cuh')],stages=stages,
-                validate_private_bindings=forward.s.workspace._cuda_constraint_plans.validate_private_bindings,
+                validate_private_bindings=metadata.validate,
                 world_index_argument=True, numeric_input_copy=False,
                 static_shared_bytes=660, static_shared_scope="constraints_projection_header_upper_bound",
-                newton_head_metadata={
-                    'head_dim':forward.s.workspace._cuda_constraints_storage['head_dim'],
-                    'head_mu':forward.s.workspace._cuda_constraints_storage['head_mu'],
-                    'head_friction':forward.s.workspace._cuda_constraints_storage['head_friction'],
-                    'valid':forward.s.workspace._cuda_constraints_storage['head_cone_valid']})
+                newton_head_metadata=metadata)

@@ -108,9 +108,9 @@ def position_stages(p):
 def _finite_vector_defines(d):
     """Cold static counts select only the measured 342-element finite scan.
 
-    Both position plans use their retained 64-thread NativePlan default.
     Each scan keeps its runtime extent argument and original owner guards.
-    Unconfigured users of the shared header retain scalar finite scans.
+    Fast dataflow may use 128 threads for larger frame sets; standalone plans
+    retain the 64-thread default. Unconfigured headers keep scalar scans.
     """
     p=d.position
     return {'CF_PM_STATIC_NBODY':int(p.body.static.nb),
@@ -133,24 +133,64 @@ def create_plan(d, build_root):
         stages,d.capacity,build_root,device=d.device,defines=_finite_vector_defines(d))
 
 
+def _create_position_snapshot_plan(d, build_root):
+    """Save only the worlds consumed by the unchanged mask-zero restore.
+
+    The retained hold owns the field inventory, aliases and history storage.
+    This plan binds those same buffers once; its device predicate reads the
+    current requested mask on every replay. F still executes all its original
+    clears, diagnostics and selected-failure writes between save and restore.
+    """
+    import warp as wp
+    hold=d._holds['position']
+    hold.validate(hold.fields)
+    mask=d.requested_mask
+    if (mask.dtype!=wp.int32 or mask.shape!=(d.capacity,) or
+            mask.device!=d.device or not mask.is_contiguous):
+        raise ValueError('position snapshot requires the retained world mask')
+    kinds={wp.float64:'f64',wp.int32:'i32',wp.int64:'i64'}
+    stages=[]
+    for name,source in hold.views.items():
+        before=hold.before[name]
+        if (source.ndim!=2 or source.shape[0]!=d.capacity or
+                source.shape!=before.shape or source.dtype!=before.dtype or
+                source.dtype not in kinds):
+            raise ValueError('position snapshot field schema: '+name)
+        stages.append(('cf_copy::hold_'+kinds[source.dtype],
+            [mask,source,before,source.shape[1]],'block'))
+    plan=NativePlan('position_masked_snapshot',
+        [GPU_ROOT/'cuda/runtime/copies.cuh'],stages,d.capacity,build_root,
+        device=d.device,stage_barriers=False)
+    plan.manifest.update(snapshot_condition='requested_mask==0',
+        snapshot_fields=list(hold.views),
+        history='original hold buffers; requested worlds leave history untouched')
+    return hold,plan
+
+
 def install(bundle,build_root):
     """Install real dynamics entry; Foundation forwards through this bound method."""
     d=bundle.dynamics
     plan=create_plan(d,build_root)
+    position_hold,snapshot=_create_position_snapshot_plan(d,Path(build_root)/'snapshot')
     def launch_position(self,stream=None):
         self.validate(stream)
         self.position.validate_bindings()
         self.transmission.validate_bindings()
-        self._holds['position'].snapshot(self.stream)
+        if self._holds['position'] is not position_hold:
+            raise ValueError('position snapshot hold owner changed')
+        position_hold.validate(position_hold.fields)
+        snapshot.launch(stream=self.stream)
         plan.launch(stream=self.stream)
         self._holds['position'].restore_unrequested(self.requested_mask,self.stream)
     d.launch_position=MethodType(launch_position,d)
     d._cuda_position_plan=plan
+    d._cuda_position_snapshot_plan=snapshot
     from .position_scene import install_scene_from_bundle
     scene=install_scene_from_bundle(bundle,Path(build_root)/'scene')
     manifest=dict(plan.manifest,stages=len(position_stages(d.position))+4,
         execution='one block/world; ordered tree; cooperative body/object frame grids',
-        history='original snapshot and restore_unrequested boundaries',
+        history='mask0 snapshot and original restore_unrequested boundaries',
+        history_snapshot=snapshot.manifest,
         numerics='handwritten FP64; FMA; native full-range sin/cos',
         validation='10 bounded component cases passed; true-forward comparison recorded by integrated factory',
         observer_scene=scene)
@@ -321,13 +361,21 @@ def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cac
     if dataflow_profile not in ('compatible','fast'):
         raise ValueError('position dataflow profile must be compatible or fast')
     source,values,specs,workspace=_dataflow_source(d,bounds_cache=bounds_cache)
+    # Geometry frames and durable publication have independent owners. More
+    # warps hide their memory latency; small/compatible cases keep the default.
+    threads=128 if dataflow_profile=='fast' and d.position.frames.ngeom>=128 else 64
     plan=NativePlan('position_dataflow_'+dataflow_profile,
         [(GPU_ROOT / 'cuda/common/packed_mass.cuh'),(GPU_ROOT / 'cuda/position/position.cuh'),(GPU_ROOT / 'cuda/position/position_mass.cuh'),
          *(bounds_cache.get('sources',[]) if bounds_cache else []),source],
         [('libero_position::dataflow',values,'block',specs)],d.capacity,build_root,
-        device=d.device,defines={'LIBERO_POSITION_DATAFLOW':1,**_finite_vector_defines(d)},stage_barriers=False,
+        device=d.device,block_size=threads,defines={'LIBERO_POSITION_DATAFLOW':1,
+            'LIBERO_POSITION_BODY_DIAGNOSTICS':int(dataflow_profile!='fast'),
+            **_finite_vector_defines(d)},stage_barriers=False,
         dynamic_shared_bytes=workspace['shared_bytes'])
     plan.manifest.update(dataflow_profile=dataflow_profile,workspace=workspace,
+        body_diagnostics=dataflow_profile!='fast',threads_per_world=threads,
+        normalization_policy=('component_divisions' if dataflow_profile!='fast' or int(d.position.factor.nv) in (21,27)
+                              else 'reciprocal_multiply'),
         execution='one block/world; shared body/frame/mass dataflow; explicit phase barriers',
         geometry_consumer=('fresh local geom pose -> shared -> original PCA/bounds into private C arena; epoch-checked original C stage publication' if bounds_cache else 'component-only; bounds cache not bound'),
         geometry_hook='optional LIBERO_POSITION_GEOM_HOOK; default no-op and not counted as fusion completion',
@@ -354,19 +402,25 @@ def install_dataflow(bundle,build_root,*,dataflow_profile='compatible'):
             from .collision import prepare_bounds_cache
             bounds_cache=prepare_bounds_cache(ws,d)
     plan=create_dataflow_plan(d,build_root,dataflow_profile=dataflow_profile,bounds_cache=bounds_cache)
+    position_hold,snapshot=_create_position_snapshot_plan(d,Path(build_root)/'snapshot')
     if temporal_bounds:
         plan.manifest['geometry_consumer']='fresh geom pose -> C temporal bounds; F PCA bounds producer omitted after cold admission'
     def launch_position(self,stream=None):
         self.validate(stream);self.position.validate_bindings();self.transmission.validate_bindings()
-        self._holds['position'].snapshot(self.stream)
+        if self._holds['position'] is not position_hold:
+            raise ValueError('position snapshot hold owner changed')
+        position_hold.validate(position_hold.fields)
+        snapshot.launch(stream=self.stream)
         plan.launch(stream=self.stream)
         self._holds['position'].restore_unrequested(self.requested_mask,self.stream)
     d.launch_position=MethodType(launch_position,d)
     d._cuda_position_plan=plan
+    d._cuda_position_snapshot_plan=snapshot
     d.cuda_packed_factor_source=d.position.factor
     # Scene callbacks remain separately installed by the assembly owner.
-    return dict(plan.manifest,installed=True,protected_history='retained snapshot/restore_unrequested',
-        implementation='shared phase workspace + local object frames; legacy diagnostics preserved',
+    return dict(plan.manifest,installed=True,protected_history='mask0 snapshot/original restore_unrequested',
+        history_snapshot=snapshot.manifest,
+        implementation='shared phase workspace + register local vectors; compatible profile retains body traces',
         bounds_cache=bool(bounds_cache),
         temporal_bounds=temporal_bounds,
         unresolved=[] if bounds_cache or temporal_bounds else ['F geom/PCA bounds cache not bound for this component-only owner'])

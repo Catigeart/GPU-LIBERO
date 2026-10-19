@@ -52,7 +52,7 @@ def _validate_native(model):
 def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
                          build_root, live_inputs, canonical_outputs=None,
                          registry=None, registered_candidate_id=None,
-                         mode='diagnostic', device='cuda:0'):
+                         mode='diagnostic', device='cuda:0', diagnostic_profile='compatible'):
     """Cold load exact native MJB and seal a live component-runtime candidate.
 
     Without a registry, only explicit diagnostic mode is allowed. With a
@@ -62,6 +62,10 @@ def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
     """
     if mode not in ('diagnostic', 'production'):
         raise ValueError('unsupported execution mode')
+    if diagnostic_profile == 'compatibility':
+        diagnostic_profile = 'compatible'
+    if diagnostic_profile not in ('compatible', 'fast'):
+        raise ValueError('Newton diagnostic profile')
     path = Path(model_path).resolve()
     model_sha = hashlib.sha256(path.read_bytes()).hexdigest()
     if model_sha != model_spec.model_sha256:
@@ -85,6 +89,10 @@ def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
     ws = package.workspace.NewtonFwdWorkspace(
         nworld, rows, contacts, device=device, maxiter=int(model.opt.iterations),
         warmstart_enabled=not bool(int(model.opt.disableflags) & warm_disabled))
+    # The retained solver reads this before allocating witness history. Native
+    # fast execution never consumes that history; avoid allocating it first
+    # and retiring it only after the rest of the arena has been constructed.
+    ws.diagnostic_profile = diagnostic_profile
     ws.bind_topology(np.asarray(model.dof_Madr, np.int32),
                      np.asarray(model.dof_parentid, np.int32),
                      np.asarray(model.dof_simplenum, np.int32),
@@ -101,7 +109,7 @@ def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
     adapter.model_spec = model_spec
     adapter.admission = admission
     adapter.source_manifest = dict(manifest, model_sha256=model_sha,
-        model_identity=model_spec.identity_key, mode=mode,
+        model_identity=model_spec.identity_key, mode=mode, diagnostic_profile=diagnostic_profile,
         execution_scope='component-runtime', acceptance='diagnostic-pending',
         live_api_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         adapter_sha256=hashlib.sha256((GPU_ROOT / 'host/runtime/newton/runtime_adapter.py').read_bytes()).hexdigest(),

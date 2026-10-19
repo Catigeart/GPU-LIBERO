@@ -111,7 +111,8 @@ __device__ inline bool tree_pairs_changed_lane(int lane,int npair,
         changed|=pair1[i]!=pair_shadow[i] || pair2[i]!=pair_shadow[npair+i];
     return changed;
 }
-__device__ inline void cf_tree(int w,const int* stage,const int* stage_count,const int* active_in,
+template<bool Diagnostics>
+__device__ inline void cf_tree_impl(int w,const int* stage,const int* stage_count,const int* active_in,
     const double* xipos,const double* ximat,const double* geom_pos,const double* geom_mat,
     const int* body_adr,const int* body_num,const int* geom_adr,const int* geom_num,
     const int* child,const int* geomid,const double* bvh_aa,const double* geom_aa,
@@ -152,7 +153,7 @@ __device__ inline void cf_tree(int w,const int* stage,const int* stage_count,con
         libero_vec::copy_serial(product+w*36,local_product,36);
         libero_vec::copy_serial(offset+w*12,local_offset,12);
     }
-    for(int i=lane;i<body_nodes;i+=32)out_active[w*body_nodes+i]=0;
+    if constexpr(Diagnostics)for(int i=lane;i<body_nodes;i+=32)out_active[w*body_nodes+i]=0;
     __syncwarp(mask);
     int rc=0,vc=0,sc=0,lc=0;
     for(int s=0;s<count;++s){
@@ -202,50 +203,51 @@ __device__ inline void cf_tree(int w,const int* stage,const int* stage_count,con
         stack1[sb]=stack2[sb]=0;
         if(sc>=stack_slots){status[w]=5;first_stage[w]=s;break;}
         int tr=(w*stack_slots+sc)*5;
-        out_stack[tr]=s;out_stack[tr+1]=1;out_stack[tr+2]=0;out_stack[tr+3]=0;out_stack[tr+4]=1;++sc;
+        if constexpr(Diagnostics){out_stack[tr]=s;out_stack[tr+1]=1;out_stack[tr+2]=0;out_stack[tr+3]=0;out_stack[tr+4]=1;}++sc;
         int initialize=1;
         while(nstack>0){
             --nstack;int n1=stack1[sb+nstack],n2=stack2[sb+nstack];
             if(n1<0||n1>=num1||n2<0||n2>=num2){status[w]=7;first_stage[w]=s;break;}
             if(sc>=stack_slots){status[w]=5;first_stage[w]=s;break;}
             tr=(w*stack_slots+sc)*5;
-            out_stack[tr]=s;out_stack[tr+1]=0;out_stack[tr+2]=n1;out_stack[tr+3]=n2;out_stack[tr+4]=nstack;++sc;
+            if constexpr(Diagnostics){out_stack[tr]=s;out_stack[tr+1]=0;out_stack[tr+2]=n1;out_stack[tr+3]=n2;out_stack[tr+4]=nstack;}++sc;
             int a1=adr1+n1,a2=adr2+n2;
             bool leaf1=child[2*a1]==-1&&child[2*a1+1]==-1,leaf2=child[2*a2]==-1&&child[2*a2+1]==-1;
             int id1=geomid[a1],id2=geomid[a2];
             if((leaf1&&(id1< -1||id1>=ngeom))||(leaf2&&(id2< -1||id2>=ngeom))){status[w]=7;first_stage[w]=s;break;}
             if(vc>=visit_slots){status[w]=8;first_stage[w]=s;break;}
             int vr=(w*visit_slots+vc)*12;
-            out_visit[vr]=s;out_visit[vr+1]=n1;out_visit[vr+2]=n2;out_visit[vr+3]=leaf1;out_visit[vr+4]=leaf2;
+            if constexpr(Diagnostics){out_visit[vr]=s;out_visit[vr+1]=n1;out_visit[vr+2]=n2;out_visit[vr+3]=leaf1;out_visit[vr+4]=leaf2;
             out_visit[vr+5]=id1;out_visit[vr+6]=id2;out_visit[vr+7]=nstack;
-            for(int k=8;k<12;++k)out_visit[vr+k]=-1;
+            for(int k=8;k<12;++k)out_visit[vr+k]=-1;}
             ++vc;
             if(leaf1&&leaf2&&id1!=-1&&id2!=-1){
                 int sphere=tree_sphere(id1,id2,rbound,gtype,geom_pos,geom_mat,w*ngeom*3,w*ngeom*9);
-                out_visit[vr+8]=sphere;
+                if constexpr(Diagnostics)out_visit[vr+8]=sphere;
                 if(sphere){
                     int obb=tree_obb(geom_aa,6*id1,6*id2,geom_pos,w*ngeom*3+3*id1,w*ngeom*3+3*id2,
                         geom_mat,w*ngeom*9+9*id1,w*ngeom*9+9*id2,0,local_product,local_offset,0,initialize);
-                    out_visit[vr+9]=obb&1;out_visit[vr+11]=(obb>>2)-1;
+                    if constexpr(Diagnostics){out_visit[vr+9]=obb&1;out_visit[vr+11]=(obb>>2)-1;}
                     if(obb&1){
                         if(lc>=leaf_slots){status[w]=9;first_stage[w]=s;break;}
                         int lr=(w*leaf_slots+lc)*3;
-                        out_leaf[lr]=s;out_leaf[lr+1]=id1;out_leaf[lr+2]=id2;++lc;
+                        if constexpr(Diagnostics){out_leaf[lr]=s;out_leaf[lr+1]=id1;out_leaf[lr+2]=id2;}++lc;
                         if(!tree_suppressed(id1,id2,merged,start,end,pair1,pair2,pair_key_offsets,pair_key_indices,ngeom)){
                             if(rc>=req_slots){status[w]=6;first_stage[w]=s;break;}
                             int rr=(w*req_slots+rc)*4;
                             out_req[rr]=s;out_req[rr+1]=id1;out_req[rr+2]=id2;out_req[rr+3]=0;++rc;
                         }
-                        out_active[w*body_nodes+a1]=out_active[w*body_nodes+a2]=1;
+                        if constexpr(Diagnostics)out_active[w*body_nodes+a1]=out_active[w*body_nodes+a2]=1;
                     }
                 }
                 continue;
             }
             int obb=tree_obb(bvh_aa,6*a1,6*a2,xipos,w*nbody*3+3*b1,w*nbody*3+3*b2,
                 ximat,w*nbody*9+9*b1,w*nbody*9+9*b2,1,local_product,local_offset,0,initialize);
-            out_visit[vr+10]=obb&1;initialize=(obb>>1)&1;out_visit[vr+11]=(obb>>2)-1;
+            initialize=(obb>>1)&1;
+            if constexpr(Diagnostics){out_visit[vr+10]=obb&1;out_visit[vr+11]=(obb>>2)-1;}
             if(!(obb&1))continue;
-            out_active[w*body_nodes+a1]=out_active[w*body_nodes+a2]=1;
+            if constexpr(Diagnostics)out_active[w*body_nodes+a1]=out_active[w*body_nodes+a2]=1;
             int split1=0;
             if(!leaf1&&leaf2)split1=1;
             else if(!(leaf1&&!leaf2)&&tree_surface(bvh_aa,6*a1)>tree_surface(bvh_aa,6*a2))split1=1;
@@ -256,7 +258,7 @@ __device__ inline void cf_tree(int w,const int* stage,const int* stage_count,con
                     stack1[sb+nstack]=p1;stack2[sb+nstack]=p2;++nstack;
                     if(sc>=stack_slots){status[w]=5;first_stage[w]=s;break;}
                     tr=(w*stack_slots+sc)*5;
-                    out_stack[tr]=s;out_stack[tr+1]=1;out_stack[tr+2]=p1;out_stack[tr+3]=p2;out_stack[tr+4]=nstack;++sc;
+                    if constexpr(Diagnostics){out_stack[tr]=s;out_stack[tr+1]=1;out_stack[tr+2]=p1;out_stack[tr+3]=p2;out_stack[tr+4]=nstack;}++sc;
                 }
             }
             if(status[w])break;
@@ -274,5 +276,17 @@ __device__ inline void cf_tree(int w,const int* stage,const int* stage_count,con
         libero_vec::copy_serial(local_product,product+w*36,36);
         libero_vec::copy_serial(local_offset,offset+w*12,12);
     }
+}
+} // namespace collision_cuda
+#include "collision_tree_parallel.cuh"
+namespace collision_cuda {
+// General component/debug callers retain complete diagnostic tapes.
+template<class... Args>
+__device__ __forceinline__ void cf_tree(Args... args){cf_tree_impl<true>(args...);}
+// Production reuses the unused visit tape as bounded private global scratch.
+// The caller supplies the usual stage barrier after either collective path.
+template<class... Args>
+__device__ __forceinline__ void cf_tree_live(Args... args){
+    if(!tree_parallel_live(args...))cf_tree_impl<false>(args...);
 }
 } // namespace collision_cuda

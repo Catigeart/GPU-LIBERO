@@ -15,6 +15,24 @@ from .facade import UnsupportedGpuOperation, CompletedColdModelUpdate
 _PLACEMENT_LOCK = RLock()
 
 
+def _bind_static_robot_references(robot, sim, meta=None):
+    """Bind compiled indices and an existing facade; perform no CPU initialization."""
+    robot.sim = sim
+    if meta is None:return
+    robot.robot_joints = list(meta["joint_names"])
+    robot._ref_joint_pos_indexes = list(meta["qpos_indices"])
+    robot._ref_joint_vel_indexes = list(meta["qvel_indices"])
+    robot._ref_joint_indexes = list(meta["joint_ids"])
+    robot._ref_joint_actuator_indexes = list(meta["actuator_ids"])
+    gripper = meta.get("gripper", {})
+    robot._ref_gripper_joint_pos_indexes = list(gripper.get("qpos_indices", ()))
+    robot._ref_gripper_joint_vel_indexes = list(gripper.get("qvel_indices", ()))
+    robot._ref_joint_gripper_actuator_indexes = list(gripper.get("actuator_ids", ()))
+    if robot.has_gripper: robot.gripper_joints = list(gripper["joint_names"])
+    robot.eef_site_id = meta["eef_site_id"]
+    robot.eef_cylinder_id = meta["eef_cylinder_id"]
+
+
 @dataclass
 class GpuTaskComponents:
     built: object
@@ -122,21 +140,8 @@ class GpuTaskEnvironment:
         # because it invokes normal robot/controller initialization.
         static_robots = getattr(self.built, "metadata", {}).get("robot_metadata", ())
         for index, robot in enumerate(self.shell.robots):
-            robot.sim = self.sim
-            if index < len(static_robots):
-                meta = static_robots[index]
-                robot.robot_joints = list(meta["joint_names"])
-                robot._ref_joint_pos_indexes = list(meta["qpos_indices"])
-                robot._ref_joint_vel_indexes = list(meta["qvel_indices"])
-                robot._ref_joint_indexes = list(meta["joint_ids"])
-                robot._ref_joint_actuator_indexes = list(meta["actuator_ids"])
-                gripper = meta.get("gripper", {})
-                robot._ref_gripper_joint_pos_indexes = list(gripper.get("qpos_indices", ()))
-                robot._ref_gripper_joint_vel_indexes = list(gripper.get("qvel_indices", ()))
-                robot._ref_joint_gripper_actuator_indexes = list(gripper.get("actuator_ids", ()))
-                if robot.has_gripper: robot.gripper_joints = list(gripper["joint_names"])
-                robot.eef_site_id = meta["eef_site_id"]
-                robot.eef_cylinder_id = meta["eef_cylinder_id"]
+            meta = static_robots[index] if index < len(static_robots) else None
+            _bind_static_robot_references(robot, self.sim, meta)
             adapter = self.components.controller
             if hasattr(adapter, "public") and callable(getattr(adapter, "validate", None)):
                 from libero.gpu.host.runtime.control.public_view import controller_public_view

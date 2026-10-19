@@ -13,7 +13,12 @@ class HostObservableCompatibility:
         self.env=env
         # Observable constructors validate sensors by executing them. Caller must
         # bind this only after the actual GPU initial forward has completed.
-        self.observables=env._setup_observables()
+        setup=env._setup_observables
+        if (getattr(env,"physics_backend",None)=="gpu" and
+                setup is getattr(env,"_gpu_model_only_setup_observables_shim",None)):
+            setup=env._gpu_original_setup_observables
+            if not callable(setup):raise TypeError("retained original observable setup must be callable")
+        self.observables=setup()
         self.cache=getattr(env,"_obs_cache",{})
         env._observables=self.observables
         env._obs_cache=self.cache

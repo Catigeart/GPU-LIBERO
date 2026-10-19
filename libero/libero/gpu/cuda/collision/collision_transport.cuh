@@ -80,6 +80,48 @@ __device__ void cf_commit_contacts_transport(int w,int* active,int* valid,int* e
     if(threadIdx.x==0&&target_ok){target_ncon[w]=n;target_active[w]=1;}
 }
 
+// Live candidates contain only the 28 initialized solver fields. Preserve
+// all 65 public doubles, including mu/H zeros, at transactional commit.
+__device__ void cf_commit_contacts_live(int w,int* active,int* error,int* ncon,
+        double* candidate_f,int* candidate_i,double* public_f,int* public_i,int capacity){
+    if(active[w]!=1||error[w])return;
+    const int n=ncon[w];if(n<0||n>capacity)return;
+    const long long base=1LL*w*capacity;
+    for(long long field=threadIdx.x;field<1LL*n*65;field+=blockDim.x){
+        const int k=field%65;const long long row=base+field/65;
+        public_f[row*65+k]=k<28?candidate_f[row*28+k]:0.0;
+    }
+    libero_vec::copy_block(candidate_i+base*5,public_i+base*5,size_t(n)*5);
+}
+
+__device__ void cf_commit_contacts_transport_live(int w,int* active,int* valid,int* error,
+        int* cerror,int* cactive,int* ncon,double* candidate_f,int* candidate_i,
+        double* public_f,int* public_i,int* target_active,int* target_ncon,
+        double* dist,double* pos,double* frame,double* margin,double* friction,
+        double* solref,double* solreffriction,double* solimp,
+        int* dim,int* geom1,int* geom2,int* exclude,int source_capacity,int target_capacity){
+    if(threadIdx.x==0)target_active[w]=0;
+    __syncthreads();
+    const int n=ncon[w];
+    const bool c_ok=cactive[w]==1&&!cerror[w]&&n>=0&&n<=source_capacity;
+    const bool target_ok=c_ok&&active[w]==1&&valid[w]==1&&!error[w]&&n<=target_capacity;
+    if(!c_ok)return;
+    const long long base=1LL*w*source_capacity;
+    for(long long field=threadIdx.x;field<1LL*n*65;field+=blockDim.x){
+        const int k=field%65;const long long row=base+field/65;
+        const double value=k<28?candidate_f[row*28+k]:0.0;
+        public_f[row*65+k]=value;
+        if(target_ok&&k<28)cf_scatter_f(k,w*target_capacity+field/65,value,
+            dist,pos,frame,margin,friction,solref,solreffriction,solimp);
+    }
+    for(long long field=threadIdx.x;field<1LL*n*5;field+=blockDim.x){
+        const int value=candidate_i[base*5+field];public_i[base*5+field]=value;
+        if(target_ok)cf_scatter_i(field%5,w*target_capacity+field/5,value,dim,geom1,geom2,exclude);
+    }
+    __syncthreads();
+    if(threadIdx.x==0&&target_ok){target_ncon[w]=n;target_active[w]=1;}
+}
+
 __device__ void cf_transport(int w,int* active,int* valid,int* error,int* cerror,int* cactive,int* ncon,
         double* cf,int* ci,int* target_active,int* target_ncon,double* dist,double* pos,double* frame,
         double* margin,double* friction,double* solref,double* solreffriction,double* solimp,

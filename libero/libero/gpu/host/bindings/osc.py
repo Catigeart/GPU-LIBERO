@@ -20,10 +20,12 @@ CONTROL=tuple(inspect.signature(reference.fused_osc_control.func).parameters)
 def refresh_args(c):
     return [getattr(c,k) for k in REFRESH]
 
-def control_args(c):
+def control_args(c,*,emit_diagnostics=None):
+    """Bind the native output flag without changing the sealed workspace mode."""
     rename={'raw_tau':'torques_raw','emit_diagnostics':'diagnostics'}
     if getattr(c,'robot_projection',False):rename.update(ctrl='internal_ctrl',gripper='internal_gripper')
-    return [getattr(c,rename.get(k,k)) for k in CONTROL]
+    return [int(bool(emit_diagnostics)) if k=='emit_diagnostics' and emit_diagnostics is not None
+            else getattr(c,rename.get(k,k)) for k in CONTROL]
 
 def _make(name, stages, c, root):
     heavy=any(s[0] in ('osc_cuda::control','osc_cuda::control_fast','osc_goal_cuda::control') for s in stages)
@@ -55,6 +57,7 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     if diagnostic_profile not in ("compatibility","fast"):raise ValueError("invalid OSC diagnostic profile")
     """Replace existing r03 runtime groups without rebinding any data owners."""
     gather_report=None
+    debug=bool(getattr(owner,'debug',False))
     if hasattr(owner,'dynamics'):
         from .osc_gather import install as install_gather
         bundle=owner
@@ -77,6 +80,12 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     aliases=any(_overlap(a,b) for i,a in enumerate(arrays) for b in arrays[i+1:])
     if aliases:fast=False
     if getattr(c,'general_goals',False):fast=False
+    # Only the disjoint, non-debug fast path suppresses optional output stores.
+    # c.diagnostics belongs to the sealed reference workspace configuration;
+    # pass this cold native selection explicitly rather than mutating it.
+    emit_diagnostics=int(bool(c.diagnostics) and
+        (debug or not fast or diagnostic_profile=='compatibility'))
+    args=control_args(c,emit_diagnostics=emit_diagnostics)
     if fast:
         cache={"valid":wp.zeros(c.nworld,dtype=wp.int32,device=c.device),
             "key":wp.zeros((c.nworld,91),dtype=wp.float64,device=c.device),
@@ -84,14 +93,14 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
             "ranks":wp.zeros((c.nworld,3),dtype=wp.int32,device=c.device),
             "hits":wp.zeros(c.nworld,dtype=wp.int32,device=c.device)}
         owner._cuda_osc_derived_cache=cache
-        run_stages=[('osc_cuda::control_fast',control_args(c)+list(cache.values())+[
+        run_stages=[('osc_cuda::control_fast',args+list(cache.values())+[
             c.phys_mass,c.phys_jacobian,c.phys_q,c.phys_qvel,c.phys_ee_pos,c.phys_ee_rot,
             c.phys_ee_velocity,c.cache_valid],'block')]
     else:
-        run_stages=[('osc_cuda::refresh',refresh_args(c),'lane0'),('osc_cuda::control',control_args(c),'block')]
+        run_stages=[('osc_cuda::refresh',refresh_args(c),'lane0'),('osc_cuda::control',args,'block')]
     if getattr(c,'general_goals',False):
         from libero.gpu.host.runtime.control.general_osc import goal_stages
-        args=control_args(c)
+        args=list(args)
         args[CONTROL.index('goal_pos')]=c.goal_effective_pos
         args[CONTROL.index('policy_step')]=c.goal_core_policy
         run_stages=[('osc_cuda::refresh',refresh_args(c),'lane0'),*goal_stages(c),('osc_goal_cuda::control',args+[c.goal_ori_error],'block')]
@@ -166,7 +175,14 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     owner._cuda_osc_plans={'planning':planning,'run':owner._run,'reset':owner._reset,
         'bootstrap_begin':owner._bootstrap_begin,'bootstrap_end':owner._bootstrap_end,'seed':owner._seed,
         'initialize':init_plan}
-    return {'dataflow_profile':dataflow_profile,'effective_dataflow_profile':('fast' if fast else 'compatible'),'alias_fallback':aliases,'diagnostic_profile':diagnostic_profile,'gather':gather_report,'groups':{
+    # The existing flag guards only nullspace_matrix[49]. The shared projector
+    # still computes torques; the other diagnostics and transaction copies stay.
+    # When disabled, seed/commit retains this field's last published value.
+    return {'dataflow_profile':dataflow_profile,'effective_dataflow_profile':('fast' if fast else 'compatible'),'alias_fallback':aliases,'diagnostic_profile':diagnostic_profile,
+        'emit_diagnostics':emit_diagnostics,'workspace_diagnostics':int(bool(c.diagnostics)),
+        'effective_diagnostic_profile':('compatibility' if emit_diagnostics else 'fast'),
+        'held_diagnostics':([] if emit_diagnostics else ['nullspace_matrix']),
+        'gather':gather_report,'groups':{
         'run':{str(k):p.manifest for k,p in owner._run.plans.items()},
         'reset':{str(k):p.manifest for k,p in owner._reset.plans.items()},
         'seed':owner._seed.manifest}}

@@ -12,8 +12,8 @@ import warp as wp
 from libero.gpu.host.build.native import NativePlan
 
 
-def _prefix(f):
-    from libero.gpu.host.runtime.step.physics import _c_mask, _reference_mask
+def _position_prefix(f):
+    from libero.gpu.host.runtime.step.physics import _c_mask
     f.f.launch_position(stream=f.stream)
     f._launch(_c_mask,[f.d.active,f.d.valid['position'],f.d.written['position'],
         f.expected_forward,f.d.first_error,f.c_mask])
@@ -22,6 +22,10 @@ def _prefix(f):
     if f.position_tape is not None:f.position_tape.capture()
     f.s.launch_position()
     # Scene callback is attached after environment assembly; invoke outside cache.
+
+
+def _velocity_prefix(f):
+    from libero.gpu.host.runtime.step.physics import _reference_mask
     f.f.launch_velocity(stream=f.stream)
     f._launch(_reference_mask,[f.d.valid['velocity'],f.d.written['velocity'],
         f.expected_forward,f.d.first_error,f.transport.active])
@@ -29,6 +33,11 @@ def _prefix(f):
     f.s.launch_reference()
     f.d.launch_bias(reference_done=sw.reference_ready,reference_error=sw.status,
         reference_written=sw.ref_epoch,reference_expected=f.expected_forward,stream=f.stream)
+
+
+def _prefix(f):
+    _position_prefix(f)
+    _velocity_prefix(f)
 
 
 def _begin(f,mask,stream,step1):
@@ -40,6 +49,7 @@ def _begin(f,mask,stream,step1):
     f.f.begin_forward_with_plan(f.mask,stream=f.stream,plan=f.expected_forward)
     f._dataflow_reuse.enqueue()
     if f.scene_transform is not None:f.scene_transform(f.c_mask,f.stream)
+    if getattr(f._dataflow_reuse,'position_only',False):_velocity_prefix(f)
 
 
 def _enqueue(f,mask,stream):
@@ -48,7 +58,8 @@ def _enqueue(f,mask,stream):
     f.d.launch_force(ctrl=f.ctrl,ctrl_valid=f.ctrl_valid,stream=f.stream)
     f._fusion_project_newton()
     if f.before_constraint is not None:f.before_constraint(f.stream)
-    f._fusion_entry_copy.launch(f.stream)
+    if f._fusion_entry_copy is not None:
+        f._fusion_entry_copy.launch(f.stream)
     f.n.enqueue(f.n_upstream,active=f.mask,expected_epoch=f.expected_newton,
                 publication_status=f.projection_status)
     if f.acceleration_sensor is not None:f.acceleration_sensor(f.n_admitted,f.stream)

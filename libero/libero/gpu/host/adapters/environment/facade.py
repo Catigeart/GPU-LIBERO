@@ -4,6 +4,7 @@ Reads never execute physics. Derived fields retain their original publication
 phase; get_state/set_state are partial state operations, not resets.
 """
 from dataclasses import dataclass
+from collections.abc import Mapping
 from threading import RLock
 from functools import wraps
 import hashlib
@@ -37,6 +38,35 @@ def _copy_readonly(value):
     if isinstance(value, (list, tuple)):
         return tuple(_copy_readonly(item) for item in value)
     return value
+
+
+def _freeze_shared(value):
+    if isinstance(value, np.ndarray):
+        if value.dtype.hasobject:
+            raise TypeError('shared model arrays must have a byte-stable dtype')
+        # Read-only flags on an owning ndarray can be reversed. Immutable
+        # bytes prevent a caller from making a shared array writable again.
+        return np.frombuffer(value.tobytes(order='C'), dtype=value.dtype).reshape(value.shape)
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_shared(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_shared(item) for item in value)
+    return value
+
+
+class SharedModelMetadata(Mapping):
+    """One detached immutable model snapshot for a batch's host facades."""
+    def __init__(self, metadata):
+        self._values = _freeze_shared(metadata)
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
 
 
 @dataclass
@@ -73,7 +103,13 @@ class _OptionView:
 class _ModelView:
     def __init__(self, metadata, sim=None):
         self._sim = sim
-        self._metadata = {key: _copy_readonly(value) for key, value in metadata.items()}
+        # Only this explicitly frozen packet grants sharing. Arbitrary caller
+        # ndarrays, including arrays with write=False, still get private copies.
+        shared = isinstance(metadata, SharedModelMetadata)
+        self._metadata = (dict(metadata) if shared else
+                          {key: _copy_readonly(value) for key, value in metadata.items()})
+        self._shared_metadata_names = frozenset(
+            key for key, value in metadata.items() if shared and isinstance(value, np.ndarray))
         bind_original_name_maps(self)
 
     def __getattr__(self, name):
@@ -522,7 +558,8 @@ class GpuSimFacade:
                     incoming = metadata.get(name)
                     if not isinstance(incoming, np.ndarray) or incoming.shape != value.shape or incoming.dtype != value.dtype:
                         raise ValueError("fresh model metadata shape/dtype changed: " + name)
-                    retained_metadata[name] = value
+                    if name not in self.model._shared_metadata_names:
+                        retained_metadata[name] = value
             from types import SimpleNamespace
             names = SimpleNamespace(_metadata=metadata)
             bind_original_name_maps(names)
@@ -542,6 +579,7 @@ class GpuSimFacade:
                 array.setflags(write=writable)
                 metadata[name] = array
             self.model._metadata = metadata
+            self.model._shared_metadata_names = frozenset()
             for name, value in vars(names).items():
                 if name != "_metadata": object.__setattr__(self.model, name, value)
             self._closed = False

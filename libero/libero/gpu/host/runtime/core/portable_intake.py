@@ -196,8 +196,8 @@ class NativeIntakeBinding:
 def prepare_native_intake(built, *, cache_dir=None):
     """Generate current S specialization from native bytes, retaining exact owner.
 
-    Unique directories deliberately avoid persistent receipt reuse. Existing
-    structural/static/capacity admission and source-authentication remain in force.
+    Owner receipts are always fresh; identical generated sources may use the
+    persistent project cache. Structural/static/capacity and source checks remain.
     The returned binding validates cold changes and supports explicit revocation.
     """
     from libero.gpu.host.runtime.constraints.identity import STATIC_SCHEMA
@@ -228,10 +228,18 @@ def prepare_native_intake(built, *, cache_dir=None):
                 'libero-gpu') / 'intake'
     root.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix='native-', dir=root))
-    # A unique Python namespace prevents sys.modules from returning another
-    # model's generated identity when several environments coexist.
-    package = directory / ('shape_s_' + uuid.uuid4().hex)
-    generated = generate_specialization(manifest, static, package)
+    from .product_paths import current_build_project, record_build
+    project = current_build_project()
+    if project is None:
+        # Standalone intake retains its original isolated namespace.
+        package = directory / ('shape_s_' + uuid.uuid4().hex)
+        generated = generate_specialization(manifest, static, package)
+    else:
+        from .specialization_cache import generated_package
+        package, generated, hit = generated_package(manifest, static, generate_specialization,
+                                                    project['root'] / 'specializations')
+        record_build('constraint-source', package.name,
+                     () if hit else (('generate-specialization', str(package)),))
     pins = {entry['path']: entry['sha256'] for group in ('template_pins', 'generated_pins')
             for entry in generated[group].values()}
     for path in (Path(__file__), Path(__file__).with_name('contracts.py'),

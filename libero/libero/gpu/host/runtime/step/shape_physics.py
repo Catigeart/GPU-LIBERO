@@ -75,8 +75,8 @@ class ShapePhysicsForward(FixedPhysicsForward):
         self._launch(_increment_plan,[self.mask,self.d.first_error,self.expected_newton])
         if self.before_constraint is not None:
             self.before_constraint(self.stream)
-        for name,a in self.entry_sources.items():
-            wp.copy(self.entry_witness[name],a,stream=self.stream)
+        for name,target in self.entry_witness.items():
+            wp.copy(target,self.entry_sources[name],stream=self.stream)
         self.n.enqueue(self.n_upstream,active=self.mask,expected_epoch=self.expected_newton,publication_status=self.projection_status)
         if self.acceleration_sensor is not None:
             self.acceleration_sensor(self.n_admitted,self.stream)

@@ -21,7 +21,7 @@ import warp as wp
 _CACHE = {}
 
 
-def _load(name, source, namespace):
+def _load(name, source, namespace, *, warp_module=True):
     digest = hashlib.sha256(source.encode()).hexdigest()
     module_name = __name__ + "._" + name + "_" + digest[:16]
     if module_name in sys.modules:
@@ -35,8 +35,9 @@ def _load(name, source, namespace):
     module.__name__, module.__file__ = module_name, filename
     sys.modules[module_name] = module
     exec(compile(source, filename, "exec"), module.__dict__)
-    wp.set_module_options({"enable_backward": False, "fuse_fp": True,
-                           "fast_math": False}, module=module_name)
+    if warp_module:
+        wp.set_module_options({"enable_backward": False, "fuse_fp": True,
+                               "fast_math": False}, module=module_name)
     module.generated_source = source
     return module
 

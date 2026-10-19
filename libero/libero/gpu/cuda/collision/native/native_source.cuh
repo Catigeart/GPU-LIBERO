@@ -3273,6 +3273,7 @@ edgeedge:
       u = (x * d - y * b) * (1 / c1);
       v = (y * a - x * c) * (1 / c1);
 
+      const int outside = u < 0 || u > 1 || v < 0 || v > 1;
       if (nl == 0) {
         if ((u < 0 || u > 1) && (v < 0 || v > 1))
           continue;
@@ -3301,15 +3302,16 @@ edgeedge:
 
       mju_sub3(tmp2, points[n], tmp1);
 
-      c1 = mju_dot3(tmp2, tmp2);
-      if (tmp1[2] > 0)
-        if (c1 > margin2)
+      // c1 remains the projection determinant for the next corner.
+      c2 = mju_dot3(tmp2, tmp2);
+      if (outside || tmp1[2] > 0)
+        if (c2 > margin2)
           continue;
 
       mju_add3(points[n], points[n], tmp1);
       mju_scl3(points[n], points[n], 0.5);
 
-      depth[n] = sqrt(c1) * (tmp1[2] < 0 ? -1 : 1);
+      depth[n] = sqrt(c2) * (!outside && tmp1[2] < 0 ? -1 : 1);
       n++;
     }
   }
@@ -3320,6 +3322,7 @@ edgeedge:
     if (n < mjMAXCONPAIR) {
       x = ppts2[i][0];
       y = ppts2[i][1];
+      const int outside = x < -lx || x > lx || y < -ly || y > ly;
 
       if (nl == 0) {
         if (nf == 0) {
@@ -3341,7 +3344,7 @@ edgeedge:
 
       c1 += pu[i][2] * innorm * pu[i][2] * innorm;
 
-      if (pu[i][2] > 0)
+      if (outside || pu[i][2] > 0)
         if (c1 > margin2)
           continue;
 
@@ -3359,7 +3362,7 @@ edgeedge:
       mju_addToScl3(tmp1, pu[i], 0.5);
       mju_copy3(points[n], tmp1);
 
-      depth[n] = sqrt(c1) * (pu[i][2] < 0 ? -1 : 1);
+      depth[n] = sqrt(c1) * (!outside && pu[i][2] < 0 ? -1 : 1);
       n++;
     }
   }

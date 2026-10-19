@@ -64,12 +64,22 @@ def candidate_sources(nv, nm):
 
 
 def load_candidate(nv, nm, build_root):
-    sources, manifest = candidate_sources(nv, nm)
+    from libero.gpu.host.runtime.core.product_paths import current_build_project
+    from libero.gpu.host.build.aot import offline_newton_source
+    project = current_build_project()
+    prepared = offline_newton_source(project['root'], nv, nm) if project is not None else None
+    if prepared is None:
+        sources, manifest = candidate_sources(nv, nm)
+    else:
+        destination, manifest = prepared
+        sources = {}
     digest = manifest["candidate_id"]
-    destination = Path(build_root).resolve() / ("jar_nv%d_nm%d_%s" % (nv, nm, digest[:16]))
+    if prepared is None:
+        destination = Path(build_root).resolve() / ("jar_nv%d_nm%d_%s" % (nv, nm, digest[:16]))
     destination.mkdir(parents=True, exist_ok=True)
     products = dict(sources)
-    products["candidate"] = (json.dumps(manifest, indent=2, sort_keys=True) + chr(10)).encode()
+    if prepared is None:
+        products["candidate"] = (json.dumps(manifest, indent=2, sort_keys=True) + chr(10)).encode()
     for name, raw in products.items():
         path = destination / (name + (".json" if name == "candidate" else ".py"))
         if path.exists():

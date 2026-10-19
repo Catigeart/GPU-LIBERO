@@ -17,12 +17,14 @@ from .generic_prepare import _cold_factories
 
 def prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                             mode='diagnostic', with_controller=True, tape_steps=0,
-                            model_spec=None, constraint_package=None, nworld=1, memory_budget=None):
+                            model_spec=None, constraint_package=None, nworld=1, memory_budget=None,
+                            capture_entry_witness=False):
     stream = wp.get_stream(device) if stream is None else stream
     try:
         return _prepare_shape_physics(built,state=state,device=device,stream=stream,
             mode=mode,with_controller=with_controller,tape_steps=tape_steps,
-            model_spec=model_spec,constraint_package=constraint_package,nworld=nworld,memory_budget=memory_budget)
+            model_spec=model_spec,constraint_package=constraint_package,nworld=nworld,memory_budget=memory_budget,
+            capture_entry_witness=capture_entry_witness)
     except BaseException as error:
         # Synchronize pending allocations/copies before dropping failed local
         # arenas. The original exception/trace remains available to the runner.
@@ -38,7 +40,8 @@ def prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
 
 def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                              mode='diagnostic', with_controller=True, tape_steps=0,
-                             model_spec=None, constraint_package=None, nworld=1, memory_budget=None):
+                             model_spec=None, constraint_package=None, nworld=1, memory_budget=None,
+                             capture_entry_witness=False):
     if mode != 'diagnostic':
         raise ValueError('raw-model full-chain production acceptance is pending')
     model = built.native_model
@@ -110,17 +113,19 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
         R = C*6 + int(model.nv) + int(model.njnt)
         from libero.gpu.host.bindings.model_capacity import plan_native_model
         capacity_plan = plan_native_model(built.metadata, nworld=W, rows=R, contacts=C)
-        # Generated capsule namespaces may have identical source bytes but
-        # distinct absolute compiler argv. Each arena owns a private product
-        # directory so native source/argv validation remains exact.
-        native_root = build/'c-native'
-        native_root.mkdir(mode=0o700)
+        # Stable compiler paths permit cross-process reuse while preserving
+        # exact native source/argv validation and fresh runtime owner bindings.
+        from libero.gpu.host.runtime.core.product_paths import current_build_project
+        project = current_build_project()
+        collision_build = project['root'] / 'collision' if project is not None else build
+        native_root = collision_build/'c-native'
+        native_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         previous_native_root = os.environ.get('P06C_NATIVE_BUILD_ROOT')
         os.environ['P06C_NATIVE_BUILD_ROOT'] = str(native_root)
         try:
             c = collision_factory(cstatic,cplan,source_owner=owner,
                 source_paths={k:k for k in ('xpos','xmat','xipos','ximat','active')},
-                stream=stream,device=device,capsule_source_root=build/'c-capsule')
+                stream=stream,device=device,capsule_source_root=collision_build/'c-capsule')
         finally:
             if previous_native_root is None:
                 os.environ.pop('P06C_NATIVE_BUILD_ROOT',None)
@@ -146,26 +151,30 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                 contact_dim=transport.inputs['dim'].reshape((W,C)),contact_mu=sw.contact_mu.reshape((W,C)),
                 contact_friction=transport.inputs['friction'].reshape((W,C,5))))
         physics = ShapePhysicsForward(runtime_shape=runtime_shape,dynamics=d,collision=c,transport=transport,constraints=s,
-            newton=n,foundation=f,expected_forward=forward_plan,ctrl=ctrl,ctrl_valid=state_valid,stream=stream)
+            newton=n,foundation=f,expected_forward=forward_plan,ctrl=ctrl,ctrl_valid=state_valid,stream=stream,
+            capture_entry_witness=capture_entry_witness)
+        from .post_contact_address import PostContactAddressBridge, capture_post_with_current_address
+        address_bridge = PostContactAddressBridge(sw,active=physics.n_admitted,stream=stream)
         public, nw = n.public_arrays, n.ws
         sources = dict(qvel=d.qvel,qacc=public['qacc'],cinert=pos.mass.cinert,cvel=d.cvel,
             cdof=pos.mass.cdof,cdof_dot=d.cdof_dot,xipos=pos.mass.xipos,subtree_com=pos.mass.subtree_com,
             site_xpos=pos.frames.site_xpos,site_xmat=pos.frames.site_xmat,xfrc_applied=d.xfrc_applied,
             efc_force=public['efc_force'],ncon=transport.ncon,nefc=nw.nefc,ne=nw.ne,
-            contact_dim=transport.inputs['dim'],contact_efc_address=sw.contact_address,
+            contact_dim=transport.inputs['dim'],contact_efc_address=address_bridge.current,
             contact_geom1=transport.inputs['geom1'],contact_geom2=transport.inputs['geom2'],
             contact_frame=transport.inputs['frame'],contact_pos=transport.inputs['pos'])
         post = prepare_post(intake,W,C,R,sources=sources,active=physics.n_admitted,first_error=first,
             d_valid=d.valid['smooth'],state_epoch=epoch,forward_epoch=d.forward_epoch,n_valid=n.valid,
             n_error=nw.err_code,n_written=n.n_written,n_attempt=n.n_attempt,
             n_expected=physics.expected_newton,stream=stream)
-        physics.before_constraint = post.capture_before_constraint
+        post.contact_address_bridge = address_bridge
+        physics.before_constraint = lambda st: capture_post_with_current_address(address_bridge,post,st)
         physics.acceleration_sensor = lambda mask,st:post.enqueue(stream=st)
         physics.final_valid = post.valid
         physics.scope_gaps.remove('acceleration_sensor_hook')
         original_validate = physics.validate
         def validate_all():
-            original_validate();post.validate(stream)
+            original_validate();address_bridge.validate(stream);post.validate(stream)
         physics.validate = validate_all
         controller = None
         if with_controller:

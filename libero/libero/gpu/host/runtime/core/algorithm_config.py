@@ -102,8 +102,16 @@ class AlgorithmOptions:
     newton: NewtonAlgorithmOptions = field(default_factory=NewtonAlgorithmOptions)
     collision: CollisionAlgorithmOptions = field(default_factory=CollisionAlgorithmOptions)
     post: PostAlgorithmOptions = field(default_factory=PostAlgorithmOptions)
+    collision_schedule: str = 'auto'
+    collision_workers: int = 128
+    forward_reuse: str = 'auto'
 
     def __post_init__(self):
+        if self.collision_schedule not in ('auto','fused','compact','parallel'):
+            raise ValueError('collision_schedule must be auto/fused/compact/parallel')
+        if self.forward_reuse not in ('auto','off','epoch','exact'):
+            raise ValueError('forward_reuse must be auto/off/epoch/exact')
+        object.__setattr__(self,'collision_workers',_integer('collision_workers',self.collision_workers,minimum=1))
         for name, cls in (('newton', NewtonAlgorithmOptions),
                           ('collision', CollisionAlgorithmOptions), ('post', PostAlgorithmOptions)):
             object.__setattr__(self, name, _policy(cls, getattr(self, name), name))
@@ -114,7 +122,8 @@ class AlgorithmOptions:
     @classmethod
     def baseline(cls):
         return cls(newton=NewtonAlgorithmOptions(cone_hessian_strategy='rank', rank_rebuild_threshold=0),
-                   post=PostAlgorithmOptions(contact_index_mode='scan', contact_topology_cache=False))
+                   post=PostAlgorithmOptions(contact_index_mode='scan', contact_topology_cache=False),
+                   collision_schedule='fused',forward_reuse='off')
 
     @classmethod
     def experimental(cls):

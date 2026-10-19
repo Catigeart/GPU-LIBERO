@@ -11,6 +11,8 @@ from threading import RLock
 from pathlib import Path
 
 import numpy as np
+from libero.gpu.host.build.compilation import construction_scope, environment_scope
+from libero.gpu.host.build.startup import profile_construction, startup_phase
 
 
 def _state_bank(values, nq, nv):
@@ -32,12 +34,11 @@ def _clone_shell(shell):
     return clone
 
 
-def _prepare_shared_fixtures(built, seed):
+def _prepare_shared_fixtures(shell, model, seed):
     """Original host placement sampling, before static model intake/compilation."""
-    from libero.gpu.model.factory import native_model_metadata
+    import mujoco
     from .task_driver import _PLACEMENT_LOCK
     from robosuite.utils.errors import RandomizationError
-    shell, model = built.domain_shell, built.native_model
     with _PLACEMENT_LOCK:
         previous = np.random.get_state()
         np.random.seed(seed)
@@ -53,12 +54,11 @@ def _prepare_shared_fixtures(built, seed):
             np.random.set_state(previous)
     for position, quaternion, obj in placements.values():
         if obj.name in shell.fixtures_dict:
-            body = shell.obj_body_id[obj.name]
+            body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, obj.root_body)
+            if body < 0:
+                raise KeyError(obj.root_body)
             model.body_pos[body] = position
             model.body_quat[body] = quaternion
-    # Recompute the actual native source identity after cold fixture writes.
-    fresh = native_model_metadata(model)
-    built.metadata.update(fresh)
 
 
 class _WorldBoundary:
@@ -71,10 +71,8 @@ class _WorldBoundary:
     def read_fields(self, names):
         owner = self.owner
         owner._open()
-        snapshot = owner._snapshot_cache
-        if snapshot is None:
-            owner._check()
-            snapshot = owner._snapshot()
+        names = tuple(names)
+        snapshot = owner._boundary_snapshot(names)
         return {name: snapshot[name][self.world] for name in names}
 
     def update_visual_parameters(self, changes):
@@ -99,24 +97,55 @@ class GpuBatchEnv:
     ``(dict[str, ndarray], rewards, successes, infos)``. There is no auto-reset.
     ``reset(id=...)`` and ``set_init_state(..., id=...)`` can select worlds.
     Flat initialization states follow LIBERO's [time, qpos, qvel] convention.
+    ``build_root`` selects the persistent compiler cache. ``initialize=False``
+    prepares owners without capturing the control graph or resetting; call
+    ``reset()`` before stepping. The first step prepares the graph if needed.
+    ``ready_session`` explicitly reuses one fully qualified, immutable build in
+    this process. Create it with host.build.aot.qualify_ready_session(); the
+    default independent construction retains full artifact hash validation.
     """
     physics_backend = 'gpu'
     is_async = False
 
+    @construction_scope
+    @profile_construction
     def __init__(self, bddl_file_name, num_envs=8, *, init_states=None,
                  seed=0, device='cuda:0', memory_budget=None,
-                 strict_build_receipts=False, **environment_options):
+                 strict_build_receipts=False, build_root=None, initialize=True,
+                 allow_compile=False, debug=False, ready_session=None,
+                 profile_startup=False, algorithm_options=None, **environment_options):
         if type(num_envs) is not int or not 1 <= num_envs <= 128:
             raise ValueError('num_envs must be an integer in [1, 128]')
         from libero.gpu.host.runtime.core.memory_budget import normalize_memory_budget
         policy = normalize_memory_budget(memory_budget)
         if type(strict_build_receipts) is not bool:
             raise ValueError('strict_build_receipts must be bool')
+        if type(initialize) is not bool:
+            raise ValueError('initialize must be bool')
+        if type(debug) is not bool:
+            raise ValueError('debug must be bool')
+        if ready_session is not None and allow_compile:
+            raise ValueError('ready_session requires allow_compile=False')
+        self.debug = debug
+        self.allow_compile = allow_compile
+        from libero.gpu.host.build.aot import project_root, require_ready, scene_for, configure_warp_cache
+        from libero.gpu.host.build.compilation import install_warp_guard
+        build_root = project_root(build_root)
+        with startup_phase('readiness_scene'):
+            if not allow_compile:
+                require_ready(build_root, bddl_file_name, num_envs=num_envs, seed=seed,
+                              observation_options=environment_options, debug=debug,
+                              ready_session=ready_session, return_record=False)
+            scene = scene_for(build_root, bddl_file_name, seed)
+        configure_warp_cache(build_root)
+        install_warp_guard()
         self._lock = RLock()
         self._closed = self._failed = False
+        self._initialized = False
         self._snapshot_cache = None
         self._physics = self.observer = self._status = None
         self._facades, self.shells = [], []
+        self._goal_plans = []
         self.num_envs = self.env_num = num_envs
         self._rngs = []
         self.seed(seed)
@@ -124,15 +153,27 @@ class GpuBatchEnv:
         from .batched_physics import prepare_native_batch
         from libero.gpu.host.runtime.step.recovery_final_event_environment_factory import default_integration_state
         options = dict(environment_options)
-        for key in ('physics_backend', 'nworld', 'state', 'stream'):
+        for key in ('physics_backend', 'nworld', 'state', 'stream', 'static_model_setup'):
             if key in options:
                 raise ValueError(f'{key} is controlled by GpuBatchEnv')
         if options.get('has_renderer', False) or options.get('hard_reset', False):
             raise ValueError('GpuBatchEnv requires offscreen rendering and fixed-model soft reset')
         options.setdefault('use_camera_obs', False)
         options.update(has_renderer=False, has_offscreen_renderer=bool(options['use_camera_obs']), hard_reset=False)
-        self.built = build_task_model(bddl_file_name, **options)
-        _prepare_shared_fixtures(self.built, seed)
+        physical_options = {'robots', 'gripper_types', 'controller_configs', 'initialization_noise',
+                            '_gpu_constructor_call', 'xml_string_override', 'compiled_model_file'}
+        if scene is not None and not physical_options.intersection(options):
+            directory = Path(scene['directory'])
+            options.update(xml_string_override=(directory/'scene.xml').read_text(),
+                           compiled_model_file=directory/'model.mjb')
+            if init_states is None:
+                init_states = np.load(directory/'initial_states.npy', allow_pickle=False)
+        elif not allow_compile:
+            raise ValueError('physical model options require their own offline build profile')
+        with startup_phase('model'):
+            self.built = build_task_model(bddl_file_name,
+                static_model_setup=lambda shell, model: _prepare_shared_fixtures(shell, model, seed),
+                **options)
         model = self.built.native_model
         if init_states is None:
             from libero.libero import get_libero_path
@@ -151,10 +192,19 @@ class GpuBatchEnv:
             state['qvel'][0] = row[1+self._nq:]
             states.append(state)
         try:
-            self._physics = prepare_native_batch(self.built, states=states,
-                device=device, memory_budget=policy, strict_build_receipts=strict_build_receipts)
-            self._assemble()
-            self.reset(init_states=initial)
+            with startup_phase('physics'):
+                self._physics = prepare_native_batch(self.built, states=states,
+                    device=device, memory_budget=policy, strict_build_receipts=strict_build_receipts,
+                    build_root=build_root, debug=debug,algorithm_options=algorithm_options)
+            self.build_report = self._physics.bundle.build_report
+            with startup_phase('observations_facades'):
+                self._assemble(build_root=build_root, strict_build_receipts=strict_build_receipts)
+            if initialize:
+                with startup_phase('control_graph'):
+                    self._physics.prepare_control_graph()
+            if initialize:
+                with startup_phase('reset'):
+                    self.reset(init_states=initial)
         except BaseException as error:
             try:
                 self.close()
@@ -162,12 +212,15 @@ class GpuBatchEnv:
                 error.gpu_cleanup_errors = [repr(cleanup)]
             raise
 
-    def _assemble(self):
+    def _assemble(self, *, build_root=None, strict_build_receipts=False):
         import warp as wp
-        from .facade import GpuSimFacade
+        from .facade import GpuSimFacade, SharedModelMetadata
         from .resident_runtime import fixed_root_descriptors
         from libero.gpu.host.adapters.observations.adapter import GpuObservationAdapter
         from libero.gpu.host.adapters.observations.runtime_binding import FixedRuntimeObservationBinding
+        from libero.gpu.host.bindings.observations import install_batch
+        from .goal_read_plan import GoalReadPlan
+        from .task_driver import _bind_static_robot_references
         from libero.gpu.host.runtime.step.recovery_status import RecoveryBoundaryStatus
         bundle = self._physics.bundle
         self.stream, self.runtime = bundle.stream, bundle.runtime
@@ -176,23 +229,35 @@ class GpuBatchEnv:
         self.substeps = self.runtime.substeps
         self.memory_budget = bundle.memory_budget
         self._fields = fixed_root_descriptors(bundle)
-        self._status = RecoveryBoundaryStatus(bundle)
+        self._status = RecoveryBoundaryStatus(bundle) if self.debug else None
         self.observer = GpuObservationAdapter(self.built.native_model, self.built.metadata,
                                              self.num_envs, device=self.stream.device)
         self._binding = FixedRuntimeObservationBinding(bundle, self.observer,
                                                        expected_observe=self.runtime.observe).install()
+        self.observation_build_report = install_batch(
+            self.observer, self._binding, bundle, build_root,
+            debug=self.debug, strict_build_receipts=strict_build_receipts)
+        self.build_report['observations'] = self.observation_build_report
         self._selection = wp.zeros(self.num_envs, dtype=wp.int32, device=self.stream.device)
         self._all = np.ones(self.num_envs, dtype=np.int32)
         template = self.built.domain_shell
         # Clone before installing any live CUDA/controller owners on a shell.
-        self.shells = [template] + [_clone_shell(template) for _ in range(self.num_envs-1)]
+        with startup_phase('clone_shells'):
+            self.shells = [template] + [_clone_shell(template) for _ in range(self.num_envs-1)]
+        with startup_phase('shared_model_metadata'):
+            metadata = SharedModelMetadata(self.built.facade_metadata(copy_arrays=False))
         for world, shell in enumerate(self.shells):
-            facade = GpuSimFacade(_WorldBoundary(self, world), self.built.facade_metadata())
+            facade = GpuSimFacade(_WorldBoundary(self, world), metadata)
             self._facades.append(facade)
             shell.sim, shell.physics_backend = facade, 'gpu'
+            for index, robot in enumerate(shell.robots):
+                _bind_static_robot_references(robot, facade, self.built.metadata['robot_metadata'][index])
             self.observer.bind_host_environment(shell, world=world)
             # Default task predicates use their own shell's object-state graph.
             # Keep CPU step/reset shims forbidden; this owner handles lifecycle.
+        self._goal_plans = [GoalReadPlan.from_shell(shell) for shell in self.shells]
+        self.observer.bind_sample_event_hook(self._sample_event)
+        self._physics.bind_observer(self.observer)
         self._closed = False
 
     def _open(self):
@@ -203,6 +268,31 @@ class GpuBatchEnv:
 
     def __len__(self):
         return self.num_envs
+
+    def prepare_substep_fusion(self, build_root, *, allow_compile=False,
+                               fast_compile=False, device_lto=False, profile_newton=False,
+                               atomic_reductions=None, defer_post=True):
+        """Opt into one fusion kernel per physical substep.
+
+        This is an experimental native-batch entry. Ordinary execution is
+        load-only; an explicit offline caller may permit missing compilation.
+        fast_compile selects a separately cached developer build that can
+        trade execution speed for shorter assembler optimization.
+        profile_newton selects the separately linked instrumentation product;
+        ordinary sampling contains no Newton profiling instructions.
+        defer_post keeps complete force/sensor output at the last pre-Euler
+        forward and both policy forwards, when the built-in sampler permits it.
+        Set False to retain complete Post on every physical substep.
+        """
+        from libero.gpu.host.build.compilation import compilation_scope
+        with self._lock:
+            self._open()
+            with compilation_scope(allow_compile):
+                return self._physics.prepare_fused_substep_graph(
+                    build_root, allow_compile=allow_compile,
+                    fast_compile=fast_compile,
+                    device_lto=device_lto, profile_newton=profile_newton,
+                    atomic_reductions=atomic_reductions, defer_post=defer_post)
 
     def _ids(self, ids):
         if ids is None:
@@ -240,31 +330,50 @@ class GpuBatchEnv:
         finally:
             self._snapshot_cache = None
 
+    def _sample_event(self, token):
+        # Hooks run before host sensors, or once after a real graph replay.
+        # Capturing a sampler does not publish a new host-readable event.
+        self._snapshot_cache = None
+
+    def _goal_fields(self, ids):
+        from libero.gpu.host.adapters.observations.boundary import GOAL_FIELDS
+        plans = getattr(self, '_goal_plans', ())
+        schemas = tuple(plans[i].fields_for(self.shells[i]) if plans else GOAL_FIELDS for i in ids)
+        names = tuple(name for name in GOAL_FIELDS if any(name in schema for schema in schemas))
+        return names, schemas
+
+    def _boundary_snapshot(self, names):
+        """Complete requested fields within this one synchronized sample event.
+
+        Qualified goal prefetches are private. Explicit/custom consumers still
+        receive real canonical fields, including contacts they request later.
+        """
+        names = tuple(dict.fromkeys(names))
+        if self._snapshot_cache is None:
+            self._check()
+            self._snapshot_cache = {}
+        missing = tuple(name for name in names if name not in self._snapshot_cache)
+        if missing:
+            self._snapshot_cache.update(self._snapshot(missing))
+        return self._snapshot_cache
+
     def _check(self):
+        if not self.debug:
+            # Host consumers still need completed device writes. This wait
+            # performs no packet gathering, source hashing or correctness check.
+            import warp as wp
+            wp.synchronize_stream(self.stream)
+            return None
         record = self._status.synchronize_and_check()
         self._integrations = np.asarray([row[16] for row in record.rows], dtype=np.int64)
         return record
 
-    def _snapshot(self):
-        # One download per field for the entire batch, including contact pairs.
-        from libero.gpu.host.adapters.observations.boundary import GOAL_FIELDS
-        snapshot = {}
-        for name in (*GOAL_FIELDS, 'time', 'qvel'):
-            if name == 'contact':
-                continue
-            field = self._fields[name]
-            snapshot[name] = field.array.numpy().reshape((self.num_envs,)+field.shape)
-        transport = self.runtime.forward.transport
-        pairs = {name: transport.inputs[name].numpy().reshape(self.num_envs, -1)
-                 for name in ('geom1', 'geom2')}
-        contacts = []
-        for world, count in enumerate(snapshot['ncon']):
-            count = int(count)
-            if not 0 <= count <= pairs['geom1'].shape[1]:
-                raise RuntimeError('contact count exceeds batch capacity')
-            contacts.append({name: value[world, :count] for name, value in pairs.items()})
-        snapshot['contact'] = contacts
-        return snapshot
+    def _snapshot(self, names=None):
+        from libero.gpu.host.adapters.environment.boundary_downloads import BoundaryDownloads
+        downloads = getattr(self, '_boundary_downloads', None)
+        if downloads is None:
+            downloads = self._boundary_downloads = BoundaryDownloads()
+        return downloads.download(self, names)
 
     def _observations(self, ids):
         values = self.observer.observations_many(ids,
@@ -278,28 +387,32 @@ class GpuBatchEnv:
         with wp.ScopedStream(self.stream):
             self.runtime.intent.assign(self._all)
 
+    @environment_scope
     def step(self, actions):
         with self._lock:
             self._open()
+            if not getattr(self, '_initialized', True):
+                raise RuntimeError('reset the GPU batch before stepping')
             actions = np.asarray(actions, dtype=np.float64)
-            if actions.shape != (self.num_envs, self.action_dim) or not np.isfinite(actions).all():
+            if self.debug and (actions.shape != (self.num_envs, self.action_dim) or not np.isfinite(actions).all()):
                 raise ValueError(f'actions must have shape ({self.num_envs}, {self.action_dim}) and be finite')
             if any(shell.done for shell in self.shells):
                 raise ValueError('reset terminated worlds before stepping the batch')
             from libero.gpu.host.adapters.observations.boundary import boundary_predicates
             with self._mutation():
-                before = self._integrations.copy()
+                before = self._integrations.copy() if self.debug else None
                 self._activate_all()
                 self._physics.enqueue_action(np.ascontiguousarray(actions))
                 self._check()
-                if not np.all(self._integrations-before == self.substeps):
+                if self.debug and not np.all(self._integrations-before == self.substeps):
                     raise RuntimeError('GPU batch did not commit every requested physics substep')
-                self._snapshot_cache = self._snapshot()
+                names, schemas = self._goal_fields(tuple(range(self.num_envs)))
+                self._snapshot_cache = self._snapshot(names)
                 rewards, successes, infos = [], [], []
                 for world, (shell, facade) in enumerate(zip(self.shells, self._facades)):
                     shell.timestep += 1
                     shell.cur_time += shell.control_timestep
-                    with boundary_predicates(shell, facade):
+                    with boundary_predicates(shell, facade, fields=schemas[world]):
                         reward, _, info = shell._post_action(actions[world])
                         success = shell._check_success()
                     rewards.append(reward)
@@ -308,10 +421,13 @@ class GpuBatchEnv:
                 obs = self._observations(tuple(range(self.num_envs)))
                 return obs, np.asarray(rewards), np.asarray(successes, dtype=bool), infos
 
+    @environment_scope
     def reset(self, id=None, *, seed=None, init_states=None):
         with self._lock:
             self._open()
             ids = self._ids(id)
+            if not getattr(self, '_initialized', True) and ids != tuple(range(self.num_envs)):
+                raise RuntimeError('reset all worlds before selecting individual worlds')
             if seed is not None:
                 self.seed(seed)
             if init_states is not None:
@@ -325,6 +441,7 @@ class GpuBatchEnv:
                     shell = self.shells[i]
                     shell.timestep, shell.cur_time, shell.done = 0, 0.0, False
                     shell._obs_cache = {}
+                self._initialized = True
                 return self._observations(ids)
 
     def _validate_states(self, states, ids):
@@ -333,6 +450,7 @@ class GpuBatchEnv:
             raise ValueError('one finite LIBERO flat state required per selected world')
         return rows.copy()
 
+    @environment_scope
     def set_init_state(self, states, id=None):
         with self._lock:
             self._open()
@@ -380,14 +498,15 @@ class GpuBatchEnv:
             if reset:
                 bundle.controller.bootstrap_from_current_physics(self._selection, stream=self.stream)
             record = self._check()
-            if any(record.rows[i][18] != 1 for i in ids):
+            if self.debug and any(record.rows[i][18] != 1 for i in ids):
                 raise RuntimeError('GPU batch reset did not publish every selected forward')
             from libero.gpu.host.adapters.observations.boundary import boundary_predicates
-            self._snapshot_cache = self._snapshot()
+            names, schemas = self._goal_fields(ids)
+            self._snapshot_cache = self._snapshot(names)
             try:
-                for world in ids:
+                for offset, world in enumerate(ids):
                     shell = self.shells[world]
-                    with boundary_predicates(shell, self._facades[world]):
+                    with boundary_predicates(shell, self._facades[world], fields=schemas[offset]):
                         shell._check_success()
                         shell._post_process()
             finally:
@@ -397,6 +516,7 @@ class GpuBatchEnv:
             self._check()
         # Transfers remain alive until the synchronous restore boundary above.
 
+    @environment_scope
     def get_sim_state(self):
         with self._lock:
             self._open()
@@ -406,31 +526,67 @@ class GpuBatchEnv:
                                    e.qpos.numpy().reshape(self.num_envs, self._nq),
                                    e.qvel.numpy().reshape(self.num_envs, self._nv)), axis=1)
 
+    @environment_scope
     def diagnostics(self):
         with self._lock:
             self._open()
             self._check()
-            return dict(physics_backend='gpu', nworld=self.runtime.euler.capacity,
+            return dict(physics_backend='gpu', debug=self.debug, nworld=self.runtime.euler.capacity,
                         model_sha256=self.built.metadata['model_sha256'],
                         substeps=self.substeps, memory_budget=self.memory_budget,
                         actual_integration_count=self.runtime.integration_count.numpy().tolist(),
-                        first_error=self.runtime.first_error.numpy().tolist())
+                        first_error=self.runtime.first_error.numpy().tolist(),
+                        observations=getattr(self, 'observation_build_report', None),
+                        observation_graph_eligible=self.observer.graph_eligible,
+                        goal_fields=[list(plan.fields_for(shell))
+                                     for plan, shell in zip(self._goal_plans, self.shells)])
 
+    @environment_scope
+    def modify_observable(self, name, attribute, modifier):
+        """Modify the shared schema; Python callback objects follow Python ownership.
+
+        Stateful world-specific processors should be supplied by separate custom
+        observable owners. A custom sensor/processor switches subsequent actions
+        to the same GPU arena's uncaptured substep route.
+        """
+        with self._lock:
+            self._open()
+            self._snapshot_cache = None
+            try:
+                return self.observer.modify_observable(name, attribute, modifier, stream=self.stream)
+            finally:
+                self._snapshot_cache = None
+
+    @environment_scope
+    def add_observable(self, observable):
+        """Add independent per-world Observable owners through the shared adapter."""
+        with self._lock:
+            self._open()
+            self._snapshot_cache = None
+            try:
+                return self.observer.add_observable(observable, stream=self.stream)
+            finally:
+                self._snapshot_cache = None
+
+    @environment_scope
     def check_success(self):
         with self._lock:
             self._open()
             from libero.gpu.host.adapters.observations.boundary import boundary_predicates
             self._check()
-            self._snapshot_cache = self._snapshot()
+            ids = tuple(range(self.num_envs))
+            names, schemas = self._goal_fields(ids)
+            self._snapshot_cache = self._snapshot(names)
             try:
                 result = []
-                for shell, facade in zip(self.shells, self._facades):
-                    with boundary_predicates(shell, facade):
+                for world, (shell, facade) in enumerate(zip(self.shells, self._facades)):
+                    with boundary_predicates(shell, facade, fields=schemas[world]):
                         result.append(shell._check_success())
                 return np.asarray(result, dtype=bool)
             finally:
                 self._snapshot_cache = None
 
+    @environment_scope
     def close(self):
         with self._lock:
             if self._closed:
@@ -441,6 +597,9 @@ class GpuBatchEnv:
                 import warp as wp
                 scope = wp.ScopedStream(stream)
             with scope:
+                if self._physics is not None:
+                    self._physics.discard_control_graph()
+                    self._physics.bind_observer(None)
                 # Release graphics/facade borrows before the shared physics owner.
                 for facade in self._facades:
                     facade.close()
@@ -452,7 +611,9 @@ class GpuBatchEnv:
                 if self._status is not None:
                     self._status.release()
                 self._snapshot_cache = None
+                self._boundary_downloads = None
                 self.shells.clear()
+                self._goal_plans.clear()
                 self._fields = {}
                 self._binding = self.observer = self.runtime = self._physics = None
                 self._selection = self._status = None

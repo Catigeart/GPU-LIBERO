@@ -379,10 +379,14 @@ __device__ void evaluate_shared(int w,const int* active,double* qp,double* qv,do
  mass_block(0,scratch.qm,scratch.rhs,scratch.count,scratch.mass_active,madr,parent,
    scratch.ld,scratch.inv,scratch.sqrt_inv,scratch.solution,scratch.pivot,
    scratch.mass_status,scratch.warning_count,scratch.warning_last,nv,nm);
+#if CF_EULER_DIAGNOSTICS
+ // Replay produces only the compatible zero-skip diagnostic; integration
+ // consumes mass_block's solution. Keep its barrier in both profiles.
  if(threadIdx.x==0) {
   replay(0,scratch.active,scratch.damped,scratch.mass_status,scratch.rhs,
    scratch.ld,madr,parent,simple,scratch.zero_work,scratch.zero_skip,nv,nm);
  }
+#endif
  __syncthreads();
  integrate_block(0,scratch.active,qp+w*nq,qv+w*nv,time+w,acc+w*qacc_stride,
    scratch.solution,scratch.mass_status,scratch.damped,jt,padr,vadr,

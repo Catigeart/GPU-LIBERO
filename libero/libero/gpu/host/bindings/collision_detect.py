@@ -97,6 +97,7 @@ class DetectorPlan:
         self.task_bucket=wp.empty(workspace.nworld*self.task_capacity,dtype=wp.int32,device=workspace.device)
         self.task_start=wp.empty(workspace.nworld*self.task_capacity,dtype=wp.int32,device=workspace.device)
         self.task_count=wp.empty(workspace.nworld,dtype=wp.int32,device=workspace.device)
+        self.queue_offsets=wp.empty(4*(workspace.nworld+1),dtype=wp.int64,device=workspace.device)
         self.public_pointer_names=POINTER_NAMES[:-12]
         self.owners = tuple(getattr(workspace, n) for n in self.public_pointer_names)+(
             self.execution_count,self.primitive_raw,self.primitive_count,self.primitive_status,
@@ -119,8 +120,12 @@ class DetectorPlan:
             raise ValueError('collision detector CUDA/Python parameter ABI mismatch')
         self.library.launch_collision_detect_tiled.argtypes = [ct.c_void_p, ct.c_int, ct.c_int, ct.c_void_p]
         self.library.launch_collision_detect_tiled.restype = ct.c_int
-        self.library.launch_collision_detect_compact_producer.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p]
+        self.library.launch_collision_detect_compact_producer.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p,ct.c_void_p]
         self.library.launch_collision_detect_compact_producer.restype=ct.c_int
+        self.library.launch_collision_detect_parallel.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p]
+        self.library.launch_collision_detect_parallel.restype=ct.c_int
+        self._queue_owner=self.queue_offsets
+        self._queue_token=(self.queue_offsets.ptr,self.queue_offsets.shape,self.queue_offsets.dtype)
         self.device_params = wp.array(np.frombuffer(bytes(self.params), dtype=np.uint8).copy(),
                                       dtype=wp.uint8, device=self.device)
         self.manifest.update({'schema':'cuda-collision-detector-r01',
@@ -137,11 +142,15 @@ class DetectorPlan:
             'query_subgroup_width':query_subgroup_width,
             'mesh_descriptor_bytes':workspace.mesh_descriptor['descriptor_bytes'],
             'private_contact_capacity':{'mpr':50,'capsulebox':8,'boxbox':50,'boxbox_fallback':50},
+            'parallel_private_contact_capacity':{'mpr':5,'capsulebox':8,'boxbox':50},
+            'parallel_mpr_bound':'CPU 2.3.7 initial contact + four perturbation trials; public raw50 unchanged',
             'cold_abi_only':True,
             'route_subgroup_widths':'reserved pointer; actual query_subgroup_width admits0/32 only',
             'query_order':'stable route radix buckets, original-slot scatter',
             'scratch_bytes_per_world':8*workspace.pairs+64+8*self.task_capacity+4,
             'compact_task_capacity':self.task_capacity,
+            'parallel_queue_bytes':self.queue_offsets.size*8,
+            'parallel_grid_mapping':'four route families; compact live world tiles; global worker grid',
             'capacity':{n:getattr(workspace,n) for n in INTEGER_NAMES},
             'baseline_launches': ['raw-copy','native-detector','warp-public-detector'],
             'route_semantics':'live route_id controls supported and gated paths',
@@ -174,14 +183,24 @@ class DetectorPlan:
             raise ValueError('detector stream belongs to another device')
         return stream
 
-    def launch_compact_producer(self, blocks, stream=None):
+    def launch_compact_producer(self, blocks, stream=None, world_guard=None):
         if isinstance(blocks,bool) or not isinstance(blocks,int) or not 1<=blocks<=2147483647:
             raise ValueError('positive integer producer blocks required')
         stream=self.validate(stream)
         with wp.ScopedDevice(self.device):
             code=self.library.launch_collision_detect_compact_producer(self.device_params.ptr,
-                self.workspace.nworld,blocks,stream.cuda_stream)
+                self.workspace.nworld,blocks,stream.cuda_stream,world_guard.ptr if world_guard is not None else None)
         if code:raise RuntimeError('CUDA compact detector launch failed: '+str(code))
+
+    def launch_parallel_producer(self, blocks, stream=None, world_guard=None):
+        stream=self.validate(stream)
+        if self.queue_offsets is not self._queue_owner or (self.queue_offsets.ptr,self.queue_offsets.shape,self.queue_offsets.dtype)!=self._queue_token:
+            raise ValueError('collision route queue owner changed')
+        with wp.ScopedDevice(self.device):
+            code=self.library.launch_collision_detect_parallel(self.device_params.ptr,
+                self.workspace.nworld,blocks,self.queue_offsets.ptr,
+                world_guard.ptr if world_guard is not None else None,stream.cuda_stream)
+        if code:raise RuntimeError('CUDA parallel detector launch failed: '+str(code))
 
     def launch(self, stream=None):
         stream=self.validate(stream)

@@ -1,5 +1,8 @@
 #include "io_policy.cuh"
 #pragma once
+#ifndef DATAFLOW_FAST_PROFILE
+#define DATAFLOW_FAST_PROFILE 0
+#endif
 __device__ inline double cone_norm(const double* jar,const double* f,int d){
   double u1=0,u2=0,u3=0,u4=0,u5=0,s=0;
   if(d>1){u1=jar[1]*f[0];u2=jar[2]*f[1];}
@@ -15,7 +18,7 @@ __device__ void constraint_update(int w,int* active,int* count,int* ne,int* nf,i
  int* invariant_valid=nullptr,int* active_count=nullptr,int* cone_count=nullptr,
  int* old_state=nullptr,int* changed_count=nullptr,
  bool validate_only=false,int* group_head=nullptr,int* hessian_owner=nullptr,
- bool topology_only=false,bool rows_checked=false){
+ bool topology_only=false,bool rows_checked=false,bool collect_owner=false){
   status[w]=0;if(!active[w])return;if(active[w]!=1){status[w]=1;return;}
   int n=count[w],nc=ncon[w],eq=ne[w],fc=nf[w],rb=w*rows,cb=w*contacts;
   if(n<0||n>rows||nc<0||nc>contacts||(flag[w]!=0&&flag[w]!=1)||eq<0||eq>n||fc<0||fc>n-eq){status[w]=2;return;}
@@ -46,7 +49,7 @@ __device__ void constraint_update(int w,int* active,int* count,int* ne,int* nf,i
     if(!top&&!bottom&&T<1e-12){status[w]=10;return;}
     // Repeated contact ids are legal. Keep the scalar last middle-cone writer,
     // including cases where a later top/bottom cone intentionally leaves H held.
-    if(hessian_owner&&!rows_checked&&!top&&!bottom)hessian_owner[c]=i;i+=d;
+    if(hessian_owner&&(!rows_checked||collect_owner)&&!top&&!bottom)hessian_owner[c]=i;i+=d;
   }
   // The emitter resets invariant_valid for every launch. The group map only
   // lives across Newton iterations with immutable row topology in that launch.
@@ -137,6 +140,76 @@ __device__ inline int constraint_head_rank(const int* heads,int count,int row){
   return lo<count&&heads[lo]==row?lo:-1;
 }
 
+// Newton/S07 consumes offsets[t:t+2] only for t<ceil(nefc/16).
+// Produce that live prefix cooperatively after ordered heads are published.
+// The lower bound counts exactly the heads whose final row precedes tile t.
+__device__ inline void constraint_tile_head_offsets_block(int n,int eq,int fc,
+ int rb,int cb,const int* typ,const int* cid,const int* dim,
+ const int* heads,int nh,int* offsets){
+  for(int t=threadIdx.x;t<=(n+15)/16;t+=blockDim.x){
+    int lo=0,hi=nh;
+    while(lo<hi){
+      const int mid=lo+(hi-lo)/2,r=heads[mid];
+      const int d=r>=eq+fc&&typ[rb+r]==7?dim[cb+cid[rb+r]]:1;
+      if((r+d-1)/16<t)lo=mid+1;else hi=mid;
+    }
+    offsets[t]=lo;
+  }
+}
+
+// Advisory ordinal operands are selected only after the first ordinary N update
+// has validated current rows and built its own head/G lists. The emitter resets
+// selected at every invocation and keeps a block barrier after this lane0 gate.
+// Metadata mismatch is a fallback, never a new solver/publication error.
+__device__ void constraint_head_metadata_gate(const int* active,const int* status,
+ const int* invariant_valid,const int* count,const int* nefc,const int* ne,const int* nf,
+ const int* ncon,const int* typ,const int* cid,const int* dim,const double* mu,const double* fr,
+ const int* row_dim,const double* row_mu,const double* row_fr,const int* group_head,
+ const int* head_rows,const int* head_count,const int* source_counts,const int* source_ncon,
+ const int* compact_heads,const int* compact_count,const int* compact_valid,
+ const int* head_type,const int* head_id,const int* head_dim,const double* head_mu,
+ const double* head_friction,const int* head_valid,int* selected,int rows,int contacts,int nv){
+  if(threadIdx.x!=0)return;
+  selected[0]=0;
+  if(active[0]!=1||status[0]||invariant_valid[0]!=1)return;
+  const int n=count[0],eq=ne[0],fc=nf[0],nc=ncon[0],nh=head_count[0];
+  if(n<=0||n>rows||nefc[0]!=n||eq<0||eq>n||fc<0||fc>n-eq||nc<0||nc>contacts)return;
+  if(compact_valid[0]!=1||head_valid[0]!=1||nh<0||nh>n||compact_count[0]!=nh)return;
+  if(source_counts[0]!=eq||source_counts[1]!=fc||source_counts[3]!=n||
+     source_counts[4]!=n*nv||source_ncon[0]!=nc)return;
+  if(source_counts[2]<0||source_counts[2]>n-eq-fc)return;
+  int next=0,limits=0;
+  for(int k=0;k<nh;++k){
+    const int r=head_rows[k];
+    if(r!=next||r<0||r>=n||compact_heads[k]!=r||group_head[r]!=r)return;
+    const int t=typ[r],c=cid[r];
+    if(head_type[k]!=t||head_id[k]!=c)return;
+    int d=1;
+    if(r>=eq+fc&&t==7){
+      if(c<0||c>=nc)return;
+      d=dim[c];
+      if((d!=1&&d!=3&&d!=4&&d!=6)||d>n-r||head_dim[k]!=d||row_dim[r]!=d)return;
+      // Compare both current N views against S's ordinal view. Positive finite
+      // operands were already admitted by the original ordered N validation.
+      const long long m_bits=__double_as_longlong(head_mu[k]);
+      if(m_bits!=__double_as_longlong(mu[c])||m_bits!=__double_as_longlong(row_mu[r]))return;
+      for(int j=0;j<d-1;++j){
+        const double f=head_friction[j*rows+k];
+        const long long f_bits=__double_as_longlong(f);
+        if(f_bits!=__double_as_longlong(fr[c*5+j])||f_bits!=__double_as_longlong(row_fr[r*5+j]))return;
+      }
+      for(int j=1;j<d;++j)
+        if(group_head[r+j]!=-1||typ[r+j]!=t||cid[r+j]!=c)return;
+    }else{
+      if(head_dim[k]!=1)return;
+      if(r>=eq+fc&&(t==3||t==4))++limits;
+    }
+    next=r+d;
+  }
+  if(next!=n||limits!=source_counts[2])return;
+  selected[0]=1;
+}
+
 // All threads enter this collective. Each scalar row or complete cone group
 // has one owner; no thread writes another group's force/state/H cells. Group
 // mathematics retains the scalar evaluation order; only cost/count sums change.
@@ -179,10 +252,21 @@ __device__ void constraint_update_block(int w,int* active,int* count,int* ne,int
     if(check_lane==0){check_result=first;if(first!=libero_warp::no_index)status[w]=first==2*n?10:((first&1)?9:8);}}
   __syncthreads();
   if(check_result!=libero_warp::no_index)return;
+  // Reuse the ordered numeric admission's cone classification to choose the
+  // last middle-cone writer. The map is private; no numeric output is touched
+  // before all original checks pass. Compatible callers retain their path.
+#if DATAFLOW_FAST_PROFILE
+  if(hessian_owner)
+    for(int c=threadIdx.x;c<ncon[w];c+=blockDim.x)hessian_owner[cb+c]=-1;
+  __syncthreads();
+  constexpr bool collect_owner=true;
+#else
+  constexpr bool collect_owner=false;
+#endif
   // Complete numeric cone checks in their original order, then publish the
   // topology map. The scalar implementation remains available as baseline.
   if(threadIdx.x==0)constraint_update(w,active,count,ne,nf,ncon,flag,jar,D,R,loss,typ,cid,J,mu,fr,
-    dim,force,state,H,cost,status,rows,contacts,nv,invariant_valid,nullptr,nullptr,nullptr,nullptr,true,group_head,hessian_owner,false,true);
+    dim,force,state,H,cost,status,rows,contacts,nv,invariant_valid,nullptr,nullptr,nullptr,nullptr,true,group_head,hessian_owner,false,true,collect_owner);
   __syncthreads();
   if(status[w])return;
   // World-local scratch, rebuilt after admission on the first iteration of
@@ -206,6 +290,7 @@ __device__ void constraint_update_block(int w,int* active,int* count,int* ne,int
         typed_head_rows[cursor[bucket]++]=r;
       }
     }
+#if !DATAFLOW_FAST_PROFILE
     if(tile_head_offset){
       int k=0;
       for(int t=0;t<=(rows+15)/16;++t){
@@ -214,8 +299,16 @@ __device__ void constraint_update_block(int w,int* active,int* count,int* ne,int
         tile_head_offset[t]=k;
       }
     }
+#endif
   }
   __syncthreads();
+#if DATAFLOW_FAST_PROFILE
+  if(!cached&&head_rows&&head_count&&tile_head_offset)
+    constraint_tile_head_offsets_block(n,eq,fc,rb,cb,typ,cid,dim,
+                                      head_rows,head_count[0],tile_head_offset);
+  __syncthreads();
+#endif
+#if !DATAFLOW_FAST_PROFILE
   if(hessian_owner){
     for(int c=threadIdx.x;c<ncon[w];c+=blockDim.x)hessian_owner[cb+c]=-1;
     __syncthreads();
@@ -232,6 +325,7 @@ __device__ void constraint_update_block(int w,int* active,int* count,int* ne,int
     }
     __syncthreads();
   }
+#endif
   // Use one warp only for small compiled models with at most one warp of rows.
   // The capacity condition removes this candidate from larger kernels entirely.
   const bool small=NV<=32&&n<=32;

@@ -1,7 +1,8 @@
 """Handwritten collision math; cold Python inspects only the retained pointer ABI.
 
-One block owns each world. Bounds/SAP/stages/tree/dispatch run in lane 0;
-raw transport, dedup, parameters and copies distribute rows across the block.
+One block owns each world. Bounds, SAP, stages and dispatch cooperate within
+the block; live BVH stages traverse independent body pairs in parallel, then
+publish the original request order. Diagnostic traversal retains its owner.
 The native detector retains a separate pair-parallel kernel launch boundary.
 """
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
@@ -110,16 +111,50 @@ def _dataflow_storage(ws):
     """Private transactional contacts; public witnesses retain their owners."""
     if not hasattr(ws,'_cuda_collision_dataflow_storage'):
         n=ws.nworld*ws.contact_capacity
+        fields=65 if (getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast' or
+                      getattr(ws,'_cuda_collision_diagnostics',True)) else 28
         # A retained private owner is outside the immutable public ABI
         # inventory. NativePlan validates each arena pointer independently.
         ws._cuda_collision_dataflow_storage=UserDict({
-            'contact_f':wp.empty(n*65,dtype=wp.float64,device=ws.device),
+            'contact_f':wp.empty(n*fields,dtype=wp.float64,device=ws.device),
             'contact_i':wp.empty(n*5,dtype=wp.int32,device=ws.device),
             'order':wp.empty(n,dtype=wp.int32,device=ws.device),
             'order_scratch':wp.empty(n,dtype=wp.int32,device=ws.device),
             'offsets':wp.empty(ws.nworld*ws.call_capacity,dtype=wp.int32,device=ws.device),
             'frame_error':wp.empty(ws.nworld*ws.call_capacity,dtype=wp.int32,device=ws.device)})
     return ws._cuda_collision_dataflow_storage
+
+
+def _pair_parameter_cache(ws,params,storage):
+    """Cold immutable-model cache; general mutable workspaces mix on demand.
+
+    Native model updates construct new GPU owners and therefore a new table.
+    Explicit pairs and caller margins use the original device mixer. Cap the
+    optional dense table at 17 MiB; large models simply keep the direct path.
+    """
+    ngeom=params[27]
+    root=getattr(ws,'_cuda_collision_pair_parameter_root',None)
+    immutable=(getattr(ws,'_cuda_collision_static_parameters',False) or
+               getattr(ws,'_collision_cold_admission',None) is not None)
+    if root is None or not immutable or not 0<ngeom*ngeom<=131072:
+        return [storage['contact_f'],storage['contact_i'],0]
+    if not hasattr(ws,'_cuda_collision_pair_parameter_cache'):
+        f=wp.empty(ngeom*ngeom*16,dtype=wp.float64,device=ws.device)
+        i=wp.empty(ngeom*ngeom*2,dtype=wp.int32,device=ws.device)
+        plan=NativePlan('collision_pair_parameters',
+            [GPU_ROOT/'cuda/collision/collision_params.cuh'],
+            [('collision_cuda::cf_pair_params_table',[*params[5:24],ngeom,params[28],f,i],'block')],
+            1,root,device=ws.device)
+        plan.launch(wp.get_stream(ws.device))
+        # One cold synchronization publishes this model-only table to any
+        # later consumer stream. There is no per-step snapshot or comparison.
+        wp.synchronize_stream(wp.get_stream(ws.device))
+        # Private owners follow the same arena boundary as candidate storage;
+        # each NativePlan independently retains and validates their pointers.
+        ws._cuda_collision_pair_parameter_cache=UserDict({'f':f,'i':i,'plan':plan})
+        ws._cuda_collision_pair_parameter_plan=plan
+    cache=ws._cuda_collision_pair_parameter_cache
+    return [cache['f'],cache['i'],ngeom]
 
 
 def prepare_bounds_cache(ws,dynamics):
@@ -218,6 +253,9 @@ def _dataflow_stages(ws,transport=None):
     from libero.gpu.host.build.collision_metadata import prepare_collision_metadata
     metadata=prepare_collision_metadata(ws)
     stages=_workspace_stages(ws);storage=_dataflow_storage(ws);result=[]
+    diagnostics=(getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast' or
+                 getattr(ws,'_cuda_collision_diagnostics',True))
+    shadows={id(a) for a in ws.before_outputs.values()}
     index=0
     while index<len(stages):
         stage=stages[index];index+=1
@@ -226,15 +264,24 @@ def _dataflow_stages(ws,transport=None):
         if fn.startswith('collision_cuda::cf_copy_'):
             src,dst,_=args
             if src.ptr==dst.ptr:continue
+            # Fast requested-world guards already preserve every mask-0 output.
+            # These shadows only feed the now-redundant inactive restore below;
+            # contact failure transactions use private candidates instead.
+            if not diagnostics and id(dst) in shadows:continue
             # Tree stage/count/mask are retained inputs, not public outputs.
             # Pass the actual producer owner to cf_tree instead of copying.
             if any(dst is value for value in (ws.tree.stage,ws.tree.stage_count,ws.tree.active_in)):
                 continue
+        if not diagnostics and fn in ('collision_cuda::cf_restore_f64',
+                'collision_cuda::cf_restore_i32','collision_cuda::cf_restore_f32'):
+            if args[0] is not ws.active or id(args[1]) not in shadows:
+                raise ValueError('unexpected inactive collision restore owner')
+            continue
         if fn=='collision_cuda::cf_tree':
             args=[ws.stage,ws.stage_count,ws.effective_active,*args[3:]]
             if 'pair_key_offsets' in metadata:
                 args += [metadata['pair_key_offsets'],metadata['pair_key_indices'],metadata['pair_shadow']]
-            stage=(fn,args,mode)
+            stage=(fn if diagnostics else 'collision_cuda::cf_tree_live',args,mode)
         elif fn=='collision_cuda::cf_dispatch_block' and 'geom_pair_route' in metadata:
             stage=(fn,[*args,metadata['geom_pair_route'],metadata['route_shadow']],mode)
         elif fn=='collision_cuda::cf_bounds' and hasattr(ws,'_cuda_collision_bounds_cache'):
@@ -248,6 +295,8 @@ def _dataflow_stages(ws,transport=None):
             stage=('collision_cuda::cf_req_dispatch_ordered_block',args,'block')
         elif fn=='collision_cuda::cf_dispatch_calls':
             stage=('collision_cuda::cf_dispatch_calls_block',args,'block')
+        elif fn=='collision_cuda::cf_calls_finalize' and not diagnostics:
+            stage=('collision_cuda::cf_calls_finalize_live',args,'block')
         if fn=='collision_cuda::cf_dedup':
             following=stages[index]
             if following is None or following[0]!='collision_cuda::cf_params':
@@ -257,19 +306,22 @@ def _dataflow_stages(ws,transport=None):
                 raise ValueError('dedup / params retained producer owners changed')
             if p[26]!=args[12]*50 or p[27]!=args[7]:
                 raise ValueError('chain pairwise parameter shape changed')
-            stage=('collision_cuda::cf_dedup_params',args+[p[2],*p[4:27],p[28],storage['offsets'],
-                    storage['frame_error'],storage['contact_f'],storage['contact_i'],ws.contact_capacity],'block')
+            stage=('collision_cuda::cf_dedup_params'+('' if diagnostics else '_live'),args+[p[2],*p[4:27],p[28],storage['offsets'],
+                    storage['frame_error'],storage['contact_f'],storage['contact_i'],ws.contact_capacity]+
+                    ([] if diagnostics else _pair_parameter_cache(ws,p,storage)),'block')
             index+=1
         elif fn=='collision_cuda::cf_assemble':
             args=[args[0],*args[2:7],args[8],args[9],storage['frame_error'],storage['contact_f'],
                   storage['contact_i'],*args[12:21],storage['order'],storage['order_scratch']]
-            stage=('collision_cuda::cf_assemble_candidates_block',args,'block')
+            stage=('collision_cuda::cf_assemble_candidates_block' if diagnostics else
+                   'collision_cuda::cf_assemble_candidates_live',args,'block')
         elif fn=='collision_cuda::cf_restore_contacts':
             # No public contact was changed before the world-wide verdict.
             continue
         result.append(stage)
     if transport is None:
-        result.append(('collision_cuda::cf_commit_contacts',
+        result.append(('collision_cuda::cf_commit_contacts' if diagnostics else
+                       'collision_cuda::cf_commit_contacts_live',
             [ws.active,ws.fe_code,ws.finalize.ncon,storage['contact_f'],storage['contact_i'],
              ws.finalize.contact_f,ws.finalize.contact_i,ws.contact_capacity],'block'))
     else:
@@ -281,7 +333,8 @@ def _dataflow_stages(ws,transport=None):
               transport.active,transport.ncon,
               *[x[n] for n in ('dist','pos','frame','margin','friction','solref','solreffriction','solimp','dim','geom1','geom2','exclude')],
               transport.source_capacity,transport.capacity]
-        result.append(('collision_cuda::cf_commit_contacts_transport',args,'block'))
+        result.append(('collision_cuda::cf_commit_contacts_transport' if diagnostics else
+                       'collision_cuda::cf_commit_contacts_transport_live',args,'block'))
     if getattr(ws,'_cuda_collision_temporal_sources',()):
         from .collision_temporal import prepare_temporal_collision_stages
         policy=ws._cuda_collision_temporal_options
@@ -312,7 +365,9 @@ def _guard_inactive(ws,stages):
     mapped=[];source=['namespace collision_cuda {']
     types={wp.int32:'int32_t*',wp.uint32:'uint32_t*',wp.int64:'int64_t*',wp.float32:'float*',wp.float64:'double*'}
     for index,stage in enumerate(stages):
-        if stage is None or stage[0] in ('collision_cuda::cf_effective','collision_cuda::cf_commit_contacts_transport'):
+        if stage is None or stage[0] in ('collision_cuda::cf_effective',
+                'collision_cuda::cf_commit_contacts_transport',
+                'collision_cuda::cf_commit_contacts_transport_live'):
             mapped.append(stage);continue
         fn,args,mode=stage[:3];specs=stage[3] if len(stage)>3 else None
         c_types=[(specs[i] if specs else None) or
@@ -330,29 +385,33 @@ def _guard_inactive(ws,stages):
     return mapped,'\n'.join(source)
 
 
-def install_workspace(ws,root,*,dataflow_profile=None,complete_only=False):
+def install_workspace(ws,root,*,dataflow_profile=None,complete_only=False,diagnostics=True):
     if type(complete_only) is not bool:raise TypeError('complete_only must be bool')
-    if complete_only and getattr(ws,'_detector_backend','legacy')!='handwritten_only':
-        raise ValueError('complete_only requires pending handwritten_only cold ABI')
+    if type(diagnostics) is not bool:raise TypeError('diagnostics must be bool')
     if complete_only and dataflow_profile!='fast':
         raise ValueError('complete_only requires explicit fast cold dataflow')
     if hasattr(ws,'_cuda_collision_plans') and getattr(ws,'_cuda_collision_complete_only',False)!=complete_only:
         raise ValueError('complete_only mode change requires a cold workspace rebuild')
+    if hasattr(ws,'_cuda_collision_plans') and ws._cuda_collision_diagnostics!=diagnostics:
+        raise ValueError('collision diagnostics change requires a cold workspace rebuild')
+    ws._cuda_collision_diagnostics=diagnostics
     if dataflow_profile is not None:
         if dataflow_profile not in ('compatible','fast'):raise ValueError('collision dataflow profile')
         if hasattr(ws,'_cuda_collision_plans') and getattr(ws,'_cuda_collision_dataflow_profile','compatible')!=dataflow_profile:
             raise ValueError('dataflow profile change requires a cold workspace rebuild')
         ws._cuda_collision_dataflow_profile=dataflow_profile
+    ws._cuda_collision_pair_parameter_root=Path(root)/'pair_parameters'
     if hasattr(ws,'_cuda_collision_plans'):return ws._cuda_collision_manifest
     stages,guards=_guard_inactive(ws,_dataflow_stages(ws));cut=stages.index(None)
     files=_source_files(ws)
     if guards:files.append(guards)
-    # An explicit pending complete-only ABI never enqueues partial physics.
-    # The final complete installer consumes these exact stages directly.
+    # Combined installation consumes these exact stages directly, for both
+    # retained legacy storage and the pending handwritten-only storage ABI.
+    # Before finalization, the temporary launch rejects incomplete bindings.
     # Keep the reset plan: it remains a public lifecycle consumer.
     plans=[] if complete_only else [NativePlan('collision_before_detect',files,stages[:cut],ws.nworld,Path(root)/'before',device=ws.device),
            NativePlan('collision_after_detect',files,stages[cut+1:],ws.nworld,Path(root)/'after',device=ws.device)]
-    reset_plan=NativePlan('collision_reset_errors',files,
+    reset_plan=NativePlan('collision_reset_errors',[GPU_ROOT/'cuda/collision/collision_front.cuh'],
         [('collision_cuda::cf_reset_error',[ws.reset_mask,ws.fe_stage,ws.fe_code,ws.fe_item],'lane0')],
         ws.nworld,Path(root)/'reset',device=ws.device)
     old_launch=ws.launch
@@ -387,9 +446,19 @@ def install_workspace(ws,root,*,dataflow_profile=None,complete_only=False):
         'detector_boundary':'pair parallel native CUDA launch','capacities':{k:getattr(ws,k) for k in
           ('nworld','nbody','ngeom','call_capacity','pair_capacity','stage_slots','req_slots','contact_capacity')},
         'source_math_translation':False,
+        'capacity_diagnostics':getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast' or diagnostics,
         'dataflow_profile':getattr(ws,'_cuda_collision_dataflow_profile','compatible'),
-        'private_candidate_bytes':ws.nworld*(ws.contact_capacity*(65*8+5*4+2*4)+ws.call_capacity*8)}
+        'private_candidate_bytes':ws.nworld*(ws.contact_capacity*((65 if diagnostics or
+            getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast' else 28)*8+5*4+2*4)+ws.call_capacity*8)}
     ws._cuda_collision_manifest['reset_plan']=reset_plan.manifest
+    cache=getattr(ws,'_cuda_collision_pair_parameter_cache',None)
+    ws._cuda_collision_manifest['candidate_float_fields']=65 if (
+        diagnostics or getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast') else 28
+    ws._cuda_collision_manifest['pair_parameter_cache']={
+        'enabled':cache is not None,
+        'bytes':cache['f'].size*8+cache['i'].size*4 if cache is not None else 0,
+        'lifetime':'immutable model; rebuilt by native model replacement',
+        'plan':cache['plan'].manifest if cache is not None else None}
     if complete_only:ws._cuda_collision_manifest['cold_installation_abi']='complete-only-v1'
     ws._cuda_collision_manifest['temporal_front']=temporal_front_manifest(ws)
     metadata=getattr(ws,'_cuda_collision_metadata',{})
@@ -399,16 +468,22 @@ def install_workspace(ws,root,*,dataflow_profile=None,complete_only=False):
 
 
 def install(bundle,root,*,dataflow_profile='compatible',temporal=False,
-            absolute_padding=0.005,relative_padding=0.01,max_age=32,max_cache_bytes=8*1024**2):
+            absolute_padding=0.005,relative_padding=0.01,max_age=32,max_cache_bytes=8*1024**2,
+            diagnostics=True,static_parameters=False,complete_only=False):
     if dataflow_profile not in ('compatible','fast'):raise ValueError('collision dataflow profile')
     adapter=bundle.runtime.forward.c
     ws=getattr(adapter,'workspace',adapter)
+    # Native batch ownership changes physical parameters only by rebuilding
+    # the bundle. General component callers retain on-demand mixing by default.
+    ws._cuda_collision_static_parameters=static_parameters
     configure_temporal_front(ws,bundle.dynamics,dataflow_profile=dataflow_profile,temporal=temporal,
         absolute_padding=absolute_padding,relative_padding=relative_padding,max_age=max_age,
         max_cache_bytes=max_cache_bytes)
-    result=install_workspace(ws,Path(root)/'collision',dataflow_profile=dataflow_profile)
+    result=install_workspace(ws,Path(root)/'collision',dataflow_profile=dataflow_profile,
+                             diagnostics=diagnostics,complete_only=complete_only)
     transport=getattr(bundle.runtime.forward,'transport',None)
-    if transport is not None:result['transport']=install_transport(transport,Path(root)/'collision_transport')
+    if transport is not None and not complete_only:
+        result['transport']=install_transport(transport,Path(root)/'collision_transport')
     return result
 
 
@@ -426,7 +501,7 @@ def install_transport(transport,root):
     return plan.manifest
 
 
-def make_compact_query_plans(ws,root,*,transport=None,producer_blocks=32):
+def make_compact_query_plans(ws,root,*,transport=None,producer_blocks=32,query_schedule='compact',world_guard=None):
     """Cold opt-in mapping; no host count download or cross-CTA barrier.
 
     Same-stream boundaries publish the private producer results before the
@@ -443,9 +518,9 @@ def make_compact_query_plans(ws,root,*,transport=None,producer_blocks=32):
     # Predicate wrapper names are local to each compilation unit.
     sources=_source_files(ws)+[device_source()]
     front=NativePlan('collision_query_front',sources+([g0] if g0 else []),before,
-        ws.nworld,Path(root)/'front',block_size=64,device=ws.device,extra_flags=('-rdc=true',))
+        ws.nworld,Path(root)/'front',block_size=64,device=ws.device,extra_flags=('-rdc=true',),world_guard=world_guard)
     tail=NativePlan('collision_query_tail',sources+([g1] if g1 else []),after,
-        ws.nworld,Path(root)/'tail',block_size=64,device=ws.device,extra_flags=('-rdc=true',))
+        ws.nworld,Path(root)/'tail',block_size=64,device=ws.device,extra_flags=('-rdc=true',),world_guard=world_guard)
     def launch(stream):
         ws.validate_device_bindings(stream);detector.validate(stream)
         _validate_temporal_position_owner(ws)
@@ -453,14 +528,17 @@ def make_compact_query_plans(ws,root,*,transport=None,producer_blocks=32):
         if ws.detect._cuda_detector_plan is not detector:raise ValueError('compact detector owner changed')
         # Prevalidate both NativePlan bindings before the first GPU write.
         front.validate_bindings();tail.validate_bindings()
-        front.launch(stream);detector.launch_compact_producer(producer_blocks,stream);tail.launch(stream)
+        front.launch(stream)
+        producer=(detector.launch_parallel_producer if query_schedule=='parallel' else detector.launch_compact_producer)
+        producer(producer_blocks,stream,world_guard)
+        tail.launch(stream)
     return launch,{'front':front,'tail':tail,'detector':detector,'producer_blocks':producer_blocks,
         'grid_mapping':'front=(1,W); producer=(blocks,W,1); tail=(1,W)',
         'task_order':'device compact route tiles; original-slot output; ordered first-error commit',
         'task_capacity':detector.task_capacity,'kernel_launches':3}
 
 
-def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',producer_blocks=32):
+def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',producer_blocks=32,world_guard=None):
     """Fuse the complete C function; all stages share one world/block.
 
     Device detector queries distribute over the same 64 lanes. Their outputs
@@ -468,10 +546,11 @@ def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',p
     stage barrier completes its ordered public commit before finalization.
     No stage reads another world's scratch or requires a grid-wide barrier.
     """
-    if query_schedule not in ('fused','compact'):raise ValueError('collision query schedule')
+    if query_schedule not in ('fused','compact','parallel'):raise ValueError('collision query schedule')
     if hasattr(ws,'_cuda_collision_complete'):
+        if getattr(ws,'_cuda_collision_world_guard',(None,))[0] is not world_guard:raise ValueError('collision world guard owner changed; cold rebuild required')
         if getattr(ws,'_cuda_collision_query_schedule','fused')!=query_schedule:raise ValueError('query schedule change requires cold rebuild')
-        if query_schedule=='compact' and ws._cuda_collision_compact['producer_blocks']!=producer_blocks:raise ValueError('producer blocks change requires cold rebuild')
+        if query_schedule!='fused' and ws._cuda_collision_compact['producer_blocks']!=producer_blocks:raise ValueError('producer blocks change requires cold rebuild')
         if transport is not None and getattr(ws,'_cuda_collision_direct_transport',None) is not transport:
             raise ValueError('direct C/S transport change requires a cold workspace rebuild')
         return ws._cuda_collision_manifest
@@ -487,10 +566,13 @@ def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',p
     files=_source_files(ws)
     # Detector source defines detect_pointer before predicate wrappers call it.
     sources=files+[device_source()]+([guards] if guards else [])
-    plan=NativePlan('collision_complete',sources,merged,ws.nworld,root,
-                    block_size=64,device=ws.device,extra_flags=('-rdc=true',))
+    plan=(NativePlan('collision_complete',sources,merged,ws.nworld,root,
+                    block_size=64,device=ws.device,extra_flags=('-rdc=true',),world_guard=world_guard)
+          if query_schedule=='fused' else None)
     ws._cuda_collision_partial_plans=ws._cuda_collision_plans
     ws._cuda_collision_complete=plan
+    # Retained plan owns this pointer. Do not extend the sealed public array ABI.
+    ws._cuda_collision_world_guard=(world_guard,)
     ws._cuda_collision_plans=[plan]
     def launch(self,stream=None):
         if self.borrow_detector_raw and (self._borrowed_raw_owner is not self.detect or self.finalize.raw is not self.detect.raw):
@@ -506,8 +588,9 @@ def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',p
         self._launch_started=True
         plan.launch(stream)
     ws._cuda_collision_query_schedule=query_schedule
-    if query_schedule=='compact':
-        compact_launch,compact=make_compact_query_plans(ws,Path(root)/'compact',transport=transport,producer_blocks=producer_blocks)
+    if query_schedule!='fused':
+        compact_launch,compact=make_compact_query_plans(ws,Path(root)/query_schedule,transport=transport,
+            producer_blocks=producer_blocks,query_schedule=query_schedule,world_guard=world_guard)
         ws._cuda_collision_compact=compact
         ws._cuda_collision_plans=[compact['front'],compact['tail']]
         def launch(self,stream=None):
@@ -519,14 +602,17 @@ def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',p
     ws.launch=MethodType(launch,ws)
     prior=ws._cuda_collision_manifest
     ws._cuda_collision_manifest={**prior,'schema':'handwritten-complete-collision-r02',
-        'plans':[plan.manifest],'detector_boundary':'intra-block device function',
+        'plans':[plan.manifest] if plan is not None else [],'detector_boundary':'intra-block device function',
         'stage_order':[s[0] for s in merged],'kernel_launches':1,
         'detector_params_owner':'retained DetectorPlan.device_params',
         'ownership_checks':['CollisionChainWorkspace.validate_device_bindings','DetectorPlan.validate','NativePlan.validate_bindings'],
         'dataflow':{'profile':getattr(ws,'_cuda_collision_dataflow_profile','compatible'),
-                    'public_diagnostics':'complete fixed-capacity ABI',
+                    'public_diagnostics':('complete fixed-capacity ABI' if
+                        ws._cuda_collision_manifest['capacity_diagnostics'] else
+                        'live contact rows; capacity diagnostic tails unspecified'),
                     'raw_alias_self_copy':False,'tree_inputs':'direct producer owners',
                     'candidate_pairs':'ordered request cursor; block-cooperative descriptor publication',
+                    'live_tree':'thread-per-body-pair DFS; ordered prefix commit; bounded visit-arena scratch; ordered fallback',
                     'params':'one mix per pair; kept raw indices feed local contact builder',
                     'sort':'stable index merge; one record permutation',
                     'shared_geom_bounds_from_f':hasattr(ws,'_cuda_collision_bounds_cache'),
@@ -538,19 +624,24 @@ def install_combined_workspace(ws,root,*,transport=None,query_schedule='fused',p
     ws._cuda_collision_manifest['temporal_front']=temporal_front_manifest(ws)
     ws._cuda_collision_manifest['dataflow']['fast_diagnostic_exclusions']=(
         ['inactive before-output shadows','inactive detector execution count'] if guards else [])
+    if not prior['capacity_diagnostics']:
+        ws._cuda_collision_manifest['dataflow']['fast_diagnostic_exclusions'] += [
+            'before-output backup copies','inactive output restores',
+            'unused dedup and parameter rows','compact raw and params_f materialization',
+            'BVH visit/stack/leaf tapes and visualization flags','unused call counter tails']
     if transport is not None:
         ws._cuda_collision_direct_transport=transport
         def enqueue_direct(self):self.validate()
         transport._cuda_collision_direct_owner=ws
-        transport._cuda_collision_direct_plan=compact['tail'] if query_schedule=='compact' else plan
+        transport._cuda_collision_direct_plan=compact['tail'] if query_schedule!='fused' else plan
         transport._cuda_collision_old_enqueue=transport.enqueue
         transport.enqueue=MethodType(enqueue_direct,transport)
-    if query_schedule=='compact':
-        ws._cuda_collision_manifest.update(query_schedule='compact',kernel_launches=3,detector_boundary='same-stream kernel boundaries',producer_blocks=producer_blocks,plans=[compact['front'].manifest,detector.manifest,compact['tail'].manifest])
+    if query_schedule!='fused':
+        ws._cuda_collision_manifest.update(query_schedule=query_schedule,kernel_launches=7 if query_schedule=='parallel' else 3,detector_boundary='same-stream kernel boundaries',producer_blocks=producer_blocks,plans=[compact['front'].manifest,detector.manifest,compact['tail'].manifest])
     return ws._cuda_collision_manifest
 
 
-def install_combined(bundle,root,*,query_schedule='fused',producer_blocks=32):
+def install_combined(bundle,root,*,query_schedule='fused',producer_blocks=32,world_guard=None):
     """Factory hook after C and detector installation, before graph capture."""
     forward=bundle.runtime.forward
-    return install_combined_workspace(forward.c.workspace,Path(root)/'collision_complete',transport=forward.transport,query_schedule=query_schedule,producer_blocks=producer_blocks)
+    return install_combined_workspace(forward.c.workspace,Path(root)/'collision_complete',transport=forward.transport,query_schedule=query_schedule,producer_blocks=producer_blocks,world_guard=world_guard)

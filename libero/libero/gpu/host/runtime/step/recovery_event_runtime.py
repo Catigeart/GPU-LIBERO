@@ -57,6 +57,9 @@ def _copy_i32(source:wp.array(dtype=wp.int32),slot:wp.array(dtype=wp.int32),
 class EventRecoveringRuntime(CurrentWrittenRecoveringRuntime):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
+        self.capture_events = bool(self.forward.entry_witness)
+        if not self.capture_events:
+            return
         n=self.forward.n
         if not hasattr(n,"final_event"):raise ValueError("actual final producer event required")
         W=self.euler.capacity
@@ -101,6 +104,8 @@ class EventRecoveringRuntime(CurrentWrittenRecoveringRuntime):
 
     def _admit_current_acceleration(self):
         super()._admit_current_acceleration()
+        if not self.capture_events:
+            return
         if self._event_owner_tokens()!=self._event_tokens or self.forward.n.final_event is not self._event_solver:
             raise ValueError("event retained owner drift")
         n=self.forward.n;event=n.final_event
@@ -114,14 +119,18 @@ class EventRecoveringRuntime(CurrentWrittenRecoveringRuntime):
     def _integrate(self):
         # This method runs after the real conditional physical recovery forward.
         # Controller goals/history are only copied, never recalculated here.
-        self._copy_event(self.event_after)
-        for source,target in ((self.recovery.warning_number,self.event_warnings),
-                              (self.recovery.warning_lastinfo,self.event_lastinfo)):
-            wp.launch(_copy_i32,(self.euler.capacity,8),inputs=[source.reshape((-1,)),self.event_slot,target,8,self.event_capacity],device=self.stream.device,stream=self.stream)
+        if self.capture_events:
+            self._copy_event(self.event_after)
+            for source,target in ((self.recovery.warning_number,self.event_warnings),
+                                  (self.recovery.warning_lastinfo,self.event_lastinfo)):
+                wp.launch(_copy_i32,(self.euler.capacity,8),inputs=[source.reshape((-1,)),self.event_slot,target,8,self.event_capacity],device=self.stream.device,stream=self.stream)
         super()._integrate()
-        self._copy_event(self.event_after_euler)
+        if self.capture_events:
+            self._copy_event(self.event_after_euler)
 
     def download_recovery_events(self):
+        if not self.capture_events:
+            raise RuntimeError('recovery event recording requires debug=True')
         wp.synchronize_stream(self.stream)
         return dict(event_count=self.event_count.numpy(),event_overflow=self.event_overflow.numpy(),
             metadata=self.event_metadata.numpy(),warnings=self.event_warnings.numpy(),lastinfo=self.event_lastinfo.numpy(),

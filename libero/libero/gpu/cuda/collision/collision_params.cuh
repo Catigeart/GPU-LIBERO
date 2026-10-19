@@ -75,6 +75,25 @@ __device__ __forceinline__ PairParams cf_pair_params(
     return p;
 }
 
+// Cold model-owned table, shared by every world. Use exactly the device
+// arithmetic of the uncached path, including override and direct solref.
+__device__ void cf_pair_params_table(int w,
+    const int* priority,const int* condim,const double* geom_margin,const double* geom_gap,
+    const double* geom_friction,const double* geom_solmix,const double* geom_solref,const double* geom_solimp,
+    const double* pair_margin,const double* pair_gap,const int* pair_dim,const double* pair_friction,
+    const double* pair_solref,const double* pair_solreffriction,const double* pair_solimp,
+    const double* o_margin,const double* o_solref,const double* o_solimp,const int* override_enabled,
+    int ngeom,int npair,double* table_f,int* table_i){
+    for(int entry=threadIdx.x;entry<ngeom*ngeom;entry+=blockDim.x){
+        const PairParams p=cf_pair_params(entry/ngeom,entry%ngeom,-1,0,0.0,
+            priority,condim,geom_margin,geom_gap,geom_friction,geom_solmix,geom_solref,geom_solimp,
+            pair_margin,pair_gap,pair_dim,pair_friction,pair_solref,pair_solreffriction,pair_solimp,
+            o_margin,o_solref,o_solimp,override_enabled,ngeom,npair);
+        libero_vec::copy_serial(p.f+10,table_f+entry*16,16);
+        table_i[entry*2]=p.flags[0];table_i[entry*2+1]=p.flags[4];
+    }
+}
+
 __device__ void cf_params(
     int w, const int* route, const double* raw, const double* usermargin,
     const int* active, const int* counts, const int* priority, const int* condim,

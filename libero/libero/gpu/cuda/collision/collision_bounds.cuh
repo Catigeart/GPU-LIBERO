@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "../common/warp.cuh"
 #include "../common/vector.cuh"
+#include "collision_sap_sort.cuh"
 
 namespace collision_cuda {
 // The original routines retain the owner-lane ABI. The *_block bounds
@@ -405,8 +406,9 @@ __device__ inline void cf_broadphase(int w,
 }
 
 // Warp-cooperative candidate filtering with ordered SAP control. Every lane
-// of warp 0 enters; other block warps wait in the wrapper. Sorting remains
-// the original insertion sort, preserving float NaN barriers and equal keys.
+// of warp 0 enters; other block warps wait in the wrapper. Bounded register
+// networks preserve stable equal keys. NaN events and larger lists retain the
+// original insertion sort and its comparison barriers.
 __device__ inline void cf_broadphase_warp(int w,
     const double* aabb,const int* active,const int* gates,const int* collision_mode,
     const int* body_weldid,const int* body_parentid,const int* body_geomadr,
@@ -455,7 +457,8 @@ __device__ inline void cf_broadphase_warp(int w,
         ne+=2*total;
     }
     __syncwarp(libero_warp::mask);
-    if(lane==0)for(int i=1;i<ne;++i){
+    const bool events_sorted=sap_events64(keys,tags,ne);
+    if(!events_sorted&&lane==0)for(int i=1;i<ne;++i){
         const float key=keys[i];const int tag=tags[i];int j=i;
         while(j>0 && key<keys[j-1]){keys[j]=keys[j-1];tags[j]=tags[j-1];--j;}
         keys[j]=key;tags[j]=tag;
@@ -533,14 +536,15 @@ __device__ inline void cf_broadphase_warp(int w,
         }
         __syncwarp(libero_warp::mask);
     }
-    if(lane==0){
+    const bool pairs_sorted=sap_pairs128(pairs,npair);
+    if(!pairs_sorted&&lane==0){
         for(int i=1;i<npair;++i){
             const int key=pairs[i];int j=i;
             while(j>0 && key<pairs[j-1]){pairs[j]=pairs[j-1];--j;}
             pairs[j]=key;
         }
-        out_npair[w]=npair;
     }
+    if(lane==0)out_npair[w]=npair;
 }
 
 __device__ inline void cf_broadphase_block(int w,

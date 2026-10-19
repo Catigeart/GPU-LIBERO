@@ -70,16 +70,29 @@ def _host_function_symbol(image,address_offset):
     return found[0]
 
 def prepare_native(device):
+    from libero.gpu.host.runtime.core.product_paths import build_unit_lock, collision_build_root
+    root = os.environ.get('P06C_NATIVE_BUILD_ROOT')
+    if not root:raise ValueError('P06C_NATIVE_BUILD_ROOT must name private build directory')
+    with build_unit_lock(collision_build_root(root, MODULE, GPU_ROOT)):
+        return _prepare_native(device)
+
+
+def _prepare_native(device):
     dev=wp.get_device(device)
     if not dev.is_cuda:raise ValueError('native collision requires CUDA device')
     root=os.environ.get('P06C_NATIVE_BUILD_ROOT')
     if not root:raise ValueError('P06C_NATIVE_BUILD_ROOT must name private build directory')
+    from libero.gpu.host.runtime.core.product_paths import collision_build_root
+    root = collision_build_root(root, MODULE, GPU_ROOT)
     vector_header=(GPU_ROOT / 'cuda/common/vector.cuh').resolve()
     sources=_native_source_bindings(vector_header)
     key=hashlib.sha256(json.dumps({'sources':sources,'fma':True,'forced_include':str(vector_header)},sort_keys=True).encode()).hexdigest()
-    cache_key=(str(Path(root).resolve()),key,dev.arch)
+    cache_key=(str(Path(root).resolve()),key,dev.arch,str(dev))
     authority=current_product_authority()
-    if authority is None and cache_key in _CACHE:return _CACHE[cache_key]
+    from libero.gpu.host.runtime.core.product_paths import record_build
+    if authority is None and cache_key in _CACHE:
+        record_build('collision-native', key)
+        return _CACHE[cache_key]
     target=Path(root)/('native-'+key[:24]+'-sm'+str(dev.arch))
     if authority is not None:target=target.with_name(target.name+'_'+uuid.uuid4().hex)
     nvcc=Path(os.environ.get('P06C_NVCC') or nvcc_path()).resolve()
@@ -122,7 +135,9 @@ def prepare_native(device):
         (target/'BUILD.json').write_text(json.dumps(record,indent=2))
         obj=loaded['object'];obj['build_sha256']=_sha(target/'BUILD.json');obj['product_build']=product_result
         _CACHE[cache_key]=obj
+        record_build('collision-native', key, product_result['compile_commands_executed'])
         return obj
+    reused = target.exists()
     if target.exists():
         # A build from another process may only be reused after all source,
         # compiler identity, flags and output bindings are reverified.
@@ -144,6 +159,8 @@ def prepare_native(device):
             if _sha(path)!=binding['sha256']:
                 raise ValueError('native toolchain identity mismatch')
     else:
+        from libero.gpu.host.build.compilation import require_compilation
+        require_compilation('collision CUDA library', target)
         target.mkdir(parents=True,exist_ok=False)
         record={'schema':'p06c-native-build-v1','sources':sources,
                 'toolchain_files':toolchain,
@@ -176,6 +193,7 @@ def prepare_native(device):
                              for p in sorted(target.iterdir()) if p.is_file()}
         (target/'BUILD.json').write_text(json.dumps(record,indent=2))
     obj=_bind_native_product(target,record,nvcc,dev,sources)
+    record_build('collision-native', key, () if reused else (argv, ptx_argv))
     _CACHE[cache_key]=obj
     return obj
 
@@ -242,8 +260,8 @@ def _bind_native_product(target,record,nvcc,dev,sources):
                'scope':'actual cudaGetFuncBySymbol/native stub/image preparation; no CUDA API argument values captured by Nsight'}
     obj={'library':lib,'build_path':str(target),'build_sha256':_sha(target/'BUILD.json'),
          'adapter_abi':[8,4,4,104,0,8,32],'device':str(dev),'execution_binding':execution}
-    with (target/'MODULE_IDENTITY_OBSERVATION.json').open('x') as f:
-        json.dump(execution,f,sort_keys=True,indent=2)
+    from libero.gpu.host.runtime.core.product_paths import record_module_binding
+    obj['module_identity_file'] = record_module_binding(target, execution)
     return obj
 
 def launch_native(ws,stream=None):

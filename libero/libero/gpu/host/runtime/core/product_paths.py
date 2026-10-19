@@ -13,6 +13,7 @@ import uuid
 
 _CURRENT = ContextVar('libero_gpu_product_build', default=None)
 _SDK = ContextVar('libero_gpu_product_sdk', default=None)
+_PROJECT = ContextVar('libero_gpu_build_project', default=None)
 _MATHDX_URL = ('https://developer.nvidia.com/downloads/compute/cublasdx/redist/'
                'cublasdx/cuda12/nvidia-mathdx-25.12.1-cuda12.tar.gz')
 _MATHDX_SHA = 'd905fb32e4baafe7f6cd3ad94ac194d86dcf463481f37221da972b2784fa73ac'
@@ -25,6 +26,115 @@ def cache_root():
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def current_build_project():
+    return _PROJECT.get()
+
+
+def record_build(kind, identity, commands=()):
+    event = dict(kind=kind, identity=str(identity), commands_executed=[list(c) for c in commands],
+                 cache_hit=not bool(commands))
+    from libero.gpu.host.build.compilation import record_event
+    record_event(event)
+    project = _PROJECT.get()
+    if project is not None:
+        project['events'].append(event)
+
+
+def record_module_binding(target, execution):
+    """Keep process-local CUDA addresses outside the shared compiler products."""
+    import json
+    directory = build_directory('module-binding') if _PROJECT.get() is not None else Path(target)
+    observation = directory / 'MODULE_IDENTITY_OBSERVATION.json'
+    with observation.open('x') as stream:
+        json.dump(execution, stream, sort_keys=True, indent=2)
+    return str(observation)
+
+
+def collision_build_root(root, module, gpu_root):
+    """Different generated source paths retain distinct exact compiler argv."""
+    root, module, gpu_root = Path(root), Path(module).resolve(), Path(gpu_root).resolve()
+    if _PROJECT.get() is not None and not module.is_relative_to(gpu_root):
+        root = root / ('generated-' + hashlib.sha256(str(module).encode()).hexdigest()[:24])
+    return root
+
+
+def reuse_newton_binary(target, identity, source_sha256, architecture):
+    """Reuse only a completed, byte-checked matching diagnostic Newton product."""
+    if _PROJECT.get() is None or target.exists():
+        return None
+    import json
+    candidates = set()
+    # Warp publishes and removes temporary directories concurrently. Only scan
+    # native products, and tolerate directories disappearing during traversal.
+    for root in (cache_root() / 'builds', _PROJECT.get()['root'] / 'cuda'):
+        for directory, _, files in os.walk(root):
+            if target.name in files:
+                candidates.add(Path(directory) / target.name)
+    for candidate in sorted(candidates):
+        if candidate == target:
+            continue
+        try:
+            metadata = candidate.with_suffix('.json')
+            manifest = json.loads((metadata if metadata.exists() else candidate.parent / 'MANIFEST.json').read_text())
+            flags = manifest['command']
+            raw = candidate.read_bytes()
+            matches = (manifest['sha256'] == identity and
+                       manifest['source_sha256'] == source_sha256 and
+                       manifest['library_sha256'] == hashlib.sha256(raw).hexdigest() and
+                       '-arch=sm_' + str(architecture) in flags)
+        except (OSError, ValueError, KeyError):
+            continue
+        if matches:
+            shutil.copyfile(candidate, target)
+            target.with_suffix('.json').write_text(json.dumps(manifest, indent=2) + '\n')
+            return str(candidate)
+    return None
+
+
+@contextmanager
+def build_project(directory=None, *, lock_key=None):
+    """One persistent compilation bank, with fresh runtime owners on every use."""
+    previous = _PROJECT.get()
+    if previous is not None:
+        yield previous
+        return
+    import fcntl
+    root = Path(directory).expanduser().resolve() if directory is not None else cache_root() / 'project'
+    root.mkdir(parents=True, exist_ok=True)
+    lock_name = '.build.lock' if lock_key is None else '.build-' + hashlib.sha256(str(lock_key).encode()).hexdigest() + '.lock'
+    with (root / lock_name).open('a+b') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        project = dict(root=root, events=[])
+        token = _PROJECT.set(project)
+        try:
+            yield project
+        finally:
+            _PROJECT.reset(token)
+
+
+@contextmanager
+def build_unit_lock(directory):
+    import fcntl
+    directory = Path(directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / '.compile.lock').open('a+b') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def serialized_build(function):
+    """Serialize one compiler output directory across offline build workers."""
+    from functools import wraps
+    import inspect
+    signature = inspect.signature(function)
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        values = signature.bind(*args, **kwargs).arguments
+        with build_unit_lock(values['build_root']):
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def build_directory(label):

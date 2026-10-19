@@ -3,7 +3,8 @@
 #include <math.h>
 namespace collision_cuda {
 // A complete block owns a world; fixed-capacity rows retain source order.
-__device__ void cf_calls_finalize(int w,int* g1,int* g2,int* t1,int* t2,int* ipair,int* user,
+template<bool Diagnostics>
+__device__ void cf_calls_finalize_impl(int w,int* g1,int* g2,int* t1,int* t2,int* ipair,int* user,
         int* segment,int* sort,int* call_count,double* margin,double* raw,int* raw_count,int* det_status,
         double* fraw,int* fcount,int* fcall,int* factive,int* ftypes,int* fsegment,int* fsort,
         int* route,double* usermargin,int* counts,int* status,int* active,
@@ -45,9 +46,14 @@ __device__ void cf_calls_finalize(int w,int* g1,int* g2,int* t1,int* t2,int* ipa
     if(factive[w] && !status[w] && counts[w]){
         // Copy immutable raw fields with adjacent lanes at adjacent addresses.
         // Route records retain their original ordinal and ownership below.
-        if(fraw!=raw)for(int k=threadIdx.x;k<pairs*max_raw*raw_f;k+=blockDim.x)
+        const int live_calls=Diagnostics?pairs:n;
+        if(fraw!=raw)for(int k=threadIdx.x;k<live_calls*max_raw*raw_f;k+=blockDim.x)
             fraw[w*pairs*max_raw*raw_f+k]=raw[w*pairs*max_raw*raw_f+k];
-        for(int row=threadIdx.x;row<pairs*max_raw;row+=blockDim.x){
+        // The live consumer reads one descriptor at each call's first row.
+        // Keep the public sparse addressing, without expanding it 50 times
+        // or writing unused call slots. Compatible diagnostics retain tails.
+        for(int q=threadIdx.x;q<live_calls*(Diagnostics?max_raw:1);q+=blockDim.x){
+            const int row=Diagnostics?q:q*max_raw;
             int slot=w*pairs+row/max_raw, rr=w*pairs*max_raw+row;
             // Cold retained alias mode uses the detector's public raw owner.
             // It must not turn every bridge row into a read/write self-copy.
@@ -60,6 +66,10 @@ __device__ void cf_calls_finalize(int w,int* g1,int* g2,int* t1,int* t2,int* ipa
     __syncthreads();
     if(threadIdx.x==0 && factive[w] && !status[w] && counts[w])fcall[w]=call_count[w];
 }
+template<class... Args>
+__device__ __forceinline__ void cf_calls_finalize(Args... args){cf_calls_finalize_impl<true>(args...);}
+template<class... Args>
+__device__ __forceinline__ void cf_calls_finalize_live(Args... args){cf_calls_finalize_impl<false>(args...);}
 __device__ void cf_dedup(int w,double* raw,int* raw_count,int* call_count,int* active,int* types,
         int* route,int* geom_type,int ngeom,double* compact,int* compact_count,int* keep_index,
         int* status,int pairs){
@@ -90,10 +100,11 @@ __device__ bool cf_contact_lt(int ga,int ha,int gb,int hb,int* type){
     if(type[a]>type[b]){a=ha;b=ga;}if(type[c]>type[d]){c=hb;d=gb;}
     return a<c || (a==c && b<d);
 }
+template<int Fields=65>
 __device__ void cf_contact_copy(int dst,int src,double* sf,int* si,double* df,int* di){
-    for(int k=0;k<64;k+=2){const double2 v=libero_vec::load_pair(sf+src*65+k);
-        libero_vec::store_pair(df+dst*65+k,v.x,v.y);}
-    df[dst*65+64]=sf[src*65+64];
+    for(int k=0;k+1<Fields;k+=2){const double2 v=libero_vec::load_pair(sf+src*Fields+k);
+        libero_vec::store_pair(df+dst*Fields+k,v.x,v.y);}
+    if(Fields&1)df[dst*Fields+Fields-1]=sf[src*Fields+Fields-1];
     const int* s=si+src*5;int* d=di+dst*5;
     int4 v;
     if(libero_vec::aligned16(s))v=*reinterpret_cast<const int4*>(s);
@@ -102,6 +113,7 @@ __device__ void cf_contact_copy(int dst,int src,double* sf,int* si,double* df,in
     else{d[0]=v.x;d[1]=v.y;d[2]=v.z;d[3]=v.w;}
     d[4]=s[4];
 }
+template<int Fields=65>
 __device__ void cf_contact_sort(int w,int start,int length,int capacity,int* type,
         double* cf,int* ci,double* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
     if(order&&order_scratch){
@@ -120,8 +132,8 @@ __device__ void cf_contact_sort(int w,int start,int length,int capacity,int* typ
             for(int j=0;j<length;++j)order[base+j]=order_scratch[base+j];
         }
         // Stable key ordering moves only indices until the final permutation.
-        for(int j=0;j<length;++j)cf_contact_copy(base+j,order[base+j],cf,ci,sf,si);
-        for(int j=0;j<length;++j)cf_contact_copy(base+j,base+j,sf,si,cf,ci);
+        for(int j=0;j<length;++j)cf_contact_copy<Fields>(base+j,order[base+j],cf,ci,sf,si);
+        for(int j=0;j<length;++j)cf_contact_copy<Fields>(base+j,base+j,sf,si,cf,ci);
         return;
     }
     for(int width=1;width<length;width*=2){
@@ -132,23 +144,24 @@ __device__ void cf_contact_sort(int w,int start,int length,int capacity,int* typ
                 if(!right && b<end){int ai=(w*capacity+start+a)*5,bi=(w*capacity+start+b)*5;
                     right=cf_contact_lt(ci[bi+1],ci[bi+2],ci[ai+1],ci[ai+2],type);}
                 int src=right?b++:a++;
-                cf_contact_copy(w*capacity+start+t,w*capacity+start+src,cf,ci,sf,si);
+                cf_contact_copy<Fields>(w*capacity+start+t,w*capacity+start+src,cf,ci,sf,si);
             }
         }
-        for(int j=0;j<length;++j)cf_contact_copy(w*capacity+start+j,w*capacity+start+j,sf,si,cf,ci);
+        for(int j=0;j<length;++j)cf_contact_copy<Fields>(w*capacity+start+j,w*capacity+start+j,sf,si,cf,ci);
     }
 }
 // All block threads must enter this helper with the same segment. The ordered
 // assembly replay still uses cf_contact_sort; switching that lane-0 call to
 // this helper without a collective segment protocol would deadlock.
 // Units never cross record boundaries; source/destination alignment may differ.
+template<int Fields=65>
 __device__ void cf_contact_gather_block(int base,int length,const int* permutation,
         const double* cf,const int* ci,double* sf,int* si){
-    for(int unit=threadIdx.x;unit<length*33;unit+=blockDim.x){
-        const int row=unit/33,k=(unit%33)*2,src=permutation[row];
-        if(k<64){const double2 v=libero_vec::load_pair(cf+src*65+k);
-            libero_vec::store_pair(sf+(base+row)*65+k,v.x,v.y);}
-        else sf[(base+row)*65+64]=cf[src*65+64];
+    for(int unit=threadIdx.x;unit<length*((Fields+1)/2);unit+=blockDim.x){
+        const int row=unit/((Fields+1)/2),k=(unit%((Fields+1)/2))*2,src=permutation[row];
+        if(k+1<Fields){const double2 v=libero_vec::load_pair(cf+src*Fields+k);
+            libero_vec::store_pair(sf+(base+row)*Fields+k,v.x,v.y);}
+        else sf[(base+row)*Fields+Fields-1]=cf[src*Fields+Fields-1];
     }
     for(int row=threadIdx.x;row<length;row+=blockDim.x){
         const int* s=ci+permutation[row]*5;int* d=si+(base+row)*5;int4 v;
@@ -159,6 +172,7 @@ __device__ void cf_contact_gather_block(int base,int length,const int* permutati
         d[4]=s[4];
     }
 }
+template<int Fields=65>
 __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,int* type,
         double* cf,int* ci,double* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
     if(length<=0)return;
@@ -168,7 +182,7 @@ __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,in
         if(order && order_scratch){
             const int base=w*capacity+start;
             if(threadIdx.x==0)order[base]=base;
-            libero_vec::copy_block(cf+base*65,sf+base*65,65);
+            libero_vec::copy_block(cf+base*Fields,sf+base*Fields,Fields);
             libero_vec::copy_block(ci+base*5,si+base*5,5);
             __syncthreads();
         }
@@ -177,7 +191,7 @@ __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,in
     if(blockDim.x<32 || (length>32 && !(order && order_scratch))){
         // The legacy no-index large-segment path has no rank buffer; preserve
         // its existing merge behavior rather than allocate new device storage.
-        if(threadIdx.x==0)cf_contact_sort(w,start,length,capacity,type,cf,ci,sf,si,order,order_scratch);
+        if(threadIdx.x==0)cf_contact_sort<Fields>(w,start,length,capacity,type,cf,ci,sf,si,order,order_scratch);
         __syncthreads();
         return;
     }
@@ -212,9 +226,9 @@ __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,in
             if(width>=(length+1)/2)break;
             width*=2;
         }
-        cf_contact_gather_block(base,length,order+base,cf,ci,sf,si);
+        cf_contact_gather_block<Fields>(base,length,order+base,cf,ci,sf,si);
         __syncthreads();
-        libero_vec::copy_block(sf+base*65,cf+base*65,size_t(length)*65);
+        libero_vec::copy_block(sf+base*Fields,cf+base*Fields,size_t(length)*Fields);
         libero_vec::copy_block(si+base*5,ci+base*5,size_t(length)*5);
         __syncthreads();
         return;
@@ -245,11 +259,11 @@ __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,in
         }
     }
     __syncthreads();
-    cf_contact_gather_block(base,length,cf_short_permutation,cf,ci,sf,si);
+    cf_contact_gather_block<Fields>(base,length,cf_short_permutation,cf,ci,sf,si);
     __syncthreads();
     // Flatten record copies: sorting changes neither floating-point bits nor
     // the fields outside this segment.
-    libero_vec::copy_block(sf+base*65,cf+base*65,size_t(length)*65);
+    libero_vec::copy_block(sf+base*Fields,cf+base*Fields,size_t(length)*Fields);
     libero_vec::copy_block(si+base*5,ci+base*5,size_t(length)*5);
     __syncthreads();
 }

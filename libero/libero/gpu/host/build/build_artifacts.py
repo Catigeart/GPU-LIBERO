@@ -86,6 +86,8 @@ def receipted_artifact_build(*, commands, units, outputs, architecture,
         if current_inputs()!=identity:
             raise RuntimeError('CUDA source/dependency/toolchain/archive changed during product admission')
     def build():
+        from .compilation import require_compilation
+        require_compilation('receipted CUDA product', tuple(outputs))
         for index,command in enumerate(commands):
             result=subprocess.run(command,cwd=cwd,env=env,capture_output=True,text=True)
             if logs is not None:logs(index,result)
