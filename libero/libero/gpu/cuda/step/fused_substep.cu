@@ -1,7 +1,8 @@
-// Maintained single-physical-substep CUDA implementation (catalogue dimensions, FP64).
-// The kernel calls forward_dynamics at three logical points; each forward calls
-// the separately compiled Newton entry. Controller, reset and Euler retain
-// their function boundaries. Newton numerical bodies live in newton_solver.cu.
+#include "precision.cuh"
+// Maintained single-physical-substep CUDA implementation (catalogue dimensions).
+// The ordinary kernel retains the CPU application's three complete forwards.
+// A separate FP32 candidate follows step1 -> OSC -> step2 with one solve.
+// Newton numerical bodies remain separately compiled in newton_solver.cu.
 // CMake compiles this file directly. There is no build/runtime source generation.
 
 // One block owns one world's physical substep; no loop over control substeps.
@@ -44,16 +45,16 @@ static __device__ void d_reference_gate(int w, int *done, int *err, int64_t *wri
 
 namespace physics_bias {
 static __device__ void d_commit_bias_block(int w, int *active, int *gate, int *status, int64_t *epoch,
-                                           int *error, double *work, double *pub, int *valid,
+                                           int *error, real_t *work, real_t *pub, int *valid,
                                            int64_t *written, int width);
 }
 
 namespace physics_bias {
 static __device__ void
-d_rne_bias_cached(int w, int *active, double *cdot, double *qvel, double *cinert, double *cvel, double *cdof,
-                  int *bp, int *ba, int *bn, int *db, double *gravity, int disabled, int nb, int nv,
-                  double *cacc, double *frc, double *result, int *status, const double *cache_acc,
-                  const double *cache_force, const int *cache_status, const int *cache_valid,
+d_rne_bias_cached(int w, int *active, real_t *cdot, real_t *qvel, real_t *cinert, real_t *cvel, real_t *cdof,
+                  int *bp, int *ba, int *bn, int *db, real_t *gravity, int disabled, int nb, int nv,
+                  real_t *cacc, real_t *frc, real_t *result, int *status, const real_t *cache_acc,
+                  const real_t *cache_force, const int *cache_status, const int *cache_valid,
                   const int64_t *cache_state, const int64_t *cache_forward, const int64_t *state_epoch,
                   const int64_t *forward_epoch, const int *level_offsets = nullptr,
                   const int *level_bodies = nullptr, int nlevels = 0, const int *children_offsets = nullptr,
@@ -79,10 +80,10 @@ namespace physics_bias {
 
 // Collective helpers: every thread in the world block must enter. Warp votes
 // exchange predicates only; the barriers publish and protect inter-warp flags.
-static __device__ inline bool d1_finite_block(const double *x, int n, const double *y = nullptr, int ny = 0,
-                                              const double *z = nullptr, int nz = 0,
-                                              const double *u = nullptr, int nu = 0,
-                                              const double *v = nullptr, int nv = 0) {
+static __device__ inline bool d1_finite_block(const real_t *x, int n, const real_t *y = nullptr, int ny = 0,
+                                              const real_t *z = nullptr, int nz = 0,
+                                              const real_t *u = nullptr, int nu = 0,
+                                              const real_t *v = nullptr, int nv = 0) {
   __shared__ int warp_bad[32];
   bool bad = false;
   bad |= libero_vec::any_nonfinite_block_lane(x, n);
@@ -105,23 +106,23 @@ static __device__ inline bool d1_finite_block(const double *x, int n, const doub
   __syncthreads();
   return !any;
 }
-static __device__ inline void d1_zero_block(double *x, int n) { libero_vec::fill_block(x, n, 0.0); }
+static __device__ inline void d1_zero_block(real_t *x, int n) { libero_vec::fill_block(x, n, REAL_C(0.0)); }
 
 // Collective publication: callers enter with the complete world block. Gate
 // decisions and scalar flags retain lane-zero order; payload stores complete
 // before the epoch becomes visible. Shifted overlaps retain serial copy order.
-static __device__ inline bool d_copy_overlap(const double *a, const double *b, int width) {
+static __device__ inline bool d_copy_overlap(const real_t *a, const real_t *b, int width) {
   const uintptr_t x = reinterpret_cast<uintptr_t>(a), y = reinterpret_cast<uintptr_t>(b);
-  const uintptr_t bytes = uintptr_t(width) * sizeof(double);
+  const uintptr_t bytes = uintptr_t(width) * sizeof(real_t);
   return x < y + bytes && y < x + bytes;
 }
 
 static __device__ __forceinline__ void d_commit_bias_block(int w, int *active, int *gate, int *status,
-                                                           int64_t *epoch, int *error, double *work,
-                                                           double *pub, int *valid, int64_t *written,
+                                                           int64_t *epoch, int *error, real_t *work,
+                                                           real_t *pub, int *valid, int64_t *written,
                                                            int width) {
   __shared__ int admitted, serial;
-  double *s = work + (long long)w * width, *t = pub + (long long)w * width;
+  real_t *s = work + (long long)w * width, *t = pub + (long long)w * width;
   if (threadIdx.x == 0) {
     valid[w] = 0;
     admitted = active[w] == 1 && gate[w] == 1 && !error[w];
@@ -152,7 +153,7 @@ static __device__ __forceinline__ void d_commit_bias_block(int w, int *active, i
 // children. A level barrier publishes every parent before its children read.
 
 // Compressed spatial inertia multiplication, not a dense BLAS operand.
-static __device__ inline void d_inertia(const double *i, const double *v, double *f) {
+static __device__ inline void d_inertia(const real_t *i, const real_t *v, real_t *f) {
   f[0] = i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5];
   f[1] = i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5];
   f[2] = i[4] * v[0] + i[5] * v[1] + i[2] * v[2] - i[7] * v[3] + i[6] * v[4];
@@ -160,7 +161,7 @@ static __device__ inline void d_inertia(const double *i, const double *v, double
   f[4] = i[6] * v[2] - i[8] * v[0] + i[9] * v[4];
   f[5] = i[7] * v[0] - i[6] * v[1] + i[9] * v[5];
 }
-static __device__ inline void d_cross_force(const double *v, const double *t, double *x) {
+static __device__ inline void d_cross_force(const real_t *v, const real_t *t, real_t *x) {
   x[0] = -v[2] * t[1] + v[1] * t[2];
   x[1] = v[2] * t[0] - v[0] * t[2];
   x[2] = -v[1] * t[0] + v[0] * t[1];
@@ -171,10 +172,10 @@ static __device__ inline void d_cross_force(const double *v, const double *t, do
   x[1] += v[5] * t[3] - v[3] * t[5];
   x[2] += -v[4] * t[3] + v[3] * t[4];
 }
-static __device__ inline void d1_rne_body(int b, const double *d, const double *q, const double *i,
-                                          const double *v, const int *bp, const int *ba, const int *bn,
-                                          double *acc, double *f, int nb = 0, bool component_planes = false) {
-  double t[6] = {};
+static __device__ inline void d1_rne_body(int b, const real_t *d, const real_t *q, const real_t *i,
+                                          const real_t *v, const int *bp, const int *ba, const int *bn,
+                                          real_t *acc, real_t *f, int nb = 0, bool component_planes = false) {
+  real_t t[6] = {};
   const int adr = ba[b], n = bn[b];
   if (n == 1)
     for (int k = 0; k < 6; ++k)
@@ -184,24 +185,24 @@ static __device__ inline void d1_rne_body(int b, const double *d, const double *
       if (q[adr + j] != 0)
         for (int k = 0; k < 6; ++k)
           t[k] += d[6 * (adr + j) + k] * q[adr + j];
-  double local_acc[6];
+  real_t local_acc[6];
   for (int k = 0; k < 6; ++k) {
     const int out = component_planes ? k * nb + b : 6 * b + k;
     const int parent = component_planes ? k * nb + bp[b] : 6 * bp[b] + k;
     local_acc[k] = acc[parent] + t[k];
     acc[out] = local_acc[k];
   }
-  double fi[6], corr[6], cross[6];
+  real_t fi[6], corr[6], cross[6];
   d_inertia(i + 10 * b, local_acc, fi);
   d_inertia(i + 10 * b, v + 6 * b, corr);
   d_cross_force(v + 6 * b, corr, cross);
   for (int k = 0; k < 6; ++k)
     f[component_planes ? k * nb + b : 6 * b + k] = fi[k] + cross[k];
 }
-static __device__ inline void d1_rne_forward(const double *d, const double *q, const double *i,
-                                             const double *v, const int *bp, const int *ba, const int *bn,
-                                             const double *gravity, int disabled, int nb, double *acc,
-                                             double *f, const int *lo, const int *lb, int nl,
+static __device__ inline void d1_rne_forward(const real_t *d, const real_t *q, const real_t *i,
+                                             const real_t *v, const int *bp, const int *ba, const int *bn,
+                                             const real_t *gravity, int disabled, int nb, real_t *acc,
+                                             real_t *f, const int *lo, const int *lb, int nl,
                                              bool component_planes = false) {
   if (threadIdx.x == 0 && !disabled)
     for (int k = 0; k < 3; ++k)
@@ -219,7 +220,7 @@ static __device__ inline void d1_rne_forward(const double *d, const double *q, c
   }
   __syncthreads();
 }
-static __device__ inline void d1_rne_reverse(const int *bp, int nb, double *f, const int *lo, const int *lb,
+static __device__ inline void d1_rne_reverse(const int *bp, int nb, real_t *f, const int *lo, const int *lb,
                                              int nl, const int *co, const int *ci) {
   if (lo && lb && co && ci && nl > 0) {
     // One writer per parent; descending child IDs exactly reproduce the
@@ -242,14 +243,14 @@ static __device__ inline void d1_rne_reverse(const int *bp, int nb, double *f, c
   __syncthreads();
 }
 static __device__ inline void
-d_rne_bias(int w, int *active, double *cdot, double *qvel, double *cinert, double *cvel, double *cdof,
-           int *bp, int *ba, int *bn, int *db, double *gravity, int disabled, int nb, int nv, double *cacc,
-           double *frc, double *result, int *status, const int *level_offsets = nullptr,
+d_rne_bias(int w, int *active, real_t *cdot, real_t *qvel, real_t *cinert, real_t *cvel, real_t *cdof,
+           int *bp, int *ba, int *bn, int *db, real_t *gravity, int disabled, int nb, int nv, real_t *cacc,
+           real_t *frc, real_t *result, int *status, const int *level_offsets = nullptr,
            const int *level_bodies = nullptr, int nlevels = 0, const int *children_offsets = nullptr,
            const int *children_indices = nullptr) {
-  const double *d = cdot + w * nv * 6, *q = qvel + w * nv, *i = cinert + w * nb * 10, *v = cvel + w * nb * 6,
+  const real_t *d = cdot + w * nv * 6, *q = qvel + w * nv, *i = cinert + w * nb * 10, *v = cvel + w * nb * 6,
                *a = cdof + w * nv * 6;
-  double *acc = cacc + w * nb * 6, *f = frc + w * nb * 6, *r = result + w * nv;
+  real_t *acc = cacc + w * nb * 6, *f = frc + w * nb * 6, *r = result + w * nv;
   if (threadIdx.x == 0)
     status[w] = 0;
   d1_zero_block(acc, nb * 6);
@@ -272,7 +273,7 @@ d_rne_bias(int w, int *active, double *cdot, double *qvel, double *cinert, doubl
   d1_rne_forward(d, q, i, v, bp, ba, bn, gravity, disabled, nb, acc, f, level_offsets, level_bodies, nlevels);
   d1_rne_reverse(bp, nb, f, level_offsets, level_bodies, nlevels, children_offsets, children_indices);
   for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-    const double *aa = a + 6 * j, *ff = f + 6 * db[j];
+    const real_t *aa = a + 6 * j, *ff = f + 6 * db[j];
     r[j] =
         ((aa[0] * ff[0] + aa[2] * ff[2]) + (aa[1] * ff[1] + aa[3] * ff[3])) + (aa[4] * ff[4] + aa[5] * ff[5]);
   }
@@ -292,10 +293,10 @@ d_rne_bias(int w, int *active, double *cdot, double *qvel, double *cinert, doubl
 // The reverse force tree and public bias commit remain after S admission.
 
 static __device__ __forceinline__ void
-d_rne_bias_cached(int w, int *active, double *cdot, double *qvel, double *cinert, double *cvel, double *cdof,
-                  int *bp, int *ba, int *bn, int *db, double *gravity, int disabled, int nb, int nv,
-                  double *cacc, double *frc, double *result, int *status, const double *cache_acc,
-                  const double *cache_force, const int *cache_status, const int *cache_valid,
+d_rne_bias_cached(int w, int *active, real_t *cdot, real_t *qvel, real_t *cinert, real_t *cvel, real_t *cdof,
+                  int *bp, int *ba, int *bn, int *db, real_t *gravity, int disabled, int nb, int nv,
+                  real_t *cacc, real_t *frc, real_t *result, int *status, const real_t *cache_acc,
+                  const real_t *cache_force, const int *cache_status, const int *cache_valid,
                   const int64_t *cache_state, const int64_t *cache_forward, const int64_t *state_epoch,
                   const int64_t *forward_epoch, const int *level_offsets, const int *level_bodies,
                   int nlevels, const int *children_offsets, const int *children_indices) {
@@ -305,10 +306,10 @@ d_rne_bias_cached(int w, int *active, double *cdot, double *qvel, double *cinert
                frc, result, status, level_offsets, level_bodies, nlevels, children_offsets, children_indices);
     return;
   }
-  double *acc = cacc + (long long)w * nb * 6, *f = frc + (long long)w * nb * 6,
+  real_t *acc = cacc + (long long)w * nb * 6, *f = frc + (long long)w * nb * 6,
          *r = result + (long long)w * nv;
-  const double *a = cdof + (long long)w * nv * 6;
-  const double *ca = cache_acc + (long long)w * nb * 6, *cf = cache_force + (long long)w * nb * 6;
+  const real_t *a = cdof + (long long)w * nv * 6;
+  const real_t *ca = cache_acc + (long long)w * nb * 6, *cf = cache_force + (long long)w * nb * 6;
   if (threadIdx.x == 0)
     status[w] = 0;
   // Cache producer writes [component][body] directly. Each linear cache
@@ -322,7 +323,7 @@ d_rne_bias_cached(int w, int *active, double *cdot, double *qvel, double *cinert
   __syncthreads();
   d1_rne_reverse(bp, nb, f, level_offsets, level_bodies, nlevels, children_offsets, children_indices);
   for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-    const double *aa = a + 6 * j, *ff = f + 6 * db[j];
+    const real_t *aa = a + 6 * j, *ff = f + 6 * db[j];
     r[j] =
         ((aa[0] * ff[0] + aa[2] * ff[2]) + (aa[1] * ff[1] + aa[3] * ff[3])) + (aa[4] * ff[4] + aa[5] * ff[5]);
   }
@@ -343,9 +344,9 @@ namespace d_passive_detail {}
 
 namespace d_passive_detail {
 struct Vec {
-  double v[3];
-  __device__ double &operator[](int i) { return v[i]; }
-  __device__ double operator[](int i) const { return v[i]; }
+  real_t v[3];
+  __device__ real_t &operator[](int i) { return v[i]; }
+  __device__ real_t operator[](int i) const { return v[i]; }
 };
 
 } // namespace d_passive_detail
@@ -393,11 +394,11 @@ static __device__ void project_counts(int w, const int *admitted, const int *sou
 namespace physics_constraint_projection::cf_s {
 static __device__ void
 project_cone_heads_verified(int w, const int *admitted, const int *nefc, const int *ne, const int *nf,
-                            const int *ncon, const int *typ, const int *id, const int *dim, const double *mu,
-                            const double *friction, int *out_dim, double *out_mu, double *out_friction,
+                            const int *ncon, const int *typ, const int *id, const int *dim, const real_t *mu,
+                            const real_t *friction, int *out_dim, real_t *out_mu, real_t *out_friction,
                             int *status, int *item, int rows, int contacts, const int *compact_heads,
                             const int *compact_count, const int *compact_valid, const int *head_dim,
-                            double *head_mu, double *head_friction, int *head_cone_valid);
+                            real_t *head_mu, real_t *head_friction, int *head_cone_valid);
 }
 
 namespace physics_constraint_projection::cf_s {
@@ -420,8 +421,8 @@ namespace cf_s {
 
 static __device__ void project_cone_heads(int w, const int *admitted, const int *nefc, const int *ne,
                                           const int *nf, const int *ncon, const int *typ, const int *id,
-                                          const int *dim, const double *mu, const double *friction,
-                                          int *out_dim, double *out_mu, double *out_friction, int *status,
+                                          const int *dim, const real_t *mu, const real_t *friction,
+                                          int *out_dim, real_t *out_mu, real_t *out_friction, int *status,
                                           int *item, int rows, int contacts) {
   __shared__ int head[32], contact[32], width[32], kind[32], parse_code[32];
   __shared__ int cursor, used, finished;
@@ -498,12 +499,12 @@ static __device__ void project_cone_heads(int w, const int *admitted, const int 
                 bad = i + j;
                 break;
               }
-            if (!code && (!isfinite(mu[cb + c]) || mu[cb + c] <= 0.))
+            if (!code && (!isfinite(mu[cb + c]) || mu[cb + c] <= REAL_C(0.)))
               code = 9006;
             if (!code)
               for (int j = 0; j < d - 1; j++) {
-                const double f = friction[(cb + c) * 5 + j];
-                if (!isfinite(f) || f <= 0.) {
+                const real_t f = friction[(cb + c) * 5 + j];
+                if (!isfinite(f) || f <= REAL_C(0.)) {
                   code = 9007;
                   break;
                 }
@@ -540,11 +541,11 @@ static __device__ void project_cone_heads(int w, const int *admitted, const int 
 // retain project_cone_heads. Projection-specific numeric admission is repeated.
 static __device__ __forceinline__ void
 project_cone_heads_verified(int w, const int *admitted, const int *nefc, const int *ne, const int *nf,
-                            const int *ncon, const int *typ, const int *id, const int *dim, const double *mu,
-                            const double *friction, int *out_dim, double *out_mu, double *out_friction,
+                            const int *ncon, const int *typ, const int *id, const int *dim, const real_t *mu,
+                            const real_t *friction, int *out_dim, real_t *out_mu, real_t *out_friction,
                             int *status, int *item, int rows, int contacts, const int *compact_heads,
                             const int *compact_count, const int *compact_valid, const int *head_dim,
-                            double *head_mu, double *head_friction, int *head_cone_valid) {
+                            real_t *head_mu, real_t *head_friction, int *head_cone_valid) {
   if (threadIdx.x == 0)
     head_cone_valid[w] = 0;
   __syncthreads();
@@ -653,12 +654,12 @@ project_cone_heads_verified(int w, const int *admitted, const int *nefc, const i
                     bad = i + j;
                     break;
                   }
-                if (!code && (!isfinite(mu[cb + c]) || mu[cb + c] <= 0.))
+                if (!code && (!isfinite(mu[cb + c]) || mu[cb + c] <= REAL_C(0.)))
                   code = 9006;
                 if (!code)
                   for (int j = 0; j < d - 1; j++) {
-                    const double f = friction[(cb + c) * 5 + j];
-                    if (!isfinite(f) || f <= 0.) {
+                    const real_t f = friction[(cb + c) * 5 + j];
+                    if (!isfinite(f) || f <= REAL_C(0.)) {
                       code = 9007;
                       break;
                     }
@@ -701,13 +702,13 @@ project_cone_heads_verified(int w, const int *admitted, const int *nefc, const i
     // transposed private head metadata retains its existing scalar layout.
     int j = 0;
     for (; j + 1 < d - 1; j += 2) {
-      const double2 f = libero_vec::load_pair(friction + (cb + c) * 5 + j);
+      const real2_t f = libero_vec::load_pair(friction + (cb + c) * 5 + j);
       libero_vec::store_pair(out_friction + (rb + i) * 5 + j, f.x, f.y);
       head_friction[(w * 5 + j) * rows + ordinal] = f.x;
       head_friction[(w * 5 + j + 1) * rows + ordinal] = f.y;
     }
     if (j < d - 1) {
-      const double f = friction[(cb + c) * 5 + j];
+      const real_t f = friction[(cb + c) * 5 + j];
       out_friction[(rb + i) * 5 + j] = f;
       head_friction[(w * 5 + j) * rows + ordinal] = f;
     }
@@ -725,20 +726,20 @@ project_cone_heads_verified(int w, const int *admitted, const int *nefc, const i
 
 namespace physics_constraint_reference::cf_s {
 static __device__ void reference_gate(int w, int32_t *active, int32_t *status, int32_t *committed,
-                                      int32_t *counts, double *qvel, int64_t *epoch, int64_t *expected,
+                                      int32_t *counts, real_t *qvel, int64_t *epoch, int64_t *expected,
                                       int32_t *ready, int32_t rows, int32_t nv);
 }
 
 namespace physics_constraint_reference::cf_s {
 static __device__ void commit_reference(int w, int32_t *ready, int32_t *status, int32_t *committed,
-                                        int32_t *counts, double *sv, double *sa, int64_t *epoch, double *pv,
-                                        double *pa, int64_t *ref_epoch, int32_t rows);
+                                        int32_t *counts, real_t *sv, real_t *sa, int64_t *epoch, real_t *pv,
+                                        real_t *pa, int64_t *ref_epoch, int32_t rows);
 }
 
 namespace physics_constraint_reference::cf_s {
-static __device__ void reference(int w, int32_t *committed, int32_t *counts, double *efc_J, double *kbip,
-                                 double *efc_pos, double *efc_margin, double *qvel, int64_t *qvel_epoch,
-                                 double *vel, double *aref, int64_t *ref_epoch, int32_t rows, int32_t nv);
+static __device__ void reference(int w, int32_t *committed, int32_t *counts, real_t *efc_J, real_t *kbip,
+                                 real_t *efc_pos, real_t *efc_margin, real_t *qvel, int64_t *qvel_epoch,
+                                 real_t *vel, real_t *aref, int64_t *ref_epoch, int32_t rows, int32_t nv);
 }
 
 namespace physics_constraint_reference::cf_s {
@@ -760,7 +761,7 @@ static __device__ __forceinline__ bool s1_block_any(bool bad) {
 }
 
 static __device__ __forceinline__ void reference_gate(int w, int32_t *active, int32_t *status,
-                                                      int32_t *committed, int32_t *counts, double *qvel,
+                                                      int32_t *committed, int32_t *counts, real_t *qvel,
                                                       int64_t *epoch, int64_t *expected, int32_t *ready,
                                                       int32_t rows, int32_t nv) {
   if (threadIdx.x == 0)
@@ -819,8 +820,8 @@ static __device__ __forceinline__ void reference_gate(int w, int32_t *active, in
 }
 
 static __device__ __forceinline__ void commit_reference(int w, int32_t *ready, int32_t *status,
-                                                        int32_t *committed, int32_t *counts, double *sv,
-                                                        double *sa, int64_t *epoch, double *pv, double *pa,
+                                                        int32_t *committed, int32_t *counts, real_t *sv,
+                                                        real_t *sa, int64_t *epoch, real_t *pv, real_t *pa,
                                                         int64_t *ref_epoch, int32_t rows) {
   if (ready[w] != 1 || status[w])
     return;
@@ -856,14 +857,14 @@ static __device__ __forceinline__ void commit_reference(int w, int32_t *ready, i
 }
 
 using ReferenceGemm =
-    decltype(cublasdx::Size<32, 1, SubstepShape::nv>() + cublasdx::Precision<double>() +
+    decltype(cublasdx::Size<32, 1, SubstepShape::nv>() + cublasdx::Precision<real_t>() +
              cublasdx::Type<cublasdx::type::real>() +
              cublasdx::Arrangement<cublasdx::row_major, cublasdx::col_major, cublasdx::col_major>() +
              cublasdx::Function<cublasdx::function::MM>() + cublasdx::SM<CF_S_DX_SM>() + cublasdx::Block() +
              cublasdx::BlockDim<64>());
-static __device__ __forceinline__ void reference(int w, int32_t *committed, int32_t *counts, double *efc_J,
-                                                 double *kbip, double *efc_pos, double *efc_margin,
-                                                 double *qvel, int64_t *qvel_epoch, double *vel, double *aref,
+static __device__ __forceinline__ void reference(int w, int32_t *committed, int32_t *counts, real_t *efc_J,
+                                                 real_t *kbip, real_t *efc_pos, real_t *efc_margin,
+                                                 real_t *qvel, int64_t *qvel_epoch, real_t *vel, real_t *aref,
                                                  int64_t *ref_epoch, int32_t rows, int32_t nv) {
   if (committed[w] != 1)
     return;
@@ -885,23 +886,23 @@ static __device__ __forceinline__ void reference(int w, int32_t *committed, int3
       const int r = z / SubstepShape::nv, k = z % SubstepShape::nv, next = z + 1,
                 r1 = next / SubstepShape::nv, k1 = next % SubstepShape::nv;
       if (next < tile * SubstepShape::nv && base + r1 < total) {
-        const double2 v = libero_vec::load_pair(efc_J + (w * rows + base) * SubstepShape::nv + z);
+        const real2_t v = libero_vec::load_pair(efc_J + (w * rows + base) * SubstepShape::nv + z);
         A(r, k) = v.x;
         A(r1, k1) = v.y;
       } else {
-        A(r, k) = base + r < total ? efc_J[(w * rows + base) * SubstepShape::nv + z] : 0.;
+        A(r, k) = base + r < total ? efc_J[(w * rows + base) * SubstepShape::nv + z] : REAL_C(0.);
         if (next < tile * SubstepShape::nv)
-          A(r1, k1) = base + r1 < total ? efc_J[(w * rows + base) * SubstepShape::nv + next] : 0.;
+          A(r1, k1) = base + r1 < total ? efc_J[(w * rows + base) * SubstepShape::nv + next] : REAL_C(0.);
       }
     }
     for (int r = threadIdx.x; r < tile; r += blockDim.x)
-      C(r, 0) = 0.;
+      C(r, 0) = REAL_C(0.);
     __syncthreads();
-    ReferenceGemm().execute(1., A, B, 0., C);
+    ReferenceGemm().execute(REAL_C(1.), A, B, REAL_C(0.), C);
     __syncthreads();
     for (int r = threadIdx.x; r < tile && base + r < total; r += blockDim.x) {
       int g = w * rows + base + r;
-      double acc = C(r, 0);
+      real_t acc = C(r, 0);
       vel[g] = acc;
       aref[g] = -kbip[g * 4 + 1] * acc - kbip[g * 4] * kbip[g * 4 + 2] * (efc_pos[g] - efc_margin[g]);
     }
@@ -994,7 +995,7 @@ static __device__ __forceinline__ void forest_range(ForestPlan plan, int root, i
 }
 template <bool Checked = true>
 static __device__ __forceinline__ bool
-factor(const double *qm, double *ld, double *inv, double *sqrt_inv, int *pivot, int &warnings, int &last,
+factor(const real_t *qm, real_t *ld, real_t *inv, real_t *sqrt_inv, int *pivot, int &warnings, int &last,
        int nv, int nm, const int *madr, const int *parent, bool reciprocal_pivot = false) {
   reciprocal_pivot =
       reciprocal_pivot && ((nv == 21 && nm == 57) || (nv == 43 && nm == 115) || (nv == 57 && nm == 153));
@@ -1002,16 +1003,16 @@ factor(const double *qm, double *ld, double *inv, double *sqrt_inv, int *pivot, 
   libero_vec::copy_serial(qm, ld, nm);
   for (int k = nv - 1; k >= 0; --k) {
     const int kk = madr[k];
-    if (ld[kk] < 1.0e-15) {
+    if (ld[kk] < REAL_C(1.0e-15)) {
       pivot[k] = 1;
       ++warnings;
       last = k;
-      ld[kk] = 1.0e-15;
+      ld[kk] = REAL_C(1.0e-15);
     }
-    const double reciprocal = reciprocal_pivot ? 1.0 / ld[kk] : 0.0;
+    const real_t reciprocal = reciprocal_pivot ? REAL_C(1.0) / ld[kk] : REAL_C(0.0);
     int ki = kk + 1;
     for (int i = parent[k]; i >= 0; i = parent[i], ++ki) {
-      const double multiplier = reciprocal_pivot ? ld[ki] * reciprocal : ld[ki] / ld[kk];
+      const real_t multiplier = reciprocal_pivot ? ld[ki] * reciprocal : ld[ki] / ld[kk];
       if constexpr (Checked)
         bad |= !isfinite(multiplier);
       const int len = (i < nv - 1 ? madr[i + 1] : nm) - madr[i];
@@ -1025,23 +1026,23 @@ factor(const double *qm, double *ld, double *inv, double *sqrt_inv, int *pivot, 
     }
   }
   for (int i = 0; i < nv; ++i) {
-    const double diagonal = ld[madr[i]];
-    inv[i] = 1.0 / diagonal;
+    const real_t diagonal = ld[madr[i]];
+    inv[i] = REAL_C(1.0) / diagonal;
     if (sqrt_inv)
-      sqrt_inv[i] = 1.0 / sqrt(diagonal);
+      sqrt_inv[i] = REAL_C(1.0) / sqrt(diagonal);
     if constexpr (Checked)
       bad |= !isfinite(inv[i]) || (sqrt_inv && !isfinite(sqrt_inv[i]));
   }
   return !bad;
 }
 template <bool Checked = true>
-static __device__ __forceinline__ bool solve_inplace(double *x, const double *ld, const double *inv, int nv,
+static __device__ __forceinline__ bool solve_inplace(real_t *x, const real_t *ld, const real_t *inv, int nv,
                                                      const int *madr, const int *parent) {
   bool bad = false;
   // A zero descendant is deliberately skipped: ignored nonfinite products
   // and signed-zero behavior remain those of the original sparse solve.
   for (int i = nv - 1; i >= 0; --i) {
-    if (x[i] == 0.0)
+    if (x[i] == REAL_C(0.0))
       continue;
     int a = madr[i] + 1;
     for (int j = parent[i]; j >= 0; j = parent[j], ++a) {
@@ -1071,7 +1072,7 @@ static __device__ __forceinline__ bool solve_inplace(double *x, const double *ld
 // to factor(); different components never read or write one another's rows.
 template <bool Checked = true>
 static __device__ __forceinline__ bool
-factor_block(const double *qm, double *ld, double *inv, double *sqrt_inv, int *pivot, int &warnings,
+factor_block(const real_t *qm, real_t *ld, real_t *inv, real_t *sqrt_inv, int *pivot, int &warnings,
              int &last, int nv, int nm, const int *madr, const int *parent, ForestPlan &plan,
              const int *descriptor = nullptr, int descriptor_size = 0, bool reciprocal_pivot = false) {
   reciprocal_pivot =
@@ -1100,16 +1101,16 @@ factor_block(const double *qm, double *ld, double *inv, double *sqrt_inv, int *p
     forest_range(plan, root, nv, parent, begin, end);
     for (int k = end - 1; k >= begin; --k) {
       const int kk = madr[k];
-      if (ld[kk] < 1.0e-15) {
+      if (ld[kk] < REAL_C(1.0e-15)) {
         pivot[k] = 1;
         ++count;
         smallest = k < smallest ? k : smallest;
-        ld[kk] = 1.0e-15;
+        ld[kk] = REAL_C(1.0e-15);
       }
-      const double reciprocal = reciprocal_pivot ? 1.0 / ld[kk] : 0.0;
+      const real_t reciprocal = reciprocal_pivot ? REAL_C(1.0) / ld[kk] : REAL_C(0.0);
       int ki = kk + 1;
       for (int i = parent[k]; i >= 0; i = parent[i], ++ki) {
-        const double multiplier = reciprocal_pivot ? ld[ki] * reciprocal : ld[ki] / ld[kk];
+        const real_t multiplier = reciprocal_pivot ? ld[ki] * reciprocal : ld[ki] / ld[kk];
         if constexpr (Checked)
           bad |= !isfinite(multiplier);
         const int len = plan.row_lengths ? plan.row_lengths[i] : (i < nv - 1 ? madr[i + 1] : nm) - madr[i];
@@ -1123,10 +1124,10 @@ factor_block(const double *qm, double *ld, double *inv, double *sqrt_inv, int *p
       }
     }
     for (int i = begin; i < end; ++i) {
-      const double diagonal = ld[madr[i]];
-      inv[i] = 1.0 / diagonal;
+      const real_t diagonal = ld[madr[i]];
+      inv[i] = REAL_C(1.0) / diagonal;
       if (sqrt_inv)
-        sqrt_inv[i] = 1.0 / sqrt(diagonal);
+        sqrt_inv[i] = REAL_C(1.0) / sqrt(diagonal);
       if constexpr (Checked)
         bad |= !isfinite(inv[i]) || (sqrt_inv && !isfinite(sqrt_inv[i]));
     }
@@ -1148,12 +1149,12 @@ factor_block(const double *qm, double *ld, double *inv, double *sqrt_inv, int *p
 }
 
 template <bool Checked = true>
-static __device__ __forceinline__ bool solve_component(double *x, const double *ld, const double *inv,
+static __device__ __forceinline__ bool solve_component(real_t *x, const real_t *ld, const real_t *inv,
                                                        int begin, int end, const int *madr,
                                                        const int *parent) {
   bool bad = false;
   for (int i = end - 1; i >= begin; --i) {
-    if (x[i] == 0.0)
+    if (x[i] == REAL_C(0.0))
       continue;
     int a = madr[i] + 1;
     for (int j = parent[i]; j >= 0; j = parent[j], ++a) {
@@ -1182,8 +1183,8 @@ static __device__ __forceinline__ bool solve_component(double *x, const double *
 // floating-point reduction is introduced. Return value is block-uniform and
 // includes the failure of every component; callers retain their clear gate.
 template <bool Checked = true>
-static __device__ __forceinline__ bool solve_rhs_block(const double *rhs, double *solution, const double *ld,
-                                                       const double *inv, int nrhs, int nv, const int *madr,
+static __device__ __forceinline__ bool solve_rhs_block(const real_t *rhs, real_t *solution, const real_t *ld,
+                                                       const real_t *inv, int nrhs, int nv, const int *madr,
                                                        const int *parent, ForestPlan plan) {
   libero_vec::copy_block(rhs, solution, size_t(nrhs) * nv);
   __syncthreads();
@@ -1212,8 +1213,8 @@ static __device__ __forceinline__ bool solve_rhs_block(const double *rhs, double
 // returned lane-local failure before the existing transaction clear/gate.
 // No outer pivot/ancestor ordering, zero-descendant skip or arithmetic changes.
 // Factor, input RHS and output solution must not overlap.
-static __device__ __forceinline__ bool solve_rhs_lane(const double *rhs, double *solution, const double *ld,
-                                                      const double *inv, int nrhs, int nv, const int *madr,
+static __device__ __forceinline__ bool solve_rhs_lane(const real_t *rhs, real_t *solution, const real_t *ld,
+                                                      const real_t *inv, int nrhs, int nv, const int *madr,
                                                       const int *parent) {
   // Stage only active RHS cells with consecutive block lanes. No inactive
   // tail is touched; the owning caller already zeroes those cells.
@@ -1231,55 +1232,55 @@ namespace cf_euler {
 // CPU reference: MuJoCo 2.3.7 mj_EulerSkip, mj_advance, mju_quatIntegrate.
 // The fused entry has already performed checkPos/checkVel/checkAcc and owns
 // disjoint state/scratch views. Only one RHS is needed by mj_EulerSkip.
-static __device__ double trig(double z, bool sine) {
-  const double sc[23] = {1.,
-                         -.16666666666666666,
-                         .008333333333333333,
-                         -.0001984126984126984,
-                         2.7557319223985893e-6,
-                         -2.505210838544172e-8,
-                         1.6059043836821613e-10,
-                         -7.647163731819816e-13,
-                         2.8114572543455206e-15,
-                         -8.22063524662433e-18,
-                         1.9572941063391263e-20,
-                         -3.868170170630684e-23,
-                         6.446950284384474e-26,
-                         -9.183689863795546e-29,
-                         1.1309962886447716e-31,
-                         -1.216125041553518e-34,
-                         1.151633562077195e-37,
-                         -9.67759295863189e-41,
-                         7.265460179153071e-44,
-                         -4.902469756513544e-47,
-                         2.9893108271424046e-50,
-                         -1.6552108677421951e-53,
-                         8.359650847182804e-57};
-  const double cc[23] = {1.,
-                         -.5,
-                         .041666666666666664,
-                         -.001388888888888889,
-                         2.48015873015873e-5,
-                         -2.755731922398589e-7,
-                         2.08767569878681e-9,
-                         -1.1470745597729725e-11,
-                         4.779477332387385e-14,
-                         -1.5619206968586225e-16,
-                         4.110317623312165e-19,
-                         -8.896791392450574e-22,
-                         1.6117375710961184e-24,
-                         -2.4795962632247976e-27,
-                         3.279889237069838e-30,
-                         -3.7699876288159054e-33,
-                         3.8003907548547434e-36,
-                         -3.387157535521162e-39,
-                         2.6882202662866363e-42,
-                         -1.911963205040282e-45,
-                         1.2256174391283858e-48,
-                         -7.117406731291439e-52,
-                         3.7618428812322616e-55};
-  const double *c = sine ? sc : cc;
-  double p = c[22], zz = z * z;
+static __device__ real_t trig(real_t z, bool sine) {
+  const real_t sc[23] = {REAL_C(1.),
+                         -REAL_C(.16666666666666666),
+                         REAL_C(.008333333333333333),
+                         -REAL_C(.0001984126984126984),
+                         REAL_C(2.7557319223985893e-6),
+                         -REAL_C(2.505210838544172e-8),
+                         REAL_C(1.6059043836821613e-10),
+                         -REAL_C(7.647163731819816e-13),
+                         REAL_C(2.8114572543455206e-15),
+                         -REAL_C(8.22063524662433e-18),
+                         REAL_C(1.9572941063391263e-20),
+                         -REAL_C(3.868170170630684e-23),
+                         REAL_C(6.446950284384474e-26),
+                         -REAL_C(9.183689863795546e-29),
+                         REAL_C(1.1309962886447716e-31),
+                         -REAL_C(1.216125041553518e-34),
+                         REAL_C(1.151633562077195e-37),
+                         -REAL_C(9.67759295863189e-41),
+                         REAL_C(7.265460179153071e-44),
+                         -REAL_C(4.902469756513544e-47),
+                         REAL_C(2.9893108271424046e-50),
+                         -REAL_C(1.6552108677421951e-53),
+                         REAL_C(8.359650847182804e-57)};
+  const real_t cc[23] = {REAL_C(1.),
+                         -REAL_C(.5),
+                         REAL_C(.041666666666666664),
+                         -REAL_C(.001388888888888889),
+                         REAL_C(2.48015873015873e-5),
+                         -REAL_C(2.755731922398589e-7),
+                         REAL_C(2.08767569878681e-9),
+                         -REAL_C(1.1470745597729725e-11),
+                         REAL_C(4.779477332387385e-14),
+                         -REAL_C(1.5619206968586225e-16),
+                         REAL_C(4.110317623312165e-19),
+                         -REAL_C(8.896791392450574e-22),
+                         REAL_C(1.6117375710961184e-24),
+                         -REAL_C(2.4795962632247976e-27),
+                         REAL_C(3.279889237069838e-30),
+                         -REAL_C(3.7699876288159054e-33),
+                         REAL_C(3.8003907548547434e-36),
+                         -REAL_C(3.387157535521162e-39),
+                         REAL_C(2.6882202662866363e-42),
+                         -REAL_C(1.911963205040282e-45),
+                         REAL_C(1.2256174391283858e-48),
+                         -REAL_C(7.117406731291439e-52),
+                         REAL_C(3.7618428812322616e-55)};
+  const real_t *c = sine ? sc : cc;
+  real_t p = c[22], zz = z * z;
   for (int i = 21; i >= 0; i--)
     p = p * zz + c[i];
   return sine ? z * p : p;
@@ -1312,13 +1313,13 @@ static __device__ __forceinline__ void gate_core_block(int w, const int *intent,
 // One joint owns its qpos span. Keep the accepted normalization thresholds,
 // quaternion multiplication and small-angle trigonometry; omit trace stores.
 static __device__ void integrate_joint_core(int joint, const int *type, const int *qpos_address,
-                                            const int *dof_address, double *pos, const double *vel,
-                                            double dt) {
+                                            const int *dof_address, real_t *pos, const real_t *vel,
+                                            real_t dt) {
   int pa = qpos_address[joint], va = dof_address[joint];
   const int kind = type[joint];
   if (kind == 0) {
-    const double2 p = libero_vec::load_pair(pos + pa);
-    const double2 v = libero_vec::load_pair(vel + va);
+    const real2_t p = libero_vec::load_pair(pos + pa);
+    const real2_t v = libero_vec::load_pair(vel + va);
     libero_vec::store_pair(pos + pa, p.x + dt * v.x, p.y + dt * v.y);
     pos[pa + 2] += dt * vel[va + 2];
     pa += 3;
@@ -1328,42 +1329,42 @@ static __device__ void integrate_joint_core(int joint, const int *type, const in
   }
   if (kind != 0 && kind != 1)
     return;
-  const double2 v = libero_vec::load_pair(vel + va);
-  double x = v.x, y = v.y, z = vel[va + 2];
-  const double xx = x * x, yy = y * y, zz = z * z, sxy = xx + yy;
-  const double length = sqrt(sxy + zz);
-  if (length < 1e-15) {
-    x = 1.0;
-    y = z = 0.0;
+  const real2_t v = libero_vec::load_pair(vel + va);
+  real_t x = v.x, y = v.y, z = vel[va + 2];
+  const real_t xx = x * x, yy = y * y, zz = z * z, sxy = xx + yy;
+  const real_t length = sqrt(sxy + zz);
+  if (length < REAL_C(1e-15)) {
+    x = REAL_C(1.0);
+    y = z = REAL_C(0.0);
   } else {
-    const double inv = 1.0 / length;
+    const real_t inv = REAL_C(1.0) / length;
     x *= inv;
     y *= inv;
     z *= inv;
   }
-  const double angle = dt * length;
-  double c = 1.0, s = 0.0;
-  if (angle != 0.0) {
-    const double half = 0.5 * angle;
+  const real_t angle = dt * length;
+  real_t c = REAL_C(1.0), s = REAL_C(0.0);
+  if (angle != REAL_C(0.0)) {
+    const real_t half = REAL_C(0.5) * angle;
     s = fabs(half) <= 4 ? trig(half, true) : sin(half);
     c = fabs(half) <= 4 ? trig(half, false) : cos(half);
   }
-  double b[4] = {c, x * s, y * s, z * s};
-  if (angle == 0.0)
-    b[1] = b[2] = b[3] = 0.0;
-  const double2 p01 = libero_vec::load_pair(pos + pa);
-  const double2 p23 = libero_vec::load_pair(pos + pa + 2);
-  const double a0 = p01.x, a1 = p01.y, a2 = p23.x, a3 = p23.y;
-  double q[4] = {a0 * b[0] - a1 * b[1] - a2 * b[2] - a3 * b[3], a0 * b[1] + a1 * b[0] + a2 * b[3] - a3 * b[2],
+  real_t b[4] = {c, x * s, y * s, z * s};
+  if (angle == REAL_C(0.0))
+    b[1] = b[2] = b[3] = REAL_C(0.0);
+  const real2_t p01 = libero_vec::load_pair(pos + pa);
+  const real2_t p23 = libero_vec::load_pair(pos + pa + 2);
+  const real_t a0 = p01.x, a1 = p01.y, a2 = p23.x, a3 = p23.y;
+  real_t q[4] = {a0 * b[0] - a1 * b[1] - a2 * b[2] - a3 * b[3], a0 * b[1] + a1 * b[0] + a2 * b[3] - a3 * b[2],
                  a0 * b[2] - a1 * b[3] + a2 * b[0] + a3 * b[1],
                  a0 * b[3] + a1 * b[2] - a2 * b[1] + a3 * b[0]};
-  const double s0 = q[0] * q[0], s1 = q[1] * q[1], s2 = q[2] * q[2], s3 = q[3] * q[3];
-  const double s01 = s0 + s1, s012 = s01 + s2, qlen = sqrt(s012 + s3);
-  if (qlen < 1e-15) {
-    q[0] = 1.0;
-    q[1] = q[2] = q[3] = 0.0;
+  const real_t s0 = q[0] * q[0], s1 = q[1] * q[1], s2 = q[2] * q[2], s3 = q[3] * q[3];
+  const real_t s01 = s0 + s1, s012 = s01 + s2, qlen = sqrt(s012 + s3);
+  if (qlen < REAL_C(1e-15)) {
+    q[0] = REAL_C(1.0);
+    q[1] = q[2] = q[3] = REAL_C(0.0);
   } else {
-    const double inv = 1.0 / qlen;
+    const real_t inv = REAL_C(1.0) / qlen;
     for (int i = 0; i < 4; ++i)
       q[i] *= inv;
   }
@@ -1372,24 +1373,24 @@ static __device__ void integrate_joint_core(int joint, const int *type, const in
 }
 
 static __device__ __forceinline__ void
-evaluate_core(int w, const int *active, double *qpos, double *qvel, double *time, const double *mass,
-              const double *smooth, const double *constraint, const double *qacc, const double *damping,
+evaluate_core(int w, const int *active, real_t *qpos, real_t *qvel, real_t *time, const real_t *mass,
+              const real_t *smooth, const real_t *constraint, const real_t *qacc, const real_t *damping,
               const int *mass_address, const int *parent, const int *joint_type, const int *qpos_address,
-              const int *dof_address, double *qh, double *qh_inv, int *count, int *mass_active, int *damped,
-              int *status, int *mass_status, int *warnings, int *last_warning, double dt, int nq, int nv,
+              const int *dof_address, real_t *qh, real_t *qh_inv, int *count, int *mass_active, int *damped,
+              int *status, int *mass_status, int *warnings, int *last_warning, real_t dt, int nq, int nv,
               int nm, int nj, int qacc_stride, const int *joint_quat, const int *type_offsets,
               const int *type_indices) {
   auto *shared = flash_libero::substep_shared_data();
   int &work_warnings = *flash_libero::shared_at<int>(shared, flash_libero::EulerLayout::warnings);
   int &work_last_warning = *flash_libero::shared_at<int>(shared, flash_libero::EulerLayout::last_warning);
-  double *work_mass = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::mass);
-  double *work_rhs = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::rhs);
+  real_t *work_mass = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::mass);
+  real_t *work_rhs = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::rhs);
   int *work_pivot = flash_libero::shared_at<int>(shared, flash_libero::EulerLayout::pivot);
-  double *work_factor = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::factor);
-  double *work_inv = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::inv);
-  double *work_solution = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::solution);
-  double *work_vel = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::vel);
-  double *work_pos = flash_libero::shared_at<double>(shared, flash_libero::EulerLayout::pos);
+  real_t *work_factor = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::factor);
+  real_t *work_inv = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::inv);
+  real_t *work_solution = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::solution);
+  real_t *work_vel = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::vel);
+  real_t *work_pos = flash_libero::shared_at<real_t>(shared, flash_libero::EulerLayout::pos);
   if (threadIdx.x == 0) {
     status[w] = mass_status[w] = 0;
     count[w] = 1;
@@ -1404,7 +1405,7 @@ evaluate_core(int w, const int *active, double *qpos, double *qvel, double *time
     return;
   bool positive = false;
   for (int i = threadIdx.x; i < nv; i += blockDim.x)
-    positive |= damping[i] > 0.0;
+    positive |= damping[i] > REAL_C(0.0);
   const bool implicit = __syncthreads_or(positive);
   if (threadIdx.x == 0)
     mass_active[w] = damped[w] = implicit;
@@ -1437,7 +1438,7 @@ evaluate_core(int w, const int *active, double *qpos, double *qvel, double *time
     if (status[w])
       return;
   }
-  const double *acceleration = implicit ? work_solution : qacc + w * qacc_stride;
+  const real_t *acceleration = implicit ? work_solution : qacc + w * qacc_stride;
   for (int i = threadIdx.x; i < nv; i += blockDim.x)
     work_vel[i] = qvel[w * nv + i] + dt * acceleration[i];
   libero_vec::copy_block(qpos + w * nq, work_pos, nq);
@@ -1510,43 +1511,43 @@ static __device__ void d_actuation_finish(int w, int *gate, int *status, int *fi
 }
 
 namespace physics_force {
-static __device__ void d_copy_admitted_block(int w, int *gate, double *source, double *target, int width);
+static __device__ void d_copy_admitted_block(int w, int *gate, real_t *source, real_t *target, int width);
 }
 
 namespace physics_force {
 static __device__ void d_commit_smooth_shared(int w, int *active, int *gate, int *status, int64_t *epoch,
-                                              int *error, double *wf, double *wa, double *pf, double *pa,
+                                              int *error, real_t *wf, real_t *wa, real_t *pf, real_t *pa,
                                               int *valid, int64_t *written, int *repaired, int width);
 }
 
 namespace physics_force {
 // Collective counterpart. All lanes enter; the caller supplies the exit barrier.
 static __device__ void d_commit_smooth_shared_block(int w, int *active, int *gate, int *status,
-                                                    int64_t *epoch, int *error, double *pf, double *pa,
+                                                    int64_t *epoch, int *error, real_t *pf, real_t *pa,
                                                     int *valid, int64_t *written, int *repaired, int width);
 } // namespace physics_force
 
 namespace physics_force {
 static __device__ void
-d_actuation_count(int w, double *length, double *moment, double *velocity, double *ctrl, int *active,
-                  int *vel_status, double *gain, double *bias0, double *bias1, double *bias2, int *bias_type,
-                  double *ctrl_lo, double *ctrl_hi, double *force_lo, double *force_hi, int *force_limited,
-                  int disable_flags, double *force, double *force_pre, double *ctrl_used, int *ctrl_route,
-                  int *force_route, double *qfrc_actuator, int *status, int *warn_badctrl_count,
+d_actuation_count(int w, real_t *length, real_t *moment, real_t *velocity, real_t *ctrl, int *active,
+                  int *vel_status, real_t *gain, real_t *bias0, real_t *bias1, real_t *bias2, int *bias_type,
+                  real_t *ctrl_lo, real_t *ctrl_hi, real_t *force_lo, real_t *force_hi, int *force_limited,
+                  int disable_flags, real_t *force, real_t *force_pre, real_t *ctrl_used, int *ctrl_route,
+                  int *force_route, real_t *qfrc_actuator, int *status, int *warn_badctrl_count,
                   int *warn_badctrl_lastinfo, int *warning_number, int *warning_lastinfo, int nv, int nu);
 }
 
 namespace physics_force {
 static __device__ void
-d_smooth_chain(int w, const double *passive, const double *bias, const double *applied,
-               const double *actuator, const int *active, int *entry_status, double *smooth, double *seed,
-               int nv, const double *xfrc, const double *xipos, const double *subtree_com, const double *cdof,
+d_smooth_chain(int w, const real_t *passive, const real_t *bias, const real_t *applied,
+               const real_t *actuator, const int *active, int *entry_status, real_t *smooth, real_t *seed,
+               int nv, const real_t *xfrc, const real_t *xipos, const real_t *subtree_com, const real_t *cdof,
                const int *body_ids, const int *body_count, const int *body_rootid, const int *ancestor,
-               double *scratch, double *stages, double *qfrc, int *d02_status, int nbody, const double *qm,
-               const int *count, const int *madr, const int *parent, double *ld, double *inv,
-               double *sqrt_inv, double *solution, int *pivot, int *solve_status, int *warning_count,
-               int *warning_last, int nm, double *rhs, double *qacc_smooth, int *status,
-               const double *source_ld, const double *source_inv, const double *source_sqrt_inv,
+               real_t *scratch, real_t *stages, real_t *qfrc, int *d02_status, int nbody, const real_t *qm,
+               const int *count, const int *madr, const int *parent, real_t *ld, real_t *inv,
+               real_t *sqrt_inv, real_t *solution, int *pivot, int *solve_status, int *warning_count,
+               int *warning_last, int nm, real_t *rhs, real_t *qacc_smooth, int *status,
+               const real_t *source_ld, const real_t *source_inv, const real_t *source_sqrt_inv,
                const int *source_pivot, const int *source_status, const int *source_warning_count,
                const int *source_warning_last, const int *source_active, const int *position_valid,
                const int64_t *position_written, const int64_t *forward_epoch, int64_t *factor_reuse_count,
@@ -1578,15 +1579,15 @@ namespace physics_force {
 // Collective publication: callers enter with the complete world block. Gate
 // decisions and scalar flags retain lane-zero order; payload stores complete
 // before the epoch becomes visible. Shifted overlaps retain serial copy order.
-static __device__ inline bool d_copy_overlap(const double *a, const double *b, int width) {
+static __device__ inline bool d_copy_overlap(const real_t *a, const real_t *b, int width) {
   const uintptr_t x = reinterpret_cast<uintptr_t>(a), y = reinterpret_cast<uintptr_t>(b);
-  const uintptr_t bytes = uintptr_t(width) * sizeof(double);
+  const uintptr_t bytes = uintptr_t(width) * sizeof(real_t);
   return x < y + bytes && y < x + bytes;
 }
-static __device__ __forceinline__ void d_copy_admitted_block(int w, int *gate, double *source, double *target,
+static __device__ __forceinline__ void d_copy_admitted_block(int w, int *gate, real_t *source, real_t *target,
                                                              int width) {
   __shared__ int admitted, serial;
-  double *s = source + (long long)w * width, *t = target + (long long)w * width;
+  real_t *s = source + (long long)w * width, *t = target + (long long)w * width;
   if (threadIdx.x == 0) {
     admitted = gate[w] == 1;
     serial = d_copy_overlap(s, t, width);
@@ -1614,12 +1615,12 @@ static __device__ __forceinline__ void d_copy_admitted_block(int w, int *gate, d
 
 static __device__ __forceinline__ void
 d_commit_smooth_shared_block(int w, int *active, int *gate, int *status, int64_t *epoch, int *error,
-                             double *pf, double *pa, int *valid, int64_t *written, int *repaired, int width) {
+                             real_t *pf, real_t *pa, int *valid, int64_t *written, int *repaired, int width) {
   __shared__ int admitted, ordered;
   auto *shared = flash_libero::substep_shared_data();
-  double *work_force = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::force);
-  double *work_acceleration =
-      flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::acceleration);
+  real_t *work_force = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force);
+  real_t *work_acceleration =
+      flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration);
   pf += size_t(w) * width;
   pa += size_t(w) * width;
   if (threadIdx.x == 0) {
@@ -1682,9 +1683,9 @@ static __device__ inline bool bad(bool value) {
 
 namespace d_passive_detail {
 struct Vec {
-  double v[3];
-  __device__ double &operator[](int i) { return v[i]; }
-  __device__ double operator[](int i) const { return v[i]; }
+  real_t v[3];
+  __device__ real_t &operator[](int i) { return v[i]; }
+  __device__ real_t operator[](int i) const { return v[i]; }
 };
 
 } // namespace d_passive_detail
@@ -1695,11 +1696,11 @@ namespace d_passive_detail {
 } // namespace d_passive_detail
 
 static __device__ inline void
-d_actuation_prepare(int w, double *length, double *moment, double *velocity, double *ctrl, int *active,
-                    int *vel_status, double *gain, double *bias0, double *bias1, double *bias2,
-                    int *bias_type, double *ctrl_lo, double *ctrl_hi, double *force_lo, double *force_hi,
-                    int *force_limited, int disable_flags, double *force, double *force_pre,
-                    double *ctrl_used, int *ctrl_route, int *force_route, double *qfrc_actuator, int *status,
+d_actuation_prepare(int w, real_t *length, real_t *moment, real_t *velocity, real_t *ctrl, int *active,
+                    int *vel_status, real_t *gain, real_t *bias0, real_t *bias1, real_t *bias2,
+                    int *bias_type, real_t *ctrl_lo, real_t *ctrl_hi, real_t *force_lo, real_t *force_hi,
+                    int *force_limited, int disable_flags, real_t *force, real_t *force_pre,
+                    real_t *ctrl_used, int *ctrl_route, int *force_route, real_t *qfrc_actuator, int *status,
                     int *warn_badctrl_count, int *warn_badctrl_lastinfo, int *warning_number,
                     int *warning_lastinfo, int nv, int nu) {
   length += (long long)w * nu;
@@ -1716,11 +1717,11 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
   warn_badctrl_count[w] = 0;
   warn_badctrl_lastinfo[w] = -1;
   for (int j = 0; j < nv; ++j)
-    qfrc_actuator[j] = 0.0;
+    qfrc_actuator[j] = REAL_C(0.0);
   for (int i = 0; i < nu; ++i) {
-    force[i] = 0.0;
-    force_pre[i] = 0.0;
-    ctrl_used[i] = 0.0;
+    force[i] = REAL_C(0.0);
+    force_pre[i] = REAL_C(0.0);
+    ctrl_used[i] = REAL_C(0.0);
     ctrl_route[i] = 0;
     force_route[i] = 0;
   }
@@ -1738,7 +1739,7 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
     return;
   int bad_index = -1;
   for (int i = 0; i < nu; ++i) {
-    double u = ctrl[i];
+    real_t u = ctrl[i];
     if ((disable_flags & 128) == 0) {
       if (u < ctrl_lo[i]) {
         u = ctrl_lo[i];
@@ -1748,7 +1749,7 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
         ctrl_route[i] = 1;
       }
     }
-    if (bad_index < 0 && (u != u || u > 1e10 || u < -1e10))
+    if (bad_index < 0 && (u != u || u > REAL_C(1e10) || u < -REAL_C(1e10)))
       bad_index = i;
   }
   if (bad_index >= 0) {
@@ -1758,7 +1759,7 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
     warning_lastinfo[w] = bad_index;
   }
   for (int i = 0; i < nu; ++i) {
-    double u = 0.0;
+    real_t u = REAL_C(0.0);
     if (bad_index < 0) {
       u = ctrl[i];
       if (ctrl_route[i] == -1)
@@ -1767,7 +1768,7 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
         u = ctrl_hi[i];
     }
     ctrl_used[i] = u;
-    double f = gain[i] * u;
+    real_t f = gain[i] * u;
     if (bias_type[i] == 1)
       f += bias0[i] + bias1[i] * length[i] + bias2[i] * velocity[i];
     force_pre[i] = f;
@@ -1786,10 +1787,10 @@ d_actuation_prepare(int w, double *length, double *moment, double *velocity, dou
 
 // Large-NU preparation; the ordinary small actuator family retains scalar work.
 static __device__ inline void d_actuation_prepare_block(
-    int w, double *length, double *moment, double *velocity, double *ctrl, int *active, int *vel_status,
-    double *gain, double *bias0, double *bias1, double *bias2, int *bias_type, double *ctrl_lo,
-    double *ctrl_hi, double *force_lo, double *force_hi, int *force_limited, int disable_flags, double *force,
-    double *force_pre, double *ctrl_used, int *ctrl_route, int *force_route, double *qfrc_actuator,
+    int w, real_t *length, real_t *moment, real_t *velocity, real_t *ctrl, int *active, int *vel_status,
+    real_t *gain, real_t *bias0, real_t *bias1, real_t *bias2, int *bias_type, real_t *ctrl_lo,
+    real_t *ctrl_hi, real_t *force_lo, real_t *force_hi, int *force_limited, int disable_flags, real_t *force,
+    real_t *force_pre, real_t *ctrl_used, int *ctrl_route, int *force_route, real_t *qfrc_actuator,
     int *status, int *warn_badctrl_count, int *warn_badctrl_lastinfo, int *warning_number,
     int *warning_lastinfo, int nv, int nu) {
   length += (long long)w * nu;
@@ -1807,10 +1808,10 @@ static __device__ inline void d_actuation_prepare_block(
     warn_badctrl_count[w] = 0;
     warn_badctrl_lastinfo[w] = -1;
   }
-  libero_vec::fill_block(qfrc_actuator, nv, 0.0);
-  libero_vec::fill_block(force, nu, 0.0);
-  libero_vec::fill_block(force_pre, nu, 0.0);
-  libero_vec::fill_block(ctrl_used, nu, 0.0);
+  libero_vec::fill_block(qfrc_actuator, nv, REAL_C(0.0));
+  libero_vec::fill_block(force, nu, REAL_C(0.0));
+  libero_vec::fill_block(force_pre, nu, REAL_C(0.0));
+  libero_vec::fill_block(ctrl_used, nu, REAL_C(0.0));
   libero_vec::fill_block(ctrl_route, nu, 0);
   libero_vec::fill_block(force_route, nu, 0);
   __syncthreads();
@@ -1831,10 +1832,10 @@ static __device__ inline void d_actuation_prepare_block(
   int bad_index = libero_warp::no_index;
   for (int base = 2 * threadIdx.x; base < nu; base += 2 * blockDim.x) {
     const bool pair = base + 1 < nu;
-    const double2 inputs = pair ? libero_vec::load_pair(ctrl + base) : make_double2(ctrl[base], 0.0);
+    const real2_t inputs = pair ? libero_vec::load_pair(ctrl + base) : make_real2(ctrl[base], REAL_C(0.0));
     for (int part = 0; part < (pair ? 2 : 1); ++part) {
       const int i = base + part;
-      double u = part ? inputs.y : inputs.x;
+      real_t u = part ? inputs.y : inputs.x;
       if ((disable_flags & 128) == 0) {
         if (u < ctrl_lo[i]) {
           u = ctrl_lo[i];
@@ -1844,7 +1845,7 @@ static __device__ inline void d_actuation_prepare_block(
           ctrl_route[i] = 1;
         }
       }
-      if (u != u || u > 1e10 || u < -1e10)
+      if (u != u || u > REAL_C(1e10) || u < -REAL_C(1e10))
         bad_index = bad_index < i ? bad_index : i;
     }
   }
@@ -1857,13 +1858,13 @@ static __device__ inline void d_actuation_prepare_block(
   }
   for (int base = 2 * threadIdx.x; base < nu; base += 2 * blockDim.x) {
     const bool pair = base + 1 < nu;
-    double fvals[2], prevals[2], used[2];
-    const double2 inputs = bad_index == libero_warp::no_index
-                               ? (pair ? libero_vec::load_pair(ctrl + base) : make_double2(ctrl[base], 0.0))
-                               : make_double2(0.0, 0.0);
+    real_t fvals[2], prevals[2], used[2];
+    const real2_t inputs = bad_index == libero_warp::no_index
+                               ? (pair ? libero_vec::load_pair(ctrl + base) : make_real2(ctrl[base], REAL_C(0.0)))
+                               : make_real2(REAL_C(0.0), REAL_C(0.0));
     for (int part = 0; part < (pair ? 2 : 1); ++part) {
       const int i = base + part;
-      double u = 0.0;
+      real_t u = REAL_C(0.0);
       if (bad_index == libero_warp::no_index) {
         u = part ? inputs.y : inputs.x;
         if (ctrl_route[i] == -1)
@@ -1872,7 +1873,7 @@ static __device__ inline void d_actuation_prepare_block(
           u = ctrl_hi[i];
       }
       used[part] = u;
-      double f = gain[i] * u;
+      real_t f = gain[i] * u;
       if (bias_type[i] == 1)
         f += bias0[i] + bias1[i] * length[i] + bias2[i] * velocity[i];
       prevals[part] = f;
@@ -1903,12 +1904,12 @@ static __device__ inline void d_actuation_prepare_block(
 // Small-NU production uses a full warp for warning selection, then one lane
 // per actuator. Every lane participates in register votes; no CTA flag array.
 static __device__ inline void d_actuation_prepare_warp(
-    int w, const double *length, const double *velocity, const double *ctrl,
-    const int *active, const int *vel_status, const double *gain, const double *bias0,
-    const double *bias1, const double *bias2, const int *bias_type, const double *ctrl_lo,
-    const double *ctrl_hi, const double *force_lo, const double *force_hi,
-    const int *force_limited, int disable_flags, double *work_force, double *force_pre,
-    double *ctrl_used, int *ctrl_route, int *force_route, double *qfrc_actuator,
+    int w, const real_t *length, const real_t *velocity, const real_t *ctrl,
+    const int *active, const int *vel_status, const real_t *gain, const real_t *bias0,
+    const real_t *bias1, const real_t *bias2, const int *bias_type, const real_t *ctrl_lo,
+    const real_t *ctrl_hi, const real_t *force_lo, const real_t *force_hi,
+    const int *force_limited, int disable_flags, real_t *work_force, real_t *force_pre,
+    real_t *ctrl_used, int *ctrl_route, int *force_route, real_t *qfrc_actuator,
     int *status, int *warn_count, int *warn_last, int *warning_number,
     int *warning_last, int nv, int nu) {
   if (threadIdx.x >= 32)
@@ -1921,9 +1922,9 @@ static __device__ inline void d_actuation_prepare_warp(
     warn_last[w] = -1;
   }
   for (int j = lane; j < nv; j += 32)
-    qfrc_actuator[v + j] = 0.0;
+    qfrc_actuator[v + j] = REAL_C(0.0);
   if (lane < nu) {
-    work_force[lane] = force_pre[u + lane] = ctrl_used[u + lane] = 0.0;
+    work_force[lane] = force_pre[u + lane] = ctrl_used[u + lane] = REAL_C(0.0);
     ctrl_route[u + lane] = force_route[u + lane] = 0;
   }
   if (active[w] != 1 || vel_status[w] || (disable_flags & 1024)) {
@@ -1931,7 +1932,7 @@ static __device__ inline void d_actuation_prepare_warp(
       status[w] = active[w] != 1 ? 1 : (vel_status[w] ? 2 : 0);
     return;
   }
-  double control = lane < nu ? ctrl[u + lane] : 0.0;
+  real_t control = lane < nu ? ctrl[u + lane] : REAL_C(0.0);
   int route = 0;
   if (lane < nu && !(disable_flags & 128)) {
     if (control < ctrl_lo[lane]) {
@@ -1943,7 +1944,7 @@ static __device__ inline void d_actuation_prepare_warp(
     }
   }
   const int bad = libero_warp::first_index(
-      lane < nu && (control != control || control > 1e10 || control < -1e10), lane);
+      lane < nu && (control != control || control > REAL_C(1e10) || control < -REAL_C(1e10)), lane);
   if (lane == 0 && bad != libero_warp::no_index) {
     warn_count[w] = 1;
     warn_last[w] = bad;
@@ -1953,9 +1954,9 @@ static __device__ inline void d_actuation_prepare_warp(
   if (lane < nu) {
     ctrl_route[u + lane] = route;
     if (bad != libero_warp::no_index)
-      control = 0.0;
+      control = REAL_C(0.0);
     ctrl_used[u + lane] = control;
-    double force = gain[lane] * control;
+    real_t force = gain[lane] * control;
     if (bias_type[lane] == 1)
       force += bias0[lane] + bias1[lane] * length[u + lane] + bias2[lane] * velocity[u + lane];
     force_pre[u + lane] = force;
@@ -1974,23 +1975,23 @@ static __device__ inline void d_actuation_prepare_warp(
   }
 }
 
-static __device__ void d_actuation_gemv_dx(const double *, const double *, double *);
+static __device__ void d_actuation_gemv_dx(const real_t *, const real_t *, real_t *);
 
 // All world-block lanes enter. Small actuator sets use a warp for scalar
 // preparation and independent DOF sums; large sets retain the MathDx route.
 static __device__ __forceinline__ void
-d_actuation_count(int w, double *length, double *moment, double *velocity, double *ctrl, int *active,
-                  int *vel_status, double *gain, double *bias0, double *bias1, double *bias2, int *bias_type,
-                  double *ctrl_lo, double *ctrl_hi, double *force_lo, double *force_hi, int *force_limited,
-                  int disable_flags, double *force, double *force_pre, double *ctrl_used, int *ctrl_route,
-                  int *force_route, double *qfrc_actuator, int *status, int *warn_badctrl_count,
+d_actuation_count(int w, real_t *length, real_t *moment, real_t *velocity, real_t *ctrl, int *active,
+                  int *vel_status, real_t *gain, real_t *bias0, real_t *bias1, real_t *bias2, int *bias_type,
+                  real_t *ctrl_lo, real_t *ctrl_hi, real_t *force_lo, real_t *force_hi, int *force_limited,
+                  int disable_flags, real_t *force, real_t *force_pre, real_t *ctrl_used, int *ctrl_route,
+                  int *force_route, real_t *qfrc_actuator, int *status, int *warn_badctrl_count,
                   int *warn_badctrl_lastinfo, int *warning_number, int *warning_lastinfo, int nv, int nu) {
   __shared__ int run;
   auto *shared = flash_libero::substep_shared_data();
-  double *work_actuator = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::actuator);
-  double *work_scalar_force =
-      flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::scalar_force);
-  libero_vec::fill_block(work_actuator, flash_libero::SubstepShape::nv, 0.0);
+  real_t *work_actuator = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::actuator);
+  real_t *work_scalar_force =
+      flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::scalar_force);
+  libero_vec::fill_block(work_actuator, flash_libero::SubstepShape::nv, REAL_C(0.0));
   const long long u = (long long)w * nu, v = (long long)w * nv;
   if (nu <= 32)
     d_actuation_prepare_warp(w, length, velocity, ctrl, active, vel_status, gain, bias0, bias1,
@@ -2020,7 +2021,7 @@ d_actuation_count(int w, double *length, double *moment, double *velocity, doubl
       // Tiny transpose GEMV: each DOF owns its ordered actuator sum. No matrix
       // repacking, padded library tiles or extra shared matrix is required.
       for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-        double value = 0.0;
+        real_t value = REAL_C(0.0);
         for (int a = 0; a < nu; ++a)
           value += moment[u * nv + size_t(a) * nv + j] * work_scalar_force[a];
         work_actuator[j] = qfrc_actuator[v + j] = value;
@@ -2029,7 +2030,7 @@ d_actuation_count(int w, double *length, double *moment, double *velocity, doubl
     } else {
       d_actuation_gemv_dx(moment + u * nv, work_scalar_force, work_actuator);
       for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-        const double value = work_actuator[j];
+        const real_t value = work_actuator[j];
         qfrc_actuator[v + j] = value;
         invalid |= !isfinite(value);
       }
@@ -2049,9 +2050,9 @@ d_actuation_count(int w, double *length, double *moment, double *velocity, doubl
 // Other helpers in this header retain the owning-lane contract.
 // Topology is immutable, qualified by the host before launch. World arrays use
 // their original compact strides. Compilation permits FMA contraction.
-static __device__ inline void d_three_rn(int w, const double *passive, const double *bias,
-                                         const double *applied, const double *actuator, const int *active,
-                                         int *entry_status, double *smooth, double *seed, int nv) {
+static __device__ inline void d_three_rn(int w, const real_t *passive, const real_t *bias,
+                                         const real_t *applied, const real_t *actuator, const int *active,
+                                         int *entry_status, real_t *smooth, real_t *seed, int nv) {
   // All block threads enter; warp 0 owns ordered DOF tiles.
   if (threadIdx.x >= 32)
     return;
@@ -2060,7 +2061,7 @@ static __device__ inline void d_three_rn(int w, const double *passive, const dou
   if (lane == 0)
     entry_status[w] = 0;
   for (int i = lane; i < nv; i += 32)
-    smooth[v + i] = seed[v + i] = 0.0;
+    smooth[v + i] = seed[v + i] = REAL_C(0.0);
   __syncwarp();
   if (active[w] == 0)
     return;
@@ -2080,7 +2081,7 @@ static __device__ inline void d_three_rn(int w, const double *passive, const dou
   }
   for (int base = 0; base < nv; base += 32) {
     const int i = base + lane;
-    double force = 0.0;
+    real_t force = REAL_C(0.0);
     if (i < nv) {
       force = passive[v + i] - bias[v + i];
       force += applied[v + i];
@@ -2098,10 +2099,10 @@ static __device__ inline void d_three_rn(int w, const double *passive, const dou
   }
 }
 
-static __device__ inline void d_project(int w, const double *seed, const double *xfrc, const double *xipos,
-                                        const double *subtree_com, const double *cdof, const int *body_ids,
+static __device__ inline void d_project(int w, const real_t *seed, const real_t *xfrc, const real_t *xipos,
+                                        const real_t *subtree_com, const real_t *cdof, const int *body_ids,
                                         const int *body_count, const int *active, const int *body_rootid,
-                                        const int *ancestor, double *scratch, double *stages, double *qfrc,
+                                        const int *ancestor, real_t *scratch, real_t *stages, real_t *qfrc,
                                         int *status, int nbody, int nv, int diagnostic,
                                         const int *body_dof_offsets = nullptr,
                                         const int *body_dof_indices = nullptr) {
@@ -2151,11 +2152,11 @@ static __device__ inline void d_project(int w, const double *seed, const double 
   }
   // Only nonzero external-force bodies admit positional/ancestor operands.
   for (int body = 1; body < nbody; ++body) {
-    const double *f = xfrc + (b + body) * 6;
+    const real_t *f = xfrc + (b + body) * 6;
     int nonzero = 0;
     if (lane == 0)
       for (int k = 0; k < 6; ++k)
-        nonzero |= f[k] != 0.0;
+        nonzero |= f[k] != REAL_C(0.0);
     nonzero = __shfl_sync(libero_warp::mask, nonzero, 0);
     if (!nonzero)
       continue;
@@ -2182,18 +2183,18 @@ static __device__ inline void d_project(int w, const double *seed, const double 
     scratch[v + j] = seed[v + j];
   __syncwarp();
   for (int body = 1; body < nbody; ++body) {
-    double f[6], offset[3];
+    real_t f[6], offset[3];
     int nonzero = 0;
     for (int k = 0; k < 6; ++k) {
-      double value = lane == 0 ? xfrc[(b + body) * 6 + k] : 0.0;
+      real_t value = lane == 0 ? xfrc[(b + body) * 6 + k] : REAL_C(0.0);
       f[k] = __shfl_sync(libero_warp::mask, value, 0);
-      nonzero |= f[k] != 0.0;
+      nonzero |= f[k] != REAL_C(0.0);
     }
     if (!nonzero)
       continue;
     const int root = body_rootid[body];
     for (int k = 0; k < 3; ++k) {
-      double value = lane == 0 ? xipos[(b + body) * 3 + k] - subtree_com[(b + root) * 3 + k] : 0.0;
+      real_t value = lane == 0 ? xipos[(b + body) * 3 + k] - subtree_com[(b + root) * 3 + k] : REAL_C(0.0);
       offset[k] = __shfl_sync(libero_warp::mask, value, 0);
     }
     if (!isfinite(offset[0]) || !isfinite(offset[1]) || !isfinite(offset[2])) {
@@ -2210,12 +2211,12 @@ static __device__ inline void d_project(int w, const double *seed, const double 
     for (int base = 0; base < count; base += 32) {
       const int ordinal = base + lane;
       const int j = ordinal < count ? (sparse ? body_dof_indices[begin + ordinal] : ordinal) : nv;
-      double jp[3] = {0.0, 0.0, 0.0}, jr[3] = {0.0, 0.0, 0.0};
-      double force = 0.0, torque = 0.0, after_force = 0.0, after_torque = 0.0;
+      real_t jp[3] = {REAL_C(0.0), REAL_C(0.0), REAL_C(0.0)}, jr[3] = {REAL_C(0.0), REAL_C(0.0), REAL_C(0.0)};
+      real_t force = REAL_C(0.0), torque = REAL_C(0.0), after_force = REAL_C(0.0), after_torque = REAL_C(0.0);
       int step = 5;
       if (j < nv) {
         if (sparse || ancestor[size_t(body) * nv + j] != 0) {
-          const double *c = cdof + (v + j) * 6;
+          const real_t *c = cdof + (v + j) * 6;
           for (int k = 0; k < 3; ++k)
             jr[k] = c[k];
           jp[0] = c[3] + (jr[1] * offset[2] - jr[2] * offset[1]);
@@ -2227,7 +2228,7 @@ static __device__ inline void d_project(int w, const double *seed, const double 
         }
         if (step == 5) {
           for (int k = 0; k < 3; ++k)
-            if (f[k] != 0.0)
+            if (f[k] != REAL_C(0.0))
               force += jp[k] * f[k];
           if (!isfinite(force))
             step = 1;
@@ -2239,7 +2240,7 @@ static __device__ inline void d_project(int w, const double *seed, const double 
         }
         if (step == 5) {
           for (int k = 0; k < 3; ++k)
-            if (f[k + 3] != 0.0)
+            if (f[k + 3] != REAL_C(0.0))
               torque += jr[k] * f[k + 3];
           if (!isfinite(torque))
             step = 3;
@@ -2252,7 +2253,7 @@ static __device__ inline void d_project(int w, const double *seed, const double 
       }
       const int first = libero_warp::first_index(j < nv && step != 5, j);
       if (j < nv && j <= first) {
-        double *t = diagnostic ? stages + (b + body) * 13 * nv + j : nullptr;
+        real_t *t = diagnostic ? stages + (b + body) * 13 * nv + j : nullptr;
         if (diagnostic && step >= 1)
           for (int k = 0; k < 3; ++k) {
             t[size_t(k) * nv] = offset[k];
@@ -2277,7 +2278,7 @@ static __device__ inline void d_project(int w, const double *seed, const double 
         if (sparse)
           for (int k = lane; k < first; k += 32)
             if (ancestor[size_t(body) * nv + k] == 0)
-              scratch[v + k] = (scratch[v + k] + 0.0) + 0.0;
+              scratch[v + k] = (scratch[v + k] + REAL_C(0.0)) + REAL_C(0.0);
         __syncwarp();
         if (lane == 0)
           status[w] = 7;
@@ -2287,7 +2288,7 @@ static __device__ inline void d_project(int w, const double *seed, const double 
     if (sparse)
       for (int j = lane; j < nv; j += 32)
         if (ancestor[size_t(body) * nv + j] == 0)
-          scratch[v + j] = (scratch[v + j] + 0.0) + 0.0;
+          scratch[v + j] = (scratch[v + j] + REAL_C(0.0)) + REAL_C(0.0);
     __syncwarp();
   }
   for (int j = lane; j < nv; j += 32)
@@ -2302,32 +2303,32 @@ static __device__ inline void d_project(int w, const double *seed, const double 
 // All stage-to-stage operands, the single active RHS and candidate acceleration
 // remain in shared memory. Failure still isolates durable public outputs.
 static __device__ __forceinline__ void
-d_smooth_chain(int w, const double *passive, const double *bias, const double *applied,
-               const double *actuator, const int *active, int *entry_status, double *smooth, double *seed,
-               int nv, const double *xfrc, const double *xipos, const double *subtree_com, const double *cdof,
+d_smooth_chain(int w, const real_t *passive, const real_t *bias, const real_t *applied,
+               const real_t *actuator, const int *active, int *entry_status, real_t *smooth, real_t *seed,
+               int nv, const real_t *xfrc, const real_t *xipos, const real_t *subtree_com, const real_t *cdof,
                const int *body_ids, const int *body_count, const int *body_rootid, const int *ancestor,
-               double *scratch, double *stages, double *qfrc, int *d02_status, int nbody, const double *qm,
-               const int *count, const int *madr, const int *parent, double *ld, double *inv,
-               double *sqrt_inv, double *solution, int *pivot, int *solve_status, int *warning_count,
-               int *warning_last, int nm, double *rhs, double *qacc_smooth, int *status,
-               const double *source_ld, const double *source_inv, const double *source_sqrt_inv,
+               real_t *scratch, real_t *stages, real_t *qfrc, int *d02_status, int nbody, const real_t *qm,
+               const int *count, const int *madr, const int *parent, real_t *ld, real_t *inv,
+               real_t *sqrt_inv, real_t *solution, int *pivot, int *solve_status, int *warning_count,
+               int *warning_last, int nm, real_t *rhs, real_t *qacc_smooth, int *status,
+               const real_t *source_ld, const real_t *source_inv, const real_t *source_sqrt_inv,
                const int *source_pivot, const int *source_status, const int *source_warning_count,
                const int *source_warning_last, const int *source_active, const int *position_valid,
                const int64_t *position_written, const int64_t *forward_epoch, int64_t *factor_reuse_count,
                const int *body_dof_offsets, const int *body_dof_indices, const int *mass_plan) {
   auto *shared = flash_libero::substep_shared_data();
-  double *work_scratch = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::scratch);
-  double *work_force = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::force);
-  double *work_actuator = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::actuator);
-  double *work_smooth = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::smooth);
-  double *work_seed = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::seed);
-  double *work_rhs = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::rhs);
-  double *work_acceleration =
-      flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::acceleration);
-  double *work_inv = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::inv);
-  double *work_sqrt_inv = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::sqrt_inv);
+  real_t *work_scratch = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::scratch);
+  real_t *work_force = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force);
+  real_t *work_actuator = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::actuator);
+  real_t *work_smooth = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::smooth);
+  real_t *work_seed = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::seed);
+  real_t *work_rhs = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::rhs);
+  real_t *work_acceleration =
+      flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration);
+  real_t *work_inv = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::inv);
+  real_t *work_sqrt_inv = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::sqrt_inv);
   int *work_pivot = flash_libero::shared_at<int>(shared, flash_libero::SmoothLayout::pivot);
-  double *work_ld = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::ld);
+  real_t *work_ld = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::ld);
   const size_t v = size_t(w) * nv, b = size_t(w) * nbody, m = size_t(w) * nm, r = size_t(w) * 4 * nv;
   // scratch is a diagnostic with partial-failure semantics; preserve its old
   // value until the original projection's validation has admitted writes.
@@ -2370,8 +2371,8 @@ d_smooth_chain(int w, const double *passive, const double *bias, const double *a
         sqrt_inv[v + i] = source_sqrt_inv[v + i];
         pivot[v + i] = source_pivot[v + i];
       }
-      libero_vec::fill_block(rhs + r + nv, 3 * nv, 0.0);
-      libero_vec::fill_block(solution + r + nv, 3 * nv, 0.0);
+      libero_vec::fill_block(rhs + r + nv, 3 * nv, REAL_C(0.0));
+      libero_vec::fill_block(solution + r + nv, 3 * nv, REAL_C(0.0));
       if (threadIdx.x == 0) {
         solve_status[w] = warnings ? 5 : 0;
         warning_count[w] = warnings;
@@ -2392,12 +2393,12 @@ d_smooth_chain(int w, const double *passive, const double *bias, const double *a
     reuse = 0;
   }
   for (int i = threadIdx.x; i < nv; i += blockDim.x) {
-    work_rhs[i] = (active[w] == 1 && entry_status[w] == 0 && d02_status[w] == 0) ? work_force[i] : 0.0;
-    work_acceleration[i] = 0.0;
-    work_inv[i] = work_sqrt_inv[i] = 0.0;
+    work_rhs[i] = (active[w] == 1 && entry_status[w] == 0 && d02_status[w] == 0) ? work_force[i] : REAL_C(0.0);
+    work_acceleration[i] = REAL_C(0.0);
+    work_inv[i] = work_sqrt_inv[i] = REAL_C(0.0);
     work_pivot[i] = 0;
   }
-  libero_vec::fill_block(work_ld, nm, 0.0);
+  libero_vec::fill_block(work_ld, nm, REAL_C(0.0));
   __syncthreads();
   // Two bits per warp preserve separate input-failure and factor-reuse
   // decisions. Each lane scans disjoint elements; only the leader routes
@@ -2488,29 +2489,29 @@ d_smooth_chain(int w, const double *passive, const double *bias, const double *a
   // to copy acceleration onto itself; its data is already in the right place.
   for (int i = threadIdx.x; i < nm; i += blockDim.x) {
     if (solve == 4)
-      work_ld[i] = 0.0;
+      work_ld[i] = REAL_C(0.0);
     ld[m + i] = work_ld[i];
   }
   for (int i = threadIdx.x; i < nv; i += blockDim.x) {
     if (solve == 4)
-      work_inv[i] = work_sqrt_inv[i] = work_acceleration[i] = 0.0;
+      work_inv[i] = work_sqrt_inv[i] = work_acceleration[i] = REAL_C(0.0);
     if (!publish)
-      work_acceleration[i] = work_force[i] = work_smooth[i] = 0.0;
+      work_acceleration[i] = work_force[i] = work_smooth[i] = REAL_C(0.0);
     smooth[v + i] = work_smooth[i];
     seed[v + i] = work_seed[i];
     scratch[v + i] = work_scratch[i];
     qfrc[v + i] = work_force[i];
     qacc_smooth[v + i] = work_acceleration[i];
     rhs[r + i] = work_rhs[i];
-    solution[r + i] = (solve == 0 || solve == 5) ? work_acceleration[i] : 0.0;
+    solution[r + i] = (solve == 0 || solve == 5) ? work_acceleration[i] : REAL_C(0.0);
     inv[v + i] = work_inv[i];
     sqrt_inv[v + i] = work_sqrt_inv[i];
     pivot[v + i] = work_pivot[i];
   }
   // The API retains four RHS diagnostic columns. Only the first is consumed
   // by smooth acceleration; unused columns keep their original zero content.
-  libero_vec::fill_block(rhs + r + nv, 3 * nv, 0.0);
-  libero_vec::fill_block(solution + r + nv, 3 * nv, 0.0);
+  libero_vec::fill_block(rhs + r + nv, 3 * nv, REAL_C(0.0));
+  libero_vec::fill_block(solution + r + nv, 3 * nv, REAL_C(0.0));
 }
 
 } // namespace physics_force
@@ -2521,18 +2522,18 @@ namespace physics_force {
 // A = moment^T, B = force, C = generalized actuator force.
 using DActuationBLAS =
     decltype(cublasdx::Size<flash_libero::SubstepShape::nv, 1, flash_libero::SubstepShape::nu>() +
-             cublasdx::Precision<double>() + cublasdx::Type<cublasdx::type::real>() +
+             cublasdx::Precision<real_t>() + cublasdx::Type<cublasdx::type::real>() +
              cublasdx::Function<cublasdx::function::MM>() +
              cublasdx::Arrangement<cublasdx::col_major, cublasdx::col_major, cublasdx::col_major>() +
-             cublasdx::Alignment<8, 8, 8>() + cublasdx::Block() +
+             cublasdx::Alignment<sizeof(real_t), sizeof(real_t), sizeof(real_t)>() + cublasdx::Block() +
              cublasdx::BlockDim<flash_libero::SubstepShape::threads>() +
              cublasdx::SM<flash_libero::SubstepShape::sm>());
 
-static __device__ void d_actuation_gemv_dx(const double *moment, const double *force, double *output) {
+static __device__ void d_actuation_gemv_dx(const real_t *moment, const real_t *force, real_t *output) {
   using B = DActuationBLAS;
-  __shared__ __align__(16) double a[B::a_size];
-  __shared__ __align__(16) double b[B::b_size];
-  __shared__ __align__(16) double c[B::c_size];
+  __shared__ __align__(16) real_t a[B::a_size];
+  __shared__ __align__(16) real_t b[B::b_size];
+  __shared__ __align__(16) real_t c[B::c_size];
   auto at = cublasdx::make_tensor(a, B::get_layout_smem_a());
   auto bt = cublasdx::make_tensor(b, B::get_layout_smem_b());
   auto ct = cublasdx::make_tensor(c, B::get_layout_smem_c());
@@ -2542,8 +2543,8 @@ static __device__ void d_actuation_gemv_dx(const double *moment, const double *f
   constexpr int row_packets = (flash_libero::SubstepShape::nv + 1) / 2;
   for (int z = threadIdx.x; z < row_packets * flash_libero::SubstepShape::nu; z += blockDim.x) {
     const int i = z / row_packets, j = 2 * (z % row_packets);
-    double2 values = make_double2(0.0, 0.0);
-    if (force[i] != 0.0) {
+    real2_t values = make_real2(REAL_C(0.0), REAL_C(0.0));
+    if (force[i] != REAL_C(0.0)) {
       if (j + 1 < flash_libero::SubstepShape::nv)
         values = libero_vec::load_pair(moment + i * flash_libero::SubstepShape::nv + j);
       else
@@ -2556,16 +2557,16 @@ static __device__ void d_actuation_gemv_dx(const double *moment, const double *f
   }
   for (int i = 2 * threadIdx.x; i < flash_libero::SubstepShape::nu; i += 2 * blockDim.x) {
     if (i + 1 < flash_libero::SubstepShape::nu) {
-      const double2 values = libero_vec::load_pair(force + i);
+      const real2_t values = libero_vec::load_pair(force + i);
       bt(i, 0) = values.x;
       bt(i + 1, 0) = values.y;
     } else
       bt(i, 0) = force[i];
   }
   for (int j = threadIdx.x; j < flash_libero::SubstepShape::nv; j += blockDim.x)
-    ct(j, 0) = 0.0;
+    ct(j, 0) = REAL_C(0.0);
   __syncthreads();
-  B().execute(1.0, at, bt, 0.0, ct);
+  B().execute(REAL_C(1.0), at, bt, REAL_C(0.0), ct);
   __syncthreads();
   for (int j = 2 * threadIdx.x; j < flash_libero::SubstepShape::nv; j += 2 * blockDim.x) {
     if (j + 1 < flash_libero::SubstepShape::nv)
@@ -2597,21 +2598,21 @@ static __device__ void d_velocity_status(int w, int *a, int *b, int *c, int *out
 }
 
 namespace physics_velocity {
-static __device__ void d_scalar_transmission_velocity(int w, double *moment, double *qvel, int *active,
-                                                      int *position_status, int nv, int nu, double *velocity,
+static __device__ void d_scalar_transmission_velocity(int w, real_t *moment, real_t *qvel, int *active,
+                                                      int *position_status, int nv, int nu, real_t *velocity,
                                                       int *status);
 // Collective entry/exit; the successful dot products preserve scalar order.
-static __device__ void d_transmission_velocity_block(int w, double *moment, double *qvel, int *active,
-                                                     int *position_status, int nv, int nu, double *velocity,
+static __device__ void d_transmission_velocity_block(int w, real_t *moment, real_t *qvel, int *active,
+                                                     int *position_status, int nv, int nu, real_t *velocity,
                                                      int *status);
 } // namespace physics_velocity
 
 namespace physics_velocity {
 // Collective entry: every exit closes flag reads and publishes any output.
-static __device__ void d_comvel_bias_cached(int w, int *active, double *cdof, double *qvel, int *bp, int *ba,
-                                            int *bn, int *dj, int *jt, int nb, int nv, double *cvel,
-                                            double *cdot, int *status, double *cinert, double *gravity,
-                                            int disabled, double *cache_acc, double *cache_force,
+static __device__ void d_comvel_bias_cached(int w, int *active, real_t *cdof, real_t *qvel, int *bp, int *ba,
+                                            int *bn, int *dj, int *jt, int nb, int nv, real_t *cvel,
+                                            real_t *cdot, int *status, real_t *cinert, real_t *gravity,
+                                            int disabled, real_t *cache_acc, real_t *cache_force,
                                             int *cache_status, int *cache_valid, int64_t *cache_state,
                                             int64_t *cache_forward, const int64_t *state_epoch,
                                             const int64_t *forward_epoch, const int *level_offsets = nullptr,
@@ -2619,19 +2620,19 @@ static __device__ void d_comvel_bias_cached(int w, int *active, double *cdof, do
 } // namespace physics_velocity
 
 namespace physics_velocity {
-static __device__ void d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype,
-                                             int *qadr, int *dadr, double *stiffness, double *spring,
-                                             double *damping, double *out, int *status, int nv, int nq,
+static __device__ void d_joint_passive_count(int w, real_t *qpos, real_t *qvel, int *active, int *jtype,
+                                             int *qadr, int *dadr, real_t *stiffness, real_t *spring,
+                                             real_t *damping, real_t *out, int *status, int nv, int nq,
                                              int njnt, int joint_disjoint = 0,
                                              const int *joint_type_offsets = nullptr,
                                              const int *joint_type_indices = nullptr);
 }
 
 namespace physics_velocity {
-static __device__ void d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *ximat,
-                                     double *cdof, int *active, int *rootid, double *mass, double *box,
-                                     int *ancestor, double *wind, double *opt, int passive_disabled,
-                                     int diagnostic, double *stages, double *qfrc, int *status, int nbody,
+static __device__ void d_fluid_count(int w, real_t *cvel, real_t *subtree_com, real_t *xipos, real_t *ximat,
+                                     real_t *cdof, int *active, int *rootid, real_t *mass, real_t *box,
+                                     int *ancestor, real_t *wind, real_t *opt, int passive_disabled,
+                                     int diagnostic, real_t *stages, real_t *qfrc, int *status, int nbody,
                                      int nv, const int *body_dof_offsets = nullptr,
                                      const int *body_dof_indices = nullptr);
 }
@@ -2652,7 +2653,7 @@ namespace physics_velocity {
 // allocations; only the selected world row is touched. The caller executes
 // each collective tree routine on all threads. Its ordered tree arithmetic
 // remains on lane zero; array checks and independent projections cooperate.
-static __device__ inline bool d_finite(const double *x, int n) {
+static __device__ inline bool d_finite(const real_t *x, int n) {
   for (int k = 0; k < n; ++k)
     if (!isfinite(x[k]))
       return false;
@@ -2660,10 +2661,10 @@ static __device__ inline bool d_finite(const double *x, int n) {
 }
 // Collective helpers: every thread in the world block must enter. Warp votes
 // exchange predicates only; the barriers publish and protect inter-warp flags.
-static __device__ inline bool d1_finite_block(const double *x, int n, const double *y = nullptr, int ny = 0,
-                                              const double *z = nullptr, int nz = 0,
-                                              const double *u = nullptr, int nu = 0,
-                                              const double *v = nullptr, int nv = 0) {
+static __device__ inline bool d1_finite_block(const real_t *x, int n, const real_t *y = nullptr, int ny = 0,
+                                              const real_t *z = nullptr, int nz = 0,
+                                              const real_t *u = nullptr, int nu = 0,
+                                              const real_t *v = nullptr, int nv = 0) {
   __shared__ int warp_bad[32];
   bool bad = false;
   bad |= libero_vec::any_nonfinite_block_lane(x, n);
@@ -2686,23 +2687,23 @@ static __device__ inline bool d1_finite_block(const double *x, int n, const doub
   __syncthreads();
   return !any;
 }
-static __device__ inline void d1_zero_block(double *x, int n) { libero_vec::fill_block(x, n, 0.0); }
-static __device__ inline void d_zero(double *x, int n) {
+static __device__ inline void d1_zero_block(real_t *x, int n) { libero_vec::fill_block(x, n, REAL_C(0.0)); }
+static __device__ inline void d_zero(real_t *x, int n) {
   for (int k = 0; k < n; ++k)
-    x[k] = 0.0;
+    x[k] = REAL_C(0.0);
 }
 
 // Collective publication: callers enter with the complete world block. Gate
 // decisions and scalar flags retain lane-zero order; payload stores complete
 // before the epoch becomes visible. Shifted overlaps retain serial copy order.
 
-static __device__ __forceinline__ void d_scalar_transmission_velocity(int w, double *moment, double *qvel,
+static __device__ __forceinline__ void d_scalar_transmission_velocity(int w, real_t *moment, real_t *qvel,
                                                                       int *active, int *position_status,
-                                                                      int nv, int nu, double *velocity,
+                                                                      int nv, int nu, real_t *velocity,
                                                                       int *status) {
-  double *v = velocity + w * nu;
-  const double *q = qvel + w * nv;
-  const double *m = moment + w * nu * nv;
+  real_t *v = velocity + w * nu;
+  const real_t *q = qvel + w * nv;
+  const real_t *m = moment + w * nu * nv;
   status[w] = 0;
   d_zero(v, nu);
   if (!active[w])
@@ -2720,7 +2721,7 @@ static __device__ __forceinline__ void d_scalar_transmission_velocity(int w, dou
     return;
   }
   for (int a = 0; a < nu; ++a) {
-    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    real_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
     int j = 0;
     for (; j + 3 < nv; j += 4) {
       s0 += m[a * nv + j] * q[j];
@@ -2728,9 +2729,9 @@ static __device__ __forceinline__ void d_scalar_transmission_velocity(int w, dou
       s2 += m[a * nv + j + 2] * q[j + 2];
       s3 += m[a * nv + j + 3] * q[j + 3];
     }
-    double x = (s0 + s2) + (s1 + s3);
+    real_t x = (s0 + s2) + (s1 + s3);
     if (j < nv) {
-      double tail = m[a * nv + j] * q[j];
+      real_t tail = m[a * nv + j] * q[j];
       for (++j; j < nv; ++j)
         tail += m[a * nv + j] * q[j];
       x += tail;
@@ -2745,12 +2746,12 @@ static __device__ __forceinline__ void d_scalar_transmission_velocity(int w, dou
 // One lane per actuator; preserve the four-accumulator order within each dot.
 // Error fallback reproduces the scalar path's partial writes and first failure.
 // Every return publishes outputs to the whole block.
-static __device__ __forceinline__ void d_transmission_velocity_block(int w, double *moment, double *qvel,
+static __device__ __forceinline__ void d_transmission_velocity_block(int w, real_t *moment, real_t *qvel,
                                                                      int *active, int *position_status,
-                                                                     int nv, int nu, double *velocity,
+                                                                     int nv, int nu, real_t *velocity,
                                                                      int *status) {
-  double *v = velocity + (long long)w * nu;
-  const double *q = qvel + (long long)w * nv, *m = moment + (long long)w * nu * nv;
+  real_t *v = velocity + (long long)w * nu;
+  const real_t *q = qvel + (long long)w * nv, *m = moment + (long long)w * nu * nv;
   if (threadIdx.x == 0) {
     status[w] = 0;
     d_zero(v, nu);
@@ -2770,11 +2771,11 @@ static __device__ __forceinline__ void d_transmission_velocity_block(int w, doub
   }
   const uintptr_t output = reinterpret_cast<uintptr_t>(v);
   const uintptr_t qsource = reinterpret_cast<uintptr_t>(q), msource = reinterpret_cast<uintptr_t>(m);
-  const size_t output_bytes = size_t(nu) * sizeof(double);
+  const size_t output_bytes = size_t(nu) * sizeof(real_t);
   const bool qalias =
-      output <= qsource ? qsource - output < output_bytes : output - qsource < size_t(nv) * sizeof(double);
+      output <= qsource ? qsource - output < output_bytes : output - qsource < size_t(nv) * sizeof(real_t);
   const bool malias = output <= msource ? msource - output < output_bytes
-                                        : output - msource < size_t(nu) * nv * sizeof(double);
+                                        : output - msource < size_t(nu) * nv * sizeof(real_t);
   if (qalias || malias) {
     if (threadIdx.x == 0)
       d_scalar_transmission_velocity(w, moment, qvel, active, position_status, nv, nu, velocity, status);
@@ -2783,7 +2784,7 @@ static __device__ __forceinline__ void d_transmission_velocity_block(int w, doub
   }
   bool bad = false;
   for (int a = threadIdx.x; a < nu; a += blockDim.x) {
-    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    real_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
     int j = 0;
     for (; j + 3 < nv; j += 4) {
       s0 += m[a * nv + j] * q[j];
@@ -2791,9 +2792,9 @@ static __device__ __forceinline__ void d_transmission_velocity_block(int w, doub
       s2 += m[a * nv + j + 2] * q[j + 2];
       s3 += m[a * nv + j + 3] * q[j + 3];
     }
-    double x = (s0 + s2) + (s1 + s3);
+    real_t x = (s0 + s2) + (s1 + s3);
     if (j < nv) {
-      double tail = m[a * nv + j] * q[j];
+      real_t tail = m[a * nv + j] * q[j];
       for (++j; j < nv; ++j)
         tail += m[a * nv + j] * q[j];
       x += tail;
@@ -2808,7 +2809,7 @@ static __device__ __forceinline__ void d_transmission_velocity_block(int w, doub
   __syncthreads();
 }
 
-static __device__ inline void d_cross_motion(const double *v, const double *a, double *out) {
+static __device__ inline void d_cross_motion(const real_t *v, const real_t *a, real_t *out) {
   out[0] = -v[2] * a[1] + v[1] * a[2];
   out[1] = v[2] * a[0] - v[0] * a[2];
   out[2] = -v[1] * a[0] + v[0] * a[1];
@@ -2819,8 +2820,8 @@ static __device__ inline void d_cross_motion(const double *v, const double *a, d
   out[4] += v[5] * a[0] - v[3] * a[2];
   out[5] += -v[4] * a[0] + v[3] * a[1];
 }
-static __device__ inline void d_add_three(double *v, const double *a, const double *q) {
-  double t[6] = {};
+static __device__ inline void d_add_three(real_t *v, const real_t *a, const real_t *q) {
+  real_t t[6] = {};
   for (int j = 0; j < 3; ++j)
     if (q[j] != 0)
       for (int k = 0; k < 6; ++k)
@@ -2828,9 +2829,9 @@ static __device__ inline void d_add_three(double *v, const double *a, const doub
   for (int k = 0; k < 6; ++k)
     v[k] += t[k];
 }
-static __device__ inline void d1_comvel_body(int b, const double *a, const double *q, const int *bp,
+static __device__ inline void d1_comvel_body(int b, const real_t *a, const real_t *q, const int *bp,
                                              const int *ba, const int *bn, const int *dj, const int *jt,
-                                             double *v, double *d) {
+                                             real_t *v, real_t *d) {
   for (int k = 0; k < 6; ++k)
     v[6 * b + k] = v[6 * bp[b] + k];
   int j = 0;
@@ -2856,12 +2857,12 @@ static __device__ inline void d1_comvel_body(int b, const double *a, const doubl
 }
 // Qualified topology only: levels omit world body 0 and parent IDs precede
 // children. A level barrier publishes every parent before its children read.
-static __device__ inline void d_comvel(int w, int *active, double *cdof, double *qvel, int *bp, int *ba,
-                                       int *bn, int *dj, int *jt, int nb, int nv, double *cvel, double *cdot,
+static __device__ inline void d_comvel(int w, int *active, real_t *cdof, real_t *qvel, int *bp, int *ba,
+                                       int *bn, int *dj, int *jt, int nb, int nv, real_t *cvel, real_t *cdot,
                                        int *status, const int *level_offsets = nullptr,
                                        const int *level_bodies = nullptr, int nlevels = 0) {
-  double *v = cvel + w * nb * 6, *d = cdot + w * nv * 6;
-  const double *a = cdof + w * nv * 6, *q = qvel + w * nv;
+  real_t *v = cvel + w * nb * 6, *d = cdot + w * nv * 6;
+  const real_t *a = cdof + w * nv * 6, *q = qvel + w * nv;
   if (threadIdx.x == 0)
     status[w] = 0;
   d1_zero_block(v, nb * 6);
@@ -2899,7 +2900,7 @@ static __device__ inline void d_comvel(int w, int *active, double *cdof, double 
   __syncthreads();
 }
 // Compressed spatial inertia multiplication, not a dense BLAS operand.
-static __device__ inline void d_inertia(const double *i, const double *v, double *f) {
+static __device__ inline void d_inertia(const real_t *i, const real_t *v, real_t *f) {
   f[0] = i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5];
   f[1] = i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5];
   f[2] = i[4] * v[0] + i[5] * v[1] + i[2] * v[2] - i[7] * v[3] + i[6] * v[4];
@@ -2907,7 +2908,7 @@ static __device__ inline void d_inertia(const double *i, const double *v, double
   f[4] = i[6] * v[2] - i[8] * v[0] + i[9] * v[4];
   f[5] = i[7] * v[0] - i[6] * v[1] + i[9] * v[5];
 }
-static __device__ inline void d_cross_force(const double *v, const double *t, double *x) {
+static __device__ inline void d_cross_force(const real_t *v, const real_t *t, real_t *x) {
   x[0] = -v[2] * t[1] + v[1] * t[2];
   x[1] = v[2] * t[0] - v[0] * t[2];
   x[2] = -v[1] * t[0] + v[0] * t[1];
@@ -2918,10 +2919,10 @@ static __device__ inline void d_cross_force(const double *v, const double *t, do
   x[1] += v[5] * t[3] - v[3] * t[5];
   x[2] += -v[4] * t[3] + v[3] * t[4];
 }
-static __device__ inline void d1_rne_body(int b, const double *d, const double *q, const double *i,
-                                          const double *v, const int *bp, const int *ba, const int *bn,
-                                          double *acc, double *f, int nb = 0, bool component_planes = false) {
-  double t[6] = {};
+static __device__ inline void d1_rne_body(int b, const real_t *d, const real_t *q, const real_t *i,
+                                          const real_t *v, const int *bp, const int *ba, const int *bn,
+                                          real_t *acc, real_t *f, int nb = 0, bool component_planes = false) {
+  real_t t[6] = {};
   const int adr = ba[b], n = bn[b];
   if (n == 1)
     for (int k = 0; k < 6; ++k)
@@ -2931,24 +2932,24 @@ static __device__ inline void d1_rne_body(int b, const double *d, const double *
       if (q[adr + j] != 0)
         for (int k = 0; k < 6; ++k)
           t[k] += d[6 * (adr + j) + k] * q[adr + j];
-  double local_acc[6];
+  real_t local_acc[6];
   for (int k = 0; k < 6; ++k) {
     const int out = component_planes ? k * nb + b : 6 * b + k;
     const int parent = component_planes ? k * nb + bp[b] : 6 * bp[b] + k;
     local_acc[k] = acc[parent] + t[k];
     acc[out] = local_acc[k];
   }
-  double fi[6], corr[6], cross[6];
+  real_t fi[6], corr[6], cross[6];
   d_inertia(i + 10 * b, local_acc, fi);
   d_inertia(i + 10 * b, v + 6 * b, corr);
   d_cross_force(v + 6 * b, corr, cross);
   for (int k = 0; k < 6; ++k)
     f[component_planes ? k * nb + b : 6 * b + k] = fi[k] + cross[k];
 }
-static __device__ inline void d1_rne_forward(const double *d, const double *q, const double *i,
-                                             const double *v, const int *bp, const int *ba, const int *bn,
-                                             const double *gravity, int disabled, int nb, double *acc,
-                                             double *f, const int *lo, const int *lb, int nl,
+static __device__ inline void d1_rne_forward(const real_t *d, const real_t *q, const real_t *i,
+                                             const real_t *v, const int *bp, const int *ba, const int *bn,
+                                             const real_t *gravity, int disabled, int nb, real_t *acc,
+                                             real_t *f, const int *lo, const int *lb, int nl,
                                              bool component_planes = false) {
   if (threadIdx.x == 0 && !disabled)
     for (int k = 0; k < 3; ++k)
@@ -2972,9 +2973,9 @@ static __device__ inline void d1_rne_forward(const double *d, const double *q, c
 // The reverse force tree and public bias commit remain after S admission.
 // Every exit closes flag reads; writing exits publish all outputs to the block.
 static __device__ __forceinline__ void
-d_comvel_bias_separate(int w, int *active, double *cdof, double *qvel, int *bp, int *ba, int *bn, int *dj,
-                     int *jt, int nb, int nv, double *cvel, double *cdot, int *status, double *cinert,
-                     double *gravity, int disabled, double *cache_acc, double *cache_force, int *cache_status,
+d_comvel_bias_separate(int w, int *active, real_t *cdof, real_t *qvel, int *bp, int *ba, int *bn, int *dj,
+                     int *jt, int nb, int nv, real_t *cvel, real_t *cdot, int *status, real_t *cinert,
+                     real_t *gravity, int disabled, real_t *cache_acc, real_t *cache_force, int *cache_status,
                      int *cache_valid, int64_t *cache_state, int64_t *cache_forward,
                      const int64_t *state_epoch, const int64_t *forward_epoch, const int *level_offsets,
                      const int *level_bodies, int nlevels) {
@@ -2985,7 +2986,7 @@ d_comvel_bias_separate(int w, int *active, double *cdof, double *qvel, int *bp, 
     cache_valid[w] = 0;
     cache_status[w] = 0;
   }
-  double *acc = cache_acc + (long long)w * nb * 6, *f = cache_force + (long long)w * nb * 6;
+  real_t *acc = cache_acc + (long long)w * nb * 6, *f = cache_force + (long long)w * nb * 6;
   d1_zero_block(acc, nb * 6);
   d1_zero_block(f, nb * 6);
   __syncthreads();
@@ -2993,8 +2994,8 @@ d_comvel_bias_separate(int w, int *active, double *cdof, double *qvel, int *bp, 
     __syncthreads();
     return;
   }
-  const double *d = cdot + (long long)w * nv * 6, *q = qvel + (long long)w * nv;
-  const double *i = cinert + (long long)w * nb * 10, *v = cvel + (long long)w * nb * 6;
+  const real_t *d = cdot + (long long)w * nv * 6, *q = qvel + (long long)w * nv;
+  const real_t *i = cinert + (long long)w * nb * 10, *v = cvel + (long long)w * nb * 6;
   // Successful comvel immediately above proved qvel/cdof and its cvel/dot
   // outputs finite. No intervening producer writes them inside this call.
   if (!d1_finite_block(i, nb * 10)) {
@@ -3022,14 +3023,14 @@ d_comvel_bias_separate(int w, int *active, double *cdof, double *qvel, int *bp, 
 }
 
 static __device__ __forceinline__ void
-d_comvel_bias_cached(int w, int *active, double *cdof, double *qvel, int *bp, int *ba, int *bn, int *dj,
-                     int *jt, int nb, int nv, double *cvel, double *cdot, int *status, double *cinert,
-                     double *gravity, int disabled, double *cache_acc, double *cache_force, int *cache_status,
+d_comvel_bias_cached(int w, int *active, real_t *cdof, real_t *qvel, int *bp, int *ba, int *bn, int *dj,
+                     int *jt, int nb, int nv, real_t *cvel, real_t *cdot, int *status, real_t *cinert,
+                     real_t *gravity, int disabled, real_t *cache_acc, real_t *cache_force, int *cache_status,
                      int *cache_valid, int64_t *cache_state, int64_t *cache_forward,
                      const int64_t *state_epoch, const int64_t *forward_epoch, const int *level_offsets,
                      const int *level_bodies, int nlevels) {
-  const double *a = cdof + size_t(w) * nv * 6, *q = qvel + size_t(w) * nv;
-  const double *inertia = cinert + size_t(w) * nb * 10;
+  const real_t *a = cdof + size_t(w) * nv * 6, *q = qvel + size_t(w) * nv;
+  const real_t *inertia = cinert + size_t(w) * nb * 10;
   // Exceptional inputs keep the original stage-specific status and clear
   // behavior. Normal inputs need one combined admission vote, then one tree.
   if (active[w] != 1 || !d1_finite_block(a, nv * 6, q, nv, inertia, nb * 10)) {
@@ -3039,8 +3040,8 @@ d_comvel_bias_cached(int w, int *active, double *cdof, double *qvel, int *bp, in
         forward_epoch, level_offsets, level_bodies, nlevels);
     return;
   }
-  double *velocity = cvel + size_t(w) * nb * 6, *dot = cdot + size_t(w) * nv * 6;
-  double *acc = cache_acc + size_t(w) * nb * 6, *force = cache_force + size_t(w) * nb * 6;
+  real_t *velocity = cvel + size_t(w) * nb * 6, *dot = cdot + size_t(w) * nv * 6;
+  real_t *acc = cache_acc + size_t(w) * nb * 6, *force = cache_force + size_t(w) * nb * 6;
   if (threadIdx.x == 0) {
     status[w] = 0;
     cache_valid[w] = 0;
@@ -3050,7 +3051,7 @@ d_comvel_bias_cached(int w, int *active, double *cdof, double *qvel, int *bp, in
   d1_zero_block(dot, nv * 6);
   d1_zero_block(force, nb * 6);
   for (int k = threadIdx.x; k < nb * 6; k += blockDim.x)
-    acc[k] = !disabled && k % nb == 0 && k / nb >= 3 ? -gravity[k / nb - 3] : 0.0;
+    acc[k] = !disabled && k % nb == 0 && k / nb >= 3 ? -gravity[k / nb - 3] : REAL_C(0.0);
   __syncthreads();
   if (level_offsets && level_bodies && nlevels > 0) {
     for (int level = 0; level < nlevels; ++level) {
@@ -3123,8 +3124,8 @@ static __device__ inline bool bad(bool value) {
 }
 } // namespace d_passive_detail
 static __device__ __forceinline__ void
-d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype, int *qadr, int *dadr,
-                      double *stiffness, double *spring, double *damping, double *out, int *status, int nv,
+d_joint_passive_count(int w, real_t *qpos, real_t *qvel, int *active, int *jtype, int *qadr, int *dadr,
+                      real_t *stiffness, real_t *spring, real_t *damping, real_t *out, int *status, int nv,
                       int nq, int njnt, int joint_disjoint, const int *joint_type_offsets,
                       const int *joint_type_indices) {
   qpos += (long long)w * nq;
@@ -3132,7 +3133,7 @@ d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype
   out += (long long)w * nv;
   if (threadIdx.x == 0)
     status[w] = active[w] != 0 && active[w] != 1 ? 1 : 0;
-  libero_vec::fill_block(out, nv, 0.0);
+  libero_vec::fill_block(out, nv, REAL_C(0.0));
   __syncthreads();
   if (active[w] != 1)
     return;
@@ -3154,11 +3155,11 @@ d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype
       for (int k = joint_type_offsets[type] + threadIdx.x; k < joint_type_offsets[type + 1];
            k += blockDim.x) {
         const int i = joint_type_indices[k], q = qadr[i], d = dadr[i];
-        const double v = stiffness[i];
+        const real_t v = stiffness[i];
         if (type == 0) {
           // Two elements belong to this free joint; never cross a joint mask.
-          const double2 qp = libero_vec::load_pair(qpos + q), sp = libero_vec::load_pair(spring + q);
-          const double2 old = libero_vec::load_pair(out + d);
+          const real2_t qp = libero_vec::load_pair(qpos + q), sp = libero_vec::load_pair(spring + q);
+          const real2_t old = libero_vec::load_pair(out + d);
           libero_vec::store_pair(out + d, old.x - v * (qp.x - sp.x), old.y - v * (qp.y - sp.y));
           out[d + 2] -= v * (qpos[q + 2] - spring[q + 2]);
         } else
@@ -3169,7 +3170,7 @@ d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype
     for (int i = 0; i < njnt; ++i) {
       // Malformed overlapping descriptors retain original ordered updates.
       int t = jtype[i], q = qadr[i], d = dadr[i];
-      double v = stiffness[i];
+      real_t v = stiffness[i];
       if (t == 0)
         for (int axis = 0; axis < 3; ++axis)
           out[d + axis] -= v * (qpos[q + axis] - spring[q + axis]);
@@ -3178,7 +3179,7 @@ d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype
     }
   __syncthreads();
   for (int k = 2 * threadIdx.x; k + 1 < nv; k += 2 * blockDim.x) {
-    const double2 old = libero_vec::load_pair(out + k), d = libero_vec::load_pair(damping + k),
+    const real2_t old = libero_vec::load_pair(out + k), d = libero_vec::load_pair(damping + k),
                   v = libero_vec::load_pair(qvel + k);
     libero_vec::store_pair(out + k, old.x - d.x * v.x, old.y - d.y * v.y);
   }
@@ -3189,18 +3190,18 @@ d_joint_passive_count(int w, double *qpos, double *qvel, int *active, int *jtype
 
 namespace d_passive_detail {
 struct Vec {
-  double v[3];
-  __device__ double &operator[](int i) { return v[i]; }
-  __device__ double operator[](int i) const { return v[i]; }
+  real_t v[3];
+  __device__ real_t &operator[](int i) { return v[i]; }
+  __device__ real_t operator[](int i) const { return v[i]; }
 };
 static __device__ inline Vec cross(Vec a, Vec b) {
   return {{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
 }
-static __device__ inline Vec rot(const double *m, Vec v) {
+static __device__ inline Vec rot(const real_t *m, Vec v) {
   return {{m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
            m[6] * v[0] + m[7] * v[1] + m[8] * v[2]}};
 }
-static __device__ inline Vec rot_t(const double *m, Vec v) {
+static __device__ inline Vec rot_t(const real_t *m, Vec v) {
   return {{m[0] * v[0] + m[3] * v[1] + m[6] * v[2], m[1] * v[0] + m[4] * v[1] + m[7] * v[2],
            m[2] * v[0] + m[5] * v[1] + m[8] * v[2]}};
 }
@@ -3208,16 +3209,16 @@ static __device__ inline Vec rot_t(const double *m, Vec v) {
 
 namespace d_passive_detail {
 // The body producer retains scalar arithmetic and diagnostic-prefix semantics.
-static __device__ inline bool fluid_body(int b, const double *cvel, const double *subtree_com,
-                                         const double *xipos, const double *ximat, int *rootid, double *box,
-                                         double *wind, double *opt, int diagnostic, double *stages,
-                                         int stride, double *payload) {
-  constexpr double pi = 3.14159265358979323846;
+static __device__ inline bool fluid_body(int b, const real_t *cvel, const real_t *subtree_com,
+                                         const real_t *xipos, const real_t *ximat, int *rootid, real_t *box,
+                                         real_t *wind, real_t *opt, int diagnostic, real_t *stages,
+                                         int stride, real_t *payload) {
+  constexpr real_t pi = REAL_C(3.14159265358979323846);
   int root = rootid[b];
-  const double *m = ximat + 9 * b;
+  const real_t *m = ximat + 9 * b;
   Vec offset = {{xipos[3 * b] - subtree_com[3 * root], xipos[3 * b + 1] - subtree_com[3 * root + 1],
                  xipos[3 * b + 2] - subtree_com[3 * root + 2]}};
-  const double2 cv01 = libero_vec::load_pair(cvel + 6 * b), cv23 = libero_vec::load_pair(cvel + 6 * b + 2),
+  const real2_t cv01 = libero_vec::load_pair(cvel + 6 * b), cv23 = libero_vec::load_pair(cvel + 6 * b + 2),
                 cv45 = libero_vec::load_pair(cvel + 6 * b + 4);
   Vec ang = {{cv01.x, cv01.y, cv23.x}};
   Vec lin = {{cv23.y, cv45.x, cv45.y}};
@@ -3233,35 +3234,35 @@ static __device__ inline bool fluid_body(int b, const double *cvel, const double
         !isfinite(local_wind[r]) || !isfinite(local_lin[r])) {
       return false;
     }
-  double *st = stages + b * stride;
+  real_t *st = stages + b * stride;
   if (diagnostic != 0)
     for (int r = 0; r < 3; ++r) {
       st[r] = box[3 * b + r];
       st[3 + r] = local_ang[r];
       st[6 + r] = object_lin[r];
-      st[9 + r] = 0.0;
+      st[9 + r] = REAL_C(0.0);
       st[12 + r] = local_wind[r];
       st[15 + r] = local_ang[r];
       st[18 + r] = local_lin[r];
     }
-  const double2 boxxy = libero_vec::load_pair(box + 3 * b);
-  double x = boxxy.x, y = boxxy.y, z = box[3 * b + 2], visc = opt[0], density = opt[1];
-  Vec torque = {{0., 0., 0.}}, force = {{0., 0., 0.}};
-  if (visc > 0.0) {
-    double diam = (x + y + z) / 3.0, ang_scl = -pi * diam * diam * diam * visc,
-           lin_scl = -3.0 * pi * diam * visc;
+  const real2_t boxxy = libero_vec::load_pair(box + 3 * b);
+  real_t x = boxxy.x, y = boxxy.y, z = box[3 * b + 2], visc = opt[0], density = opt[1];
+  Vec torque = {{REAL_C(0.), REAL_C(0.), REAL_C(0.)}}, force = {{REAL_C(0.), REAL_C(0.), REAL_C(0.)}};
+  if (visc > REAL_C(0.0)) {
+    real_t diam = (x + y + z) / REAL_C(3.0), ang_scl = -pi * diam * diam * diam * visc,
+           lin_scl = -REAL_C(3.0) * pi * diam * visc;
     for (int r = 0; r < 3; ++r) {
       torque[r] = local_ang[r] * ang_scl;
       force[r] = local_lin[r] * lin_scl;
     }
   }
-  if (density > 0.0) {
-    force[0] -= 0.5 * density * y * z * fabs(local_lin[0]) * local_lin[0];
-    force[1] -= 0.5 * density * x * z * fabs(local_lin[1]) * local_lin[1];
-    force[2] -= 0.5 * density * x * y * fabs(local_lin[2]) * local_lin[2];
-    torque[0] -= density * x * (y * y * y * y + z * z * z * z) * fabs(local_ang[0]) * local_ang[0] / 64.0;
-    torque[1] -= density * y * (x * x * x * x + z * z * z * z) * fabs(local_ang[1]) * local_ang[1] / 64.0;
-    torque[2] -= density * z * (x * x * x * x + y * y * y * y) * fabs(local_ang[2]) * local_ang[2] / 64.0;
+  if (density > REAL_C(0.0)) {
+    force[0] -= REAL_C(0.5) * density * y * z * fabs(local_lin[0]) * local_lin[0];
+    force[1] -= REAL_C(0.5) * density * x * z * fabs(local_lin[1]) * local_lin[1];
+    force[2] -= REAL_C(0.5) * density * x * y * fabs(local_lin[2]) * local_lin[2];
+    torque[0] -= density * x * (y * y * y * y + z * z * z * z) * fabs(local_ang[0]) * local_ang[0] / REAL_C(64.0);
+    torque[1] -= density * y * (x * x * x * x + z * z * z * z) * fabs(local_ang[1]) * local_ang[1] / REAL_C(64.0);
+    torque[2] -= density * z * (x * x * x * x + y * y * y * y) * fabs(local_ang[2]) * local_ang[2] / REAL_C(64.0);
   }
   Vec wt = rot(m, torque), wf = rot(m, force);
   for (int r = 0; r < 3; ++r)
@@ -3285,9 +3286,9 @@ static __device__ inline bool fluid_body(int b, const double *cvel, const double
 } // namespace d_passive_detail
 
 static __device__ __forceinline__ void
-d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *ximat, double *cdof,
-              int *active, int *rootid, double *mass, double *box, int *ancestor, double *wind, double *opt,
-              int passive_disabled, int diagnostic, double *stages, double *qfrc, int *status, int nbody,
+d_fluid_count(int w, real_t *cvel, real_t *subtree_com, real_t *xipos, real_t *ximat, real_t *cdof,
+              int *active, int *rootid, real_t *mass, real_t *box, int *ancestor, real_t *wind, real_t *opt,
+              int passive_disabled, int diagnostic, real_t *stages, real_t *qfrc, int *status, int nbody,
               int nv, const int *body_dof_offsets, const int *body_dof_indices) {
   using namespace d_passive_detail;
   cvel += (long long)w * nbody * 6;
@@ -3299,11 +3300,11 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
   int stride = 33 + 7 * nv;
   stages += (long long)w * nbody * stride;
   if (diagnostic != 0)
-    libero_vec::fill_block(stages, (size_t)nbody * stride, 0.0);
+    libero_vec::fill_block(stages, (size_t)nbody * stride, REAL_C(0.0));
   __syncthreads();
   if (active[w] == 0 || status[w] != 0)
     return;
-  if (passive_disabled != 0 || (opt[0] <= 0.0 && opt[1] <= 0.0))
+  if (passive_disabled != 0 || (opt[0] <= REAL_C(0.0) && opt[1] <= REAL_C(0.0)))
     return;
   bool invalid = false;
   invalid |= libero_vec::any_nonfinite_block_lane(qfrc, nv);
@@ -3319,10 +3320,10 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
     return;
   }
 
-  __shared__ double payload[9];
+  __shared__ real_t payload[9];
   __shared__ int body_ok;
   for (int b = 1; b < nbody; ++b) {
-    if (mass[b] < 1e-15)
+    if (mass[b] < REAL_C(1e-15))
       continue;
     if (threadIdx.x == 0)
       body_ok = fluid_body(b, cvel, subtree_com, xipos, ximat, rootid, box, wind, opt, diagnostic, stages,
@@ -3337,7 +3338,7 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
     Vec offset, wt, wf;
     // One shared load per warp; every lane receives the same body payload.
     for (int r = 0; r < 3; ++r) {
-      double o = 0.0, t = 0.0, f = 0.0;
+      real_t o = REAL_C(0.0), t = REAL_C(0.0), f = REAL_C(0.0);
       if ((threadIdx.x & 31) == 0) {
         o = payload[r];
         t = payload[3 + r];
@@ -3347,16 +3348,16 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
       wt[r] = __shfl_sync(0xffffffffu, t, 0);
       wf[r] = __shfl_sync(0xffffffffu, f, 0);
     }
-    double *st = stages + b * stride;
+    real_t *st = stages + b * stride;
     const bool sparse = diagnostic == 0 && body_dof_offsets && body_dof_indices;
     const int begin = sparse ? body_dof_offsets[b] : 0;
     const int count = sparse ? body_dof_offsets[b + 1] - begin : nv;
     for (int base = 0; base < count; base += blockDim.x) {
       const int ordinal = base + threadIdx.x;
       const int j = ordinal < count ? (sparse ? body_dof_indices[begin + ordinal] : ordinal) : nv;
-      Vec jp = {{0., 0., 0.}}, jr = {{0., 0., 0.}};
+      Vec jp = {{REAL_C(0.), REAL_C(0.), REAL_C(0.)}}, jr = {{REAL_C(0.), REAL_C(0.), REAL_C(0.)}};
       bool projection_bad = false, result_bad = false;
-      double result = 0.0;
+      real_t result = REAL_C(0.0);
       if (j < nv) {
         if (sparse || ancestor[b * nv + j] != 0) {
           jr = {{cdof[6 * j], cdof[6 * j + 1], cdof[6 * j + 2]}};
@@ -3367,13 +3368,13 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
         for (int r = 0; r < 3; ++r)
           projection_bad |= !isfinite(jp[r]) || !isfinite(jr[r]);
         if (!projection_bad) {
-          double qforce = 0.0, qtorque = 0.0;
+          real_t qforce = REAL_C(0.0), qtorque = REAL_C(0.0);
           for (int r = 0; r < 3; ++r)
-            if (wf[r] != 0.0)
+            if (wf[r] != REAL_C(0.0))
               qforce += jp[r] * wf[r];
           result = qfrc[j] + qforce;
           for (int r = 0; r < 3; ++r)
-            if (wt[r] != 0.0)
+            if (wt[r] != REAL_C(0.0))
               qtorque += jr[r] * wt[r];
           result += qtorque;
           result_bad = !isfinite(result);
@@ -3398,7 +3399,7 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
         if (sparse)
           for (int k = threadIdx.x; k < fail / 2; k += blockDim.x)
             if (ancestor[b * nv + k] == 0)
-              qfrc[k] = (qfrc[k] + 0.0) + 0.0;
+              qfrc[k] = (qfrc[k] + REAL_C(0.0)) + REAL_C(0.0);
         __syncthreads();
         if (threadIdx.x == 0)
           status[w] = 2;
@@ -3409,7 +3410,7 @@ d_fluid_count(int w, double *cvel, double *subtree_com, double *xipos, double *x
     if (sparse)
       for (int j = threadIdx.x; j < nv; j += blockDim.x)
         if (ancestor[b * nv + j] == 0)
-          qfrc[j] = (qfrc[j] + 0.0) + 0.0;
+          qfrc[j] = (qfrc[j] + REAL_C(0.0)) + REAL_C(0.0);
     __syncthreads();
   }
   __syncthreads();
@@ -3429,25 +3430,25 @@ d_fluid_original(int w, const flash_libero::FluidPassiveData &in) {
 // DOF one ordered accumulator. No atomic additions or per-body CTA barriers.
 // The caller publishes qfrc/status after this function returns.
 static __device__ __forceinline__ void
-d_fluid_parallel(int w, const flash_libero::FluidPassiveData &in, double *workspace) {
+d_fluid_parallel(int w, const flash_libero::FluidPassiveData &in, real_t *workspace) {
   using namespace d_passive_detail;
   if (in.diagnostic || !workspace) {
     d_fluid_original(w, in);
     return;
   }
   if (in.active[w] == 0 || in.status[w] != 0 || in.passive_disabled ||
-      (in.opt[0] <= 0.0 && in.opt[1] <= 0.0))
+      (in.opt[0] <= REAL_C(0.0) && in.opt[1] <= REAL_C(0.0)))
     return;
 
   const int nb = in.nbody, nv = in.nv;
-  const double *cv = in.cvel + size_t(w) * nb * 6;
-  const double *com = in.subtree_com + size_t(w) * nb * 3;
-  const double *pos = in.xipos + size_t(w) * nb * 3;
-  const double *mat = in.ximat + size_t(w) * nb * 9;
-  const double *dof = in.cdof + size_t(w) * nv * 6;
-  double *force = in.qfrc + size_t(w) * nv;
-  double *payload = workspace + size_t(w) * (9 * nb + nv);
-  double *candidate = payload + 9 * nb;
+  const real_t *cv = in.cvel + size_t(w) * nb * 6;
+  const real_t *com = in.subtree_com + size_t(w) * nb * 3;
+  const real_t *pos = in.xipos + size_t(w) * nb * 3;
+  const real_t *mat = in.ximat + size_t(w) * nb * 9;
+  const real_t *dof = in.cdof + size_t(w) * nv * 6;
+  real_t *force = in.qfrc + size_t(w) * nv;
+  real_t *payload = workspace + size_t(w) * (9 * nb + nv);
+  real_t *candidate = payload + 9 * nb;
 
   bool bad = libero_vec::any_nonfinite_block_lane(force, nv);
   bad |= libero_vec::any_nonfinite_block_lane(cv, nb * 6);
@@ -3456,7 +3457,7 @@ d_fluid_parallel(int w, const flash_libero::FluidPassiveData &in, double *worksp
   bad |= libero_vec::any_nonfinite_block_lane(mat, nb * 9);
   bad |= libero_vec::any_nonfinite_block_lane(dof, nv * 6);
   for (int b = 1 + threadIdx.x; b < nb; b += blockDim.x)
-    if (!(in.mass[b] < 1e-15))
+    if (!(in.mass[b] < REAL_C(1e-15)))
       bad |= !fluid_body(b, cv, com, pos, mat, in.rootid, in.box, in.wind,
                          in.opt, 0, in.stages, 33 + 7 * nv, payload + 9 * b);
   // Publishes every body payload and returns a uniform register decision.
@@ -3467,15 +3468,15 @@ d_fluid_parallel(int w, const flash_libero::FluidPassiveData &in, double *worksp
 
   bad = false;
   for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-    double result = force[j];
+    real_t result = force[j];
     for (int b = 1; b < nb; ++b) {
-      if (in.mass[b] < 1e-15)
+      if (in.mass[b] < REAL_C(1e-15))
         continue;
       if (!in.ancestor[b * nv + j]) {
-        result = (result + 0.0) + 0.0;
+        result = (result + REAL_C(0.0)) + REAL_C(0.0);
         continue;
       }
-      const double *p = payload + 9 * b;
+      const real_t *p = payload + 9 * b;
       const Vec offset = {{p[0], p[1], p[2]}};
       const Vec jr = {{dof[6 * j], dof[6 * j + 1], dof[6 * j + 2]}};
       const Vec cp = cross(jr, offset);
@@ -3484,13 +3485,13 @@ d_fluid_parallel(int w, const flash_libero::FluidPassiveData &in, double *worksp
         jp[r] = dof[6 * j + 3 + r] + cp[r];
         bad |= !isfinite(jp[r]) || !isfinite(jr[r]);
       }
-      double qforce = 0.0, qtorque = 0.0;
+      real_t qforce = REAL_C(0.0), qtorque = REAL_C(0.0);
       for (int r = 0; r < 3; ++r)
-        if (p[6 + r] != 0.0)
+        if (p[6 + r] != REAL_C(0.0))
           qforce += jp[r] * p[6 + r];
       result += qforce;
       for (int r = 0; r < 3; ++r)
-        if (p[3 + r] != 0.0)
+        if (p[3 + r] != REAL_C(0.0))
           qtorque += jr[r] * p[3 + r];
       result += qtorque;
       bad |= !isfinite(result);
@@ -3668,12 +3669,10 @@ static __device__ __forceinline__ void increment_plan(int w, const int *mask, co
 namespace flash_libero {
 namespace {
 
-// Collective call: every lane in this world's 64-thread block participates.
-// Forward changes qacc/warmstart but does not advance qpos/state_epoch.
-__device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, int world,
-                                                 unsigned char *shared, bool post_outputs,
-                                                 int smooth_reuse_status = -1) {
-  CF_STEP_PROFILE_SCOPE(Forward);
+// Collective preparation for the current position and velocity. No actuation,
+// Newton, warmstart update, or forward-complete publication occurs here.
+// The returned flag describes same-state numerical reuse for the FP64 path.
+__device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, int world) {
   const auto &workspace = args.forward_workspace;
   uint64_t *cache = workspace.metadata + size_t(world) * ForwardCacheWords;
   // The Start entry clears validity. Within this physical substep only the
@@ -3831,7 +3830,20 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
         cache[ForwardCacheState] = uint64_t(args.state.epoch[world]);
         cache[ForwardCachePosition] = workspace.position_generation[world];
       }
-      CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(Actuation));
+    }
+  }
+  return reuse;
+}
+
+// Collective step2 suffix. The controller may change ctrl after preparation;
+// no position, velocity, bias, or reference computation is repeated here.
+__device__ __forceinline__ void solve_dynamics(const SubstepArguments &args, int world,
+                                              unsigned char *shared, bool post_outputs,
+                                              bool reuse, int smooth_reuse_status = -1) {
+  CF_STEP_PROFILE_STAGES(CF_STEP_PROFILE_PHASE(Actuation));
+  const auto &workspace = args.forward_workspace;
+  if (args.state.requested_mask[world] != 0) {
+    if (threadIdx.x == 0) {
       const auto &in = args.actuation_gate;
       physics_force::d_gate(world, in.active, in.error, in.state, in.source, in.epoch, in.valid, in.written,
                             in.gate, in.require);
@@ -3870,8 +3882,8 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
       const auto &in = args.smooth_acceleration;
       if (reuse && smooth_reuse_status >= 0 && in.active[world] == 1 &&
           args.smooth_gate.gate[world] == 1) {
-        double *force = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::force);
-        double *acc = flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::acceleration);
+        real_t *force = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force);
+        real_t *acc = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration);
         for (int i = threadIdx.x; i < in.nv; i += blockDim.x) {
           force[i] = args.smooth_commit.pf[size_t(world) * in.nv + i];
           acc[i] = args.smooth_commit.pa[size_t(world) * in.nv + i];
@@ -3946,18 +3958,22 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
   const auto &smooth = args.smooth_commit;
   const bool resident = args.state.requested_mask[world] != 0 && smooth.valid[world] == 1 &&
                         !smooth.error[world] && smooth.written[world] == smooth.epoch[world];
-  const physics_newton::NewtonOptions options{
-      newton.stop_policy, newton.audit, newton.first_disagreement,
-      resident ? flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::acceleration) : nullptr,
-      resident ? flash_libero::shared_at<double>(shared, flash_libero::SmoothLayout::force) : nullptr};
+  physics_newton::NewtonOptions options{};
+  options.stop_policy = newton.stop_policy;
+  options.audit = newton.audit;
+  options.first_disagreement = newton.first_disagreement;
+  options.smooth_acceleration = resident ?
+      flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration) : nullptr;
+  options.smooth_force = resident ?
+      flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force) : nullptr;
   const auto &request = *newton.parameters;
   CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(Newton));
   physics_newton::solve_newton(shared, request.model, request.worlds[world], newton.upstream, newton.enabled,
                                newton.publication, newton.expected_epoch, options);
   CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(Post));
   const bool post_evaluated = physics_post::run(request.post, world,
-                    flash_libero::shared_at<double>(shared, flash_libero::NewtonLayout::qacc),
-                    flash_libero::shared_at<double>(shared, flash_libero::NewtonLayout::mathdx), post_outputs);
+                    flash_libero::shared_at<real_t>(shared, flash_libero::NewtonLayout::qacc),
+                    flash_libero::shared_at<real_t>(shared, flash_libero::NewtonLayout::mathdx), post_outputs);
   __syncthreads();
   CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(ForwardPublish));
   if (threadIdx.x == 0) {
@@ -3969,6 +3985,16 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
                           in.state, in.valid, in.written, in.error);
   }
   __syncthreads();
+}
+
+// Complete CPU-compatible forward. Keep the FP64 order and every warmstart
+// write; only the FP32 substep entry separates these two physical stages.
+__device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, int world,
+                                                 unsigned char *shared, bool post_outputs,
+                                                 int smooth_reuse_status = -1) {
+  CF_STEP_PROFILE_SCOPE(Forward);
+  const bool reuse = prepare_dynamics(args, world);
+  solve_dynamics(args, world, shared, post_outputs, reuse, smooth_reuse_status);
 }
 
 // Start another forward without rebuilding position on a valid same-epoch hit.
@@ -4000,7 +4026,7 @@ __device__ void begin_forward(const SubstepArguments &args, int world, const int
 
 // The field inventory and defaults are the existing MuJoCo data-reset owners.
 // checkPos and checkVel each have their own reset and epoch update, in that order.
-__device__ void check_and_reset(const SubstepArguments &args, int world, const double *values, int width,
+__device__ void check_and_reset(const SubstepArguments &args, int world, const real_t *values, int width,
                                 int warning) {
   CF_STEP_PROFILE_SCOPE(Checks);
   const auto &reset = args.recovery;
@@ -4060,6 +4086,28 @@ __device__ void integrate(const SubstepArguments &args, int world) {
     physics_euler::cf_euler::count(world, state.step_valid, state.integration_count);
   }
   __syncthreads();
+}
+__device__ void finish_substep(const SubstepArguments &args, int world, SubstepEntry entry) {
+  if (entry != SubstepEntry::AccelerationReset) {
+    if (threadIdx.x == 0) {
+      cf_recovery::acceleration(world, args.state.intent, args.state.first_error, args.state.forward_valid,
+                                args.state.forward_written, args.state.epoch, args.newton.valid,
+                                args.newton.written, args.newton.expected_epoch, args.recovery.active);
+    }
+    __syncthreads();
+    check_and_reset(args, world, args.state.qacc, args.state.nv, 6);
+    if (args.recovery.reset_mask[world] == 1) {
+      if (threadIdx.x == 0)
+        args.continuation[world] = int(SubstepEntry::AccelerationReset);
+      return;
+    }
+  }
+
+  // After an acceleration reset the caller has performed the required full
+  // reset-only forward. Continue at Euler without repeating the controller.
+  integrate(args, world);
+  if (threadIdx.x == 0)
+    args.continuation[world] = int(SubstepEntry::Complete);
 }
 } // namespace
 
@@ -4134,26 +4182,51 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // substeps. The final substep keeps Post here, before Euler, exactly as in
     // mj_forward/mj_step. Every forward still solves Newton and publishes qacc.
     forward_dynamics(args, world, shared, publish_post);
+  }
+  finish_substep(args, world, entry);
+}
+
+#if FLASH_REAL_BITS == 32
+// Experimental FP32 schedule. It is a distinct kernel, so the accepted
+// three-forward kernel keeps its own register and shared-memory allocation.
+__global__ void single_solve_substep_kernel(const SubstepArguments *__restrict__ arguments,
+                                           bool policy_step, SubstepEntry entry, bool publish_post) {
+  const auto &args = *arguments;
+  auto *shared = substep_shared_data();
+  const int world = blockIdx.y;
+  if (entry != SubstepEntry::Start && entry != SubstepEntry::PositionChecks &&
+      args.continuation[world] != int(entry))
+    return;
+  CF_STEP_PROFILE_BEGIN(entry, policy_step);
+  // step1 checks must precede the multi-CTA position prefix. This small entry
+  // runs before the host enqueues that prefix; it performs no forward/solve.
+  if (entry == SubstepEntry::PositionChecks) {
     if (threadIdx.x == 0) {
-      cf_recovery::acceleration(world, args.state.intent, args.state.first_error, args.state.forward_valid,
-                                args.state.forward_written, args.state.epoch, args.newton.valid,
-                                args.newton.written, args.newton.expected_epoch, args.recovery.active);
+      args.continuation[world] = int(SubstepEntry::Complete);
+      args.forward_workspace.metadata[size_t(world) * ForwardCacheWords + ForwardCacheValid] = 0;
+      cf_recovery::admit(world, args.state.intent, args.state.first_error, args.recovery.active);
     }
     __syncthreads();
-    check_and_reset(args, world, args.state.qacc, args.state.nv, 6);
-    if (args.recovery.reset_mask[world] == 1) {
-      if (threadIdx.x == 0)
-        args.continuation[world] = int(SubstepEntry::AccelerationReset);
-      return;
-    }
+    check_and_reset(args, world, args.state.qpos, args.state.nq, 4);
+    check_and_reset(args, world, args.state.qvel, args.state.nv, 5);
+    return;
   }
-
-  // After an acceleration reset the caller has performed the required full
-  // reset-only forward. Continue at Euler without repeating the controller.
-  integrate(args, world);
-  if (threadIdx.x == 0)
-    args.continuation[world] = int(SubstepEntry::Complete);
+  if (entry == SubstepEntry::Start) {
+    CF_STEP_PROFILE_SCOPE(Forward);
+    prepare_dynamics(args, world);
+    if (threadIdx.x == 0) {
+      const auto &in = args.controller_plan;
+      // MJWarp consumes freshly prepared physical inputs even on the first
+      // substep after reset; it never starts from the constructor's cache.
+      osc_cuda::plan(world, in.active, in.first, in.needs, in.refresh, in.call, 1);
+    }
+    __syncthreads();
+    run_controller(args, world, policy_step);
+    solve_dynamics(args, world, shared, publish_post, false);
+  }
+  finish_substep(args, world, entry);
 }
+#endif
 
 // Select exactly the suspended worlds. This small kernel performs no physics.
 __global__ void select_substep_continuation(const SubstepArguments *__restrict__ arguments,

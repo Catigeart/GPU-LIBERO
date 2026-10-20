@@ -4,6 +4,7 @@ This module does not import Warp, read device values, or allocate device views.
 The original producers retain every array owner. A consumer must additionally
 validate current row coverage and numeric equivalence on device for each launch.
 """
+import libero.gpu.precision as scalar
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -104,7 +105,7 @@ class HeadMetadata(Mapping):
         size = _size(logical)
         floating = name in _FLOAT_FIELDS
         dtype = dtypes['float64' if floating else 'int32']
-        itemsize = 8 if floating else 4
+        itemsize = scalar.itemsize if floating else 4
         if (not isinstance(array, array_type) or array.dtype != dtype or
                 not array.is_contiguous or int(array.size) != size or
                 tuple(array.shape) not in (logical, (size,))):

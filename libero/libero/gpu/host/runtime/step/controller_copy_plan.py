@@ -1,4 +1,5 @@
 """Cold copy scheduling and overlap proof for the fixed native controller."""
+import libero.gpu.precision as scalar
 from .substep_types import ControllerCopyPacket
 
 
@@ -7,7 +8,7 @@ def access_regions(a, worlds, *, index_words=0, skip_copy_flags=False, skip_even
     g, p, v, b = a.controller_inputs, a.end_effector_pose, a.end_effector_velocity, a.controller_bias
     regions = []
 
-    def add(owner, field, words, itemsize=8):
+    def add(owner, field, words, itemsize=scalar.itemsize):
         address = getattr(owner, field)
         if address and words:
             regions.append((int(address), int(address) + int(words) * itemsize))
@@ -52,7 +53,7 @@ def access_regions(a, worlds, *, index_words=0, skip_copy_flags=False, skip_even
         for field in long_fields.split():
             if skip_event and role in ('commit', 'publish') and field == 'event':
                 continue
-            add(owner, field, worlds)
+            add(owner, field, worlds, 8)
     return regions
 
 
@@ -71,7 +72,7 @@ def build_packets(channels, worlds, protected=(), integer_protected=()):
         if f.width < 1 or not f.published or not f.working:
             return [], 0, 0
         for pointer in (f.published, f.working):
-            span = (int(pointer), int(pointer) + worlds*f.width*8)
+            span = (int(pointer), int(pointer) + worlds*f.width*scalar.itemsize)
             if any(span[0] < end and start < span[1] for start, end in protected):
                 return [], 0, 0
             spans.append(span)
@@ -93,7 +94,7 @@ def build_packets(channels, worlds, protected=(), integer_protected=()):
         for f in floating:
             if seed and not (f.parallel_copy & 2):
                 continue
-            result.extend(ControllerCopyPacket(f.published+8*z, f.working+8*z,
+            result.extend(ControllerCopyPacket(f.published+scalar.itemsize*z, f.working+scalar.itemsize*z,
                                                f.width, min(2, f.width-z))
                           for z in range(0, f.width, 2))
         return result
@@ -119,7 +120,7 @@ def parallel_gather_allowed(a, worlds, *, index_words=0):
     if b.nv != j.nv or any(not x or x != y for x, y in equal):
         return False
 
-    def span(owner, name, width, itemsize=8):
+    def span(owner, name, width, itemsize=scalar.itemsize):
         pointer = getattr(owner, name)
         return (int(pointer or 0), int(pointer or 0) + worlds*width*itemsize)
 

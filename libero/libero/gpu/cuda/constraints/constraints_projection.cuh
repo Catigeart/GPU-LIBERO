@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Typed S -> N metadata projection. Numeric rows already share their owners.
 #pragma once
 namespace cf_s {
@@ -22,8 +23,8 @@ __device__ void project_counts(int w,const int*admitted,const int*source_counts,
   if(bad>=0){status[w]=9001;item[w]=bad;}
 }
 __device__ void project_cone_heads(int w,const int*admitted,const int*nefc,const int*ne,const int*nf,const int*ncon,
- const int*typ,const int*id,const int*dim,const double*mu,const double*friction,int*out_dim,double*out_mu,
- double*out_friction,int*status,int*item,int rows,int contacts){
+ const int*typ,const int*id,const int*dim,const real_t*mu,const real_t*friction,int*out_dim,real_t*out_mu,
+ real_t*out_friction,int*status,int*item,int rows,int contacts){
   __shared__ int head[32],contact[32],width[32],kind[32],parse_code[32];
   __shared__ int cursor,used,finished;
   if(threadIdx.x==0){
@@ -69,8 +70,8 @@ __device__ void project_cone_heads(int w,const int*admitted,const int*nefc,const
           const int i=head[k],c=contact[k],d=width[k];
           if(!pass){
             for(int j=0;j<d;j++)if(typ[rb+i+j]!=7||id[rb+i+j]!=c){code=9004;bad=i+j;break;}
-            if(!code&&(!isfinite(mu[cb+c])||mu[cb+c]<=0.))code=9006;
-            if(!code)for(int j=0;j<d-1;j++){const double f=friction[(cb+c)*5+j];if(!isfinite(f)||f<=0.){code=9007;break;}}
+            if(!code&&(!isfinite(mu[cb+c])||mu[cb+c]<=REAL_C(0.)))code=9006;
+            if(!code)for(int j=0;j<d-1;j++){const real_t f=friction[(cb+c)*5+j];if(!isfinite(f)||f<=REAL_C(0.)){code=9007;break;}}
           }else{
             out_dim[rb+i]=d;out_mu[rb+i]=mu[cb+c];
             for(int j=0;j<d-1;j++)out_friction[(rb+i)*5+j]=friction[(cb+c)*5+j];
@@ -95,10 +96,10 @@ __device__ void project_cone_heads(int w,const int*admitted,const int*nefc,const
 // impedance invocation rebuilt this ascending list. Generic external callers
 // retain project_cone_heads. Projection-specific numeric admission is repeated.
 __device__ void project_cone_heads_verified(int w,const int*admitted,const int*nefc,const int*ne,const int*nf,const int*ncon,
- const int*typ,const int*id,const int*dim,const double*mu,const double*friction,int*out_dim,double*out_mu,
- double*out_friction,int*status,int*item,int rows,int contacts,
+ const int*typ,const int*id,const int*dim,const real_t*mu,const real_t*friction,int*out_dim,real_t*out_mu,
+ real_t*out_friction,int*status,int*item,int rows,int contacts,
  const int*compact_heads,const int*compact_count,const int*compact_valid,
- const int*head_dim,double*head_mu,double*head_friction,int*head_cone_valid){
+ const int*head_dim,real_t*head_mu,real_t*head_friction,int*head_cone_valid){
   if(threadIdx.x==0)head_cone_valid[w]=0;
   __syncthreads();
   if(compact_valid[w]!=1||compact_count[w]<0||compact_count[w]>rows){
@@ -167,8 +168,8 @@ __device__ void project_cone_heads_verified(int w,const int*admitted,const int*n
               else if(d>n-i)code=9004;
               else{
                 for(int j=0;j<d;j++)if(typ[rb+i+j]!=7||id[rb+i+j]!=c){code=9004;bad=i+j;break;}
-                if(!code&&(!isfinite(mu[cb+c])||mu[cb+c]<=0.))code=9006;
-                if(!code)for(int j=0;j<d-1;j++){const double f=friction[(cb+c)*5+j];if(!isfinite(f)||f<=0.){code=9007;break;}}
+                if(!code&&(!isfinite(mu[cb+c])||mu[cb+c]<=REAL_C(0.)))code=9006;
+                if(!code)for(int j=0;j<d-1;j++){const real_t f=friction[(cb+c)*5+j];if(!isfinite(f)||f<=REAL_C(0.)){code=9007;break;}}
               }
             }
           }else if(t==5){
@@ -196,12 +197,12 @@ __device__ void project_cone_heads_verified(int w,const int*admitted,const int*n
     // transposed private head metadata retains its existing scalar layout.
     int j=0;
     for(;j+1<d-1;j+=2){
-      const double2 f=libero_vec::load_pair(friction+(cb+c)*5+j);
+      const real2_t f=libero_vec::load_pair(friction+(cb+c)*5+j);
       libero_vec::store_pair(out_friction+(rb+i)*5+j,f.x,f.y);
       head_friction[(w*5+j)*rows+ordinal]=f.x;
       head_friction[(w*5+j+1)*rows+ordinal]=f.y;
     }
-    if(j<d-1){const double f=friction[(cb+c)*5+j];out_friction[(rb+i)*5+j]=f;head_friction[(w*5+j)*rows+ordinal]=f;}
+    if(j<d-1){const real_t f=friction[(cb+c)*5+j];out_friction[(rb+i)*5+j]=f;head_friction[(w*5+j)*rows+ordinal]=f;}
   }
   __syncthreads();
   if(threadIdx.x==0)head_cone_valid[w]=1;

@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -18,7 +19,7 @@ __device__ inline bool cf_temporal_static_bad_lane(int nbody,int ngeom,
     const int* body_weldid,const int* body_parentid,const int* can,const int* plane,
     const int* geom_type,const int* geom_contype,const int* geom_conaffinity,
     const int* gates,const int* collision_mode,const int* filterparent_disabled,
-    const double* rbound,const double* margin,const int* ishadow,const double* fshadow) {
+    const real_t* rbound,const real_t* margin,const int* ishadow,const real_t* fshadow) {
     bool bad=false;int p=0;
     bad|=cf_temporal_int_lane(body_geomadr,ishadow,nbody,p);p+=nbody;
     bad|=cf_temporal_int_lane(body_geomnum,ishadow,nbody,p);p+=nbody;
@@ -34,12 +35,12 @@ __device__ inline bool cf_temporal_static_bad_lane(int nbody,int ngeom,
     bad|=cf_temporal_int_lane(collision_mode,ishadow,1,p);++p;
     bad|=cf_temporal_int_lane(filterparent_disabled,ishadow,1,p);
     for(int g=threadIdx.x;g<ngeom;g+=blockDim.x){
-        bad|=__double_as_longlong(rbound[g])!=__double_as_longlong(fshadow[g]);
-        bad|=__double_as_longlong(margin[g])!=__double_as_longlong(fshadow[ngeom+g]);
+        bad|=real_bits(rbound[g])!=real_bits(fshadow[g]);
+        bad|=real_bits(margin[g])!=real_bits(fshadow[ngeom+g]);
     }
     return bad;
 }
-__device__ inline bool cf_temporal_overlap(const double* ab,int b1,int b2) {
+__device__ inline bool cf_temporal_overlap(const real_t* ab,int b1,int b2) {
     for(int k=0;k<3;++k)
         if(ab[6*b1+2*k]>ab[6*b2+2*k+1] || ab[6*b1+2*k+1]<ab[6*b2+2*k])return false;
     return true;
@@ -47,50 +48,50 @@ __device__ inline bool cf_temporal_overlap(const double* ab,int b1,int b2) {
 // ||R||_2 <= sqrt(||R^T R||_infinity). Interval dot products protect the
 // certificate from normal FP64 non-orthogonality and FMA reassociation. A
 // further 32 eps encloses the native three-term point-transform roundoff.
-__device__ inline double cf_temporal_norm_squared(const double* matrix) {
-    double rows[3]={0,0,0};
+__device__ inline real_t cf_temporal_norm_squared(const real_t* matrix) {
+    real_t rows[3]={0,0,0};
     for(int i=0;i<3;++i)for(int j=i;j<3;++j){
-        double lo=0,hi=0;
+        real_t lo=0,hi=0;
         for(int k=0;k<3;++k){
-            const double a=matrix[3*k+i],b=matrix[3*k+j];
-            lo=__dadd_rd(lo,__dmul_rd(a,b));hi=__dadd_ru(hi,__dmul_ru(a,b));
+            const real_t a=matrix[3*k+i],b=matrix[3*k+j];
+            lo=real_add_rd(lo,real_mul_rd(a,b));hi=real_add_ru(hi,real_mul_ru(a,b));
         }
-        const double magnitude=fmax(fabs(lo),fabs(hi));
-        rows[i]=__dadd_ru(rows[i],magnitude);
-        if(i!=j)rows[j]=__dadd_ru(rows[j],magnitude);
+        const real_t magnitude=fmax(fabs(lo),fabs(hi));
+        rows[i]=real_add_ru(rows[i],magnitude);
+        if(i!=j)rows[j]=real_add_ru(rows[j],magnitude);
     }
-    return fmax(1.0,fmax(rows[0],fmax(rows[1],rows[2])));
+    return fmax(REAL_C(1.0),fmax(rows[0],fmax(rows[1],rows[2])));
 }
-__device__ inline double cf_temporal_radius(double norm_squared,double world_norm_squared,
-                                          double rb,double margin) {
-    const double norm=__dsqrt_ru(norm_squared);
-    const double scale=__dmul_ru(norm,1.0+32.0*DBL_EPSILON);
+__device__ inline real_t cf_temporal_radius(real_t norm_squared,real_t world_norm_squared,
+                                          real_t rb,real_t margin) {
+    const real_t norm=real_sqrt_ru(norm_squared);
+    const real_t scale=real_mul_ru(norm,REAL_C(1.0)+REAL_C(32.0)*REAL_EPSILON);
     // Native MPR maps a local margin direction back to world space: R R^T.
     // A common maximum protects pair max-margin even when only one geom owns
     // that margin: nonnegative m1+m2 >= max(m1,m2).
-    const double margin_scale=__dmul_ru(world_norm_squared,1.0+64.0*DBL_EPSILON);
-    return __dadd_ru(__dmul_ru(rb,scale),__dmul_ru(margin,margin_scale));
+    const real_t margin_scale=real_mul_ru(world_norm_squared,REAL_C(1.0)+REAL_C(64.0)*REAL_EPSILON);
+    return real_add_ru(real_mul_ru(rb,scale),real_mul_ru(margin,margin_scale));
 }
 // Uses a bounding sphere centered at geom_xpos. Rotation cannot escape a
 // sphere; rbound and the original geom margin are guarded static inputs.
 // Directed rounding encloses the FP64 addition/subtraction at each endpoint.
 __device__ inline void cf_temporal_bounds_block(int w,
-    const double* xpos,const int* active,const int* gates,const int* collision_mode,
-    const double* geom_rbound,const double* geom_margin,const int* body_geomadr,
-    const int* body_geomnum,const int* geom_bodyid,double* aabb,double* frame,
-    int* entered,int* count,int* status,double* scratch,int ngeom,int nbody,
+    const real_t* xpos,const int* active,const int* gates,const int* collision_mode,
+    const real_t* geom_rbound,const real_t* geom_margin,const int* body_geomadr,
+    const int* body_geomnum,const int* geom_bodyid,real_t* aabb,real_t* frame,
+    int* entered,int* count,int* status,real_t* scratch,int ngeom,int nbody,
     const int* body_weldid,const int* body_parentid,const int* can,const int* plane,
     const int* geom_type,const int* geom_contype,const int* geom_conaffinity,
-    const int* filterparent_disabled,const int* integer_shadow,const double* float_shadow,
-    const double* geom_matrix,double* current_radius,
+    const int* filterparent_disabled,const int* integer_shadow,const real_t* float_shadow,
+    const real_t* geom_matrix,real_t* current_radius,
     const int* tree_body_num,const int* tree_num_shadow,
     const int* override_enabled,
     const int* position_valid,const int64_t* position_written,const int64_t* forward_epoch,
-    const int* first_error,double* fat_bounds,int* cache_valid,int* cache_mode,int* cache_age,
+    const int* first_error,real_t* fat_bounds,int* cache_valid,int* cache_mode,int* cache_age,
     int* reason,int64_t* hit_count,int64_t* refresh_count,int64_t* fallback_count,
-    double absolute_padding,double relative_padding,int max_age) {
+    real_t absolute_padding,real_t relative_padding,int max_age) {
     __shared__ int wb[32], mode;
-    __shared__ double matrix_norms[32], world_norm_squared;
+    __shared__ real_t matrix_norms[32], world_norm_squared;
     const int lane=threadIdx.x&31,warp=threadIdx.x>>5;
     bool bad=cf_temporal_static_bad_lane(nbody,ngeom,body_geomadr,body_geomnum,geom_bodyid,
         body_weldid,body_parentid,can,plane,geom_type,geom_contype,geom_conaffinity,
@@ -118,11 +119,11 @@ __device__ inline void cf_temporal_bounds_block(int w,
     }
     // Validate all computed endpoints before the first public bounds write.
     // A NaN/error fallback must retain exactly the original partial-write ABI.
-    bool invalid_endpoint=false;double local_norm_squared=1.0;
+    bool invalid_endpoint=false;real_t local_norm_squared=REAL_C(1.0);
     for(int g=threadIdx.x;g<ngeom;g+=blockDim.x){
-        const double* matrix=geom_matrix+(w*ngeom+g)*9;
+        const real_t* matrix=geom_matrix+(w*ngeom+g)*9;
         for(int k=0;k<9;++k)invalid_endpoint|=!isfinite(matrix[k]);
-        const double norm_squared=cf_temporal_norm_squared(matrix);
+        const real_t norm_squared=cf_temporal_norm_squared(matrix);
         current_radius[w*ngeom+g]=norm_squared;
         invalid_endpoint|=!isfinite(norm_squared);
         local_norm_squared=fmax(local_norm_squared,norm_squared);
@@ -132,18 +133,18 @@ __device__ inline void cf_temporal_bounds_block(int w,
     if(lane==0)matrix_norms[warp]=local_norm_squared;
     __syncthreads();
     if(threadIdx.x==0){
-        world_norm_squared=1.0;
+        world_norm_squared=REAL_C(1.0);
         for(int k=0;k<(blockDim.x>>5);++k)world_norm_squared=fmax(world_norm_squared,matrix_norms[k]);
     }
     __syncthreads();
     for(int g=threadIdx.x;g<ngeom;g+=blockDim.x){
-        const double r=cf_temporal_radius(current_radius[w*ngeom+g],world_norm_squared,
+        const real_t r=cf_temporal_radius(current_radius[w*ngeom+g],world_norm_squared,
                                           geom_rbound[g],geom_margin[g]);
         current_radius[w*ngeom+g]=r;
         invalid_endpoint|=!isfinite(r) || r<0;
         for(int k=0;k<3;++k){
-            const double c=xpos[(w*ngeom+g)*3+k];
-            invalid_endpoint|=!isfinite(c) || !isfinite(__dadd_rd(c,-r)) || !isfinite(__dadd_ru(c,r));
+            const real_t c=xpos[(w*ngeom+g)*3+k];
+            invalid_endpoint|=!isfinite(c) || !isfinite(real_add_rd(c,-r)) || !isfinite(real_add_ru(c,r));
         }
     }
     const int invalid=__any_sync(0xffffffffu,invalid_endpoint);
@@ -159,14 +160,14 @@ __device__ inline void cf_temporal_bounds_block(int w,
         return;
     }
     bool nonfinite=false,outside=false;
-    double* ab=aabb+w*nbody*6;const double* fat=fat_bounds+w*nbody*6;
+    real_t* ab=aabb+w*nbody*6;const real_t* fat=fat_bounds+w*nbody*6;
     for(int t=threadIdx.x;t<nbody*3;t+=blockDim.x){
-        const int b=t/3,k=t%3;double lo=0.0,hi=0.0;
+        const int b=t/3,k=t%3;real_t lo=REAL_C(0.0),hi=REAL_C(0.0);
         if(b && body_geomnum[b])for(int j=0;j<body_geomnum[b];++j){
             const int g=body_geomadr[b]+j;
-            const double center=xpos[(w*ngeom+g)*3+k];
-            const double r=current_radius[w*ngeom+g];
-            const double l=__dadd_rd(center,-r),h=__dadd_ru(center,r);
+            const real_t center=xpos[(w*ngeom+g)*3+k];
+            const real_t r=current_radius[w*ngeom+g];
+            const real_t l=real_add_rd(center,-r),h=real_add_ru(center,r);
             nonfinite|=!isfinite(center) || !isfinite(r) || r<0 || !isfinite(l) || !isfinite(h);
             if(!j){lo=l;hi=h;}else{lo=fmin(lo,l);hi=fmax(hi,h);}
         }
@@ -185,7 +186,7 @@ __device__ inline void cf_temporal_bounds_block(int w,
             reason[w]=mode==1?0:(!cache_valid[w]?5:(escaped_all?6:7));
             status[w]=0;entered[w]=1;int total=0;
             for(int g=0;g<ngeom;++g)total+=geom_bodyid[g]!=0;count[w]=total;
-            for(int k=0;k<9;++k)frame[w*9+k]=(k%4==0)?1.0:0.0;
+            for(int k=0;k<9;++k)frame[w*9+k]=(k%4==0)?REAL_C(1.0):REAL_C(0.0);
             // Fast-profile PCA scratch has no consumer. Keep its existing
             // owner rather than writing a fictitious eigendecomposition.
         }
@@ -198,24 +199,24 @@ __device__ inline void cf_temporal_bounds_block(int w,
         return;
     }
     if(mode==2)for(int t=threadIdx.x;t<nbody*3;t+=blockDim.x){
-        const int b=t/3,k=t%3;const double lo=ab[6*b+2*k],hi=ab[6*b+2*k+1];
-        const double scale=fmax(1.0,fmax(fabs(lo),fabs(hi)));
-        const double pad=__dadd_ru(absolute_padding,__dmul_ru(relative_padding,scale));
-        fat_bounds[w*nbody*6+6*b+2*k]=fmax(-DBL_MAX,__dadd_rd(lo,-pad));
-        fat_bounds[w*nbody*6+6*b+2*k+1]=fmin(DBL_MAX,__dadd_ru(hi,pad));
+        const int b=t/3,k=t%3;const real_t lo=ab[6*b+2*k],hi=ab[6*b+2*k+1];
+        const real_t scale=fmax(REAL_C(1.0),fmax(fabs(lo),fabs(hi)));
+        const real_t pad=real_add_ru(absolute_padding,real_mul_ru(relative_padding,scale));
+        fat_bounds[w*nbody*6+6*b+2*k]=fmax(-REAL_MAX,real_add_rd(lo,-pad));
+        fat_bounds[w*nbody*6+6*b+2*k+1]=fmin(REAL_MAX,real_add_ru(hi,pad));
     }
     __syncthreads();
 }
 // Static pairs are sorted by original packed body key. Both refresh and hit
 // preserve this order; stagebuild still performs original explicit merges.
 __device__ inline void cf_temporal_broadphase_block(int w,
-    const double* aabb,const int* active,const int* gates,const int* collision_mode,
+    const real_t* aabb,const int* active,const int* gates,const int* collision_mode,
     const int* body_weldid,const int* body_parentid,const int* body_geomadr,
     const int* body_geomnum,const int* geom_bodyid,const int* geom_type,
     const int* geom_contype,const int* geom_conaffinity,const int* can,const int* plane,
     const int* filterparent_disabled,int* out_pair,int* out_npair,int* status,
     float* sortbuf,int* sorttag,int* activebuf,int nbody,int pair_capacity,
-    const int* static_pair,const int* static_global,int static_count,const double* fat_bounds,
+    const int* static_pair,const int* static_global,int static_count,const real_t* fat_bounds,
     int* cache_pair,int* cache_global,int* cache_count,int* cache_valid,const int* cache_mode,
     int* cache_age,int* flags,int* prefix,int64_t* hit_count,int64_t* refresh_count) {
     __shared__ int n,overflow;
@@ -227,7 +228,7 @@ __device__ inline void cf_temporal_broadphase_block(int w,
     }
     int* f=flags+w*static_count;int* p=prefix+w*(static_count+1);
     if(cache_mode[w]==2){
-        const double* fat=fat_bounds+w*nbody*6;
+        const real_t* fat=fat_bounds+w*nbody*6;
         for(int i=threadIdx.x;i<static_count;i+=blockDim.x){
             const int key=static_pair[i],b1=(key>>16)&65535,b2=key&65535;
             f[i]=static_global[i] || cf_temporal_overlap(fat,b1,b2);
@@ -243,7 +244,7 @@ __device__ inline void cf_temporal_broadphase_block(int w,
     }
     if(threadIdx.x==0)n=cache_count[w];
     __syncthreads();
-    const double* ab=aabb+w*nbody*6;
+    const real_t* ab=aabb+w*nbody*6;
     for(int i=threadIdx.x;i<n;i+=blockDim.x){
         const int key=cache_pair[w*static_count+i],b1=(key>>16)&65535,b2=key&65535;
         f[i]=cache_global[w*static_count+i] || cf_temporal_overlap(ab,b1,b2);

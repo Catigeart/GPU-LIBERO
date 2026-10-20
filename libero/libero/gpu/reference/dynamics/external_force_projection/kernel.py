@@ -5,6 +5,7 @@ zero-body skip, row order in mju_mulMatTVec, and force-before-torque additions.
 The input boundary is xipos/subtree_com/cdof, never a CPU Jacobian or qforce.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -79,19 +80,19 @@ class StaticTopology:
 
 
 @wp.kernel(enable_backward=False)
-def _project(seed: wp.array(dtype=wp.float64, ndim=2),
-             xfrc: wp.array(dtype=wp.float64, ndim=3),
-             xipos: wp.array(dtype=wp.float64, ndim=3),
-             subtree_com: wp.array(dtype=wp.float64, ndim=3),
-             cdof: wp.array(dtype=wp.float64, ndim=3),
+def _project(seed: wp.array(dtype=scalar.wp_real, ndim=2),
+             xfrc: wp.array(dtype=scalar.wp_real, ndim=3),
+             xipos: wp.array(dtype=scalar.wp_real, ndim=3),
+             subtree_com: wp.array(dtype=scalar.wp_real, ndim=3),
+             cdof: wp.array(dtype=scalar.wp_real, ndim=3),
              body_ids: wp.array(dtype=wp.int32, ndim=2),
              body_count: wp.array(dtype=wp.int32),
              active: wp.array(dtype=wp.int32),
              body_rootid: wp.array(dtype=wp.int32),
              ancestor: wp.array(dtype=wp.int32, ndim=2),
-             scratch: wp.array(dtype=wp.float64, ndim=2),
-             stages: wp.array(dtype=wp.float64, ndim=4),
-             qfrc: wp.array(dtype=wp.float64, ndim=2),
+             scratch: wp.array(dtype=scalar.wp_real, ndim=2),
+             stages: wp.array(dtype=scalar.wp_real, ndim=4),
+             qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
              status: wp.array(dtype=wp.int32),
              nbody: int, nv: int, diagnostic: int):
     w = wp.tid()
@@ -120,7 +121,7 @@ def _project(seed: wp.array(dtype=wp.float64, ndim=2),
     for body in range(1, nbody):
         nonzero = False
         for k in range(6):
-            if xfrc[w, body, k] != wp.float64(0.0):
+            if xfrc[w, body, k] != scalar.wp_real(0.0):
                 nonzero = True
         if nonzero:
             root = body_rootid[body]
@@ -142,7 +143,7 @@ def _project(seed: wp.array(dtype=wp.float64, ndim=2),
     for body in range(1, nbody):
         nonzero = False
         for k in range(6):
-            if xfrc[w, body, k] != wp.float64(0.0):
+            if xfrc[w, body, k] != scalar.wp_real(0.0):
                 nonzero = True
         if not nonzero:
             continue
@@ -154,12 +155,12 @@ def _project(seed: wp.array(dtype=wp.float64, ndim=2),
             status[w] = STATUS_ARITHMETIC
             return
         for j in range(nv):
-            jp0 = wp.float64(0.0)
-            jp1 = wp.float64(0.0)
-            jp2 = wp.float64(0.0)
-            jr0 = wp.float64(0.0)
-            jr1 = wp.float64(0.0)
-            jr2 = wp.float64(0.0)
+            jp0 = scalar.wp_real(0.0)
+            jp1 = scalar.wp_real(0.0)
+            jp2 = scalar.wp_real(0.0)
+            jr0 = scalar.wp_real(0.0)
+            jr1 = scalar.wp_real(0.0)
+            jr2 = scalar.wp_real(0.0)
             if ancestor[body, j] != 0:
                 jr0 = cdof[w, j, 0]
                 jr1 = cdof[w, j, 1]
@@ -182,12 +183,12 @@ def _project(seed: wp.array(dtype=wp.float64, ndim=2),
                 stages[w, body, 8, j] = jr2
             # mju_mulMatTVec zeros qforce and skips exactly-zero rows.  Its
             # row reductions are independent for each DOF, so DOF is outer.
-            force = wp.float64(0.0)
-            if xfrc[w, body, 0] != wp.float64(0.0):
+            force = scalar.wp_real(0.0)
+            if xfrc[w, body, 0] != scalar.wp_real(0.0):
                 force = force + jp0*xfrc[w, body, 0]
-            if xfrc[w, body, 1] != wp.float64(0.0):
+            if xfrc[w, body, 1] != scalar.wp_real(0.0):
                 force = force + jp1*xfrc[w, body, 1]
-            if xfrc[w, body, 2] != wp.float64(0.0):
+            if xfrc[w, body, 2] != scalar.wp_real(0.0):
                 force = force + jp2*xfrc[w, body, 2]
             if not wp.isfinite(force):
                 status[w] = STATUS_ARITHMETIC
@@ -199,12 +200,12 @@ def _project(seed: wp.array(dtype=wp.float64, ndim=2),
             if diagnostic != 0:
                 stages[w, body, 9, j] = force
                 stages[w, body, 10, j] = scratch[w, j]
-            torque = wp.float64(0.0)
-            if xfrc[w, body, 3] != wp.float64(0.0):
+            torque = scalar.wp_real(0.0)
+            if xfrc[w, body, 3] != scalar.wp_real(0.0):
                 torque = torque + jr0*xfrc[w, body, 3]
-            if xfrc[w, body, 4] != wp.float64(0.0):
+            if xfrc[w, body, 4] != scalar.wp_real(0.0):
                 torque = torque + jr1*xfrc[w, body, 4]
-            if xfrc[w, body, 5] != wp.float64(0.0):
+            if xfrc[w, body, 5] != scalar.wp_real(0.0):
                 torque = torque + jr2*xfrc[w, body, 5]
             if not wp.isfinite(torque):
                 status[w] = STATUS_ARITHMETIC
@@ -235,7 +236,7 @@ class ExternalForceWorkspace:
         self.nv = topology.nv
         self.diagnostic = bool(diagnostic)
         N, B, V = nworld, self.nbody, self.nv
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         self.body_rootid = wp.array(topology.fields['body_rootid'], dtype=I, device=self.device)
         self.ancestor_mask = wp.array(topology.ancestor_mask, dtype=I, device=self.device)
         self.seed_qfrc = wp.empty((N, V), dtype=F, device=self.device)

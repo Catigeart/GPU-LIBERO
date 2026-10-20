@@ -1,15 +1,16 @@
+#include <precision.cuh>
 // Private SoA-to-original-C adapter. Every query runs entirely on device.
 #include "native_source.cuh"
-static_assert(sizeof(double)==8 && sizeof(float)==4 && sizeof(int)==4,"dtype ABI");
-static_assert(sizeof(mjContact)==104 && offsetof(mjContact,frame)==32,"private contact layout");
+static_assert(sizeof(real_t)==FLASH_REAL_BITS/8 && sizeof(float)==4 && sizeof(int)==4,"dtype ABI");
+static_assert(sizeof(mjContact)==13*sizeof(real_t) && offsetof(mjContact,frame)==4*sizeof(real_t),"private contact layout");
 // This private struct is an adapter, not the native MuJoCo mjContact ABI.
 __global__ void native_kernel(
- const int* cg1,const int* cg2,const int* ct1,const int* ct2,const double* margin,
- const int* counts,const int* active,const double* xpos,const double* xmat,
- const double* size,const double* rbound,const int* dataid,
+ const int* cg1,const int* cg2,const int* ct1,const int* ct2,const real_t* margin,
+ const int* counts,const int* active,const real_t* xpos,const real_t* xmat,
+ const real_t* size,const real_t* rbound,const int* dataid,
  const float* vert,const int* vertadr,const int* vertnum,const int* graphadr,const int* graph,
- int N,int P,int ngeom,int nmesh,int nvert,int ngraph,int maxiter,double tolerance,int multiccd,
- double* raw,int* out_count,int* status,int* diag,double* frame0,int* framewritten) {
+ int N,int P,int ngeom,int nmesh,int nvert,int ngraph,int maxiter,real_t tolerance,int multiccd,
+ real_t* raw,int* out_count,int* status,int* diag,real_t* frame0,int* framewritten) {
  const size_t first=(size_t)blockIdx.x*blockDim.x;
  const size_t total=(size_t)N*P;
  const size_t slots=first<total?(total-first<blockDim.x?total-first:blockDim.x):0;
@@ -29,7 +30,7 @@ __global__ void native_kernel(
  if(ta<5 || tb>7 || ta>tb)return;
  if(a<0 || b<0 || a>=ngeom || b>=ngeom || a==b){status[slot]=4;return;}
  int types[2]={ta,tb},ids[2]={dataid[a],dataid[b]};
- double sz[6],rb[2]={rbound[a],rbound[b]},pos[6],mat[18];
+ real_t sz[6],rb[2]={rbound[a],rbound[b]},pos[6],mat[18];
  for(int k=0;k<3;k++){sz[k]=size[3*a+k];sz[3+k]=size[3*b+k];
    pos[k]=xpos[3*(w*ngeom+a)+k];pos[3+k]=xpos[3*(w*ngeom+b)+k];}
  for(int k=0;k<9;k++){mat[k]=xmat[9*(w*ngeom+a)+k];mat[9+k]=xmat[9*(w*ngeom+b)+k];}
@@ -75,19 +76,19 @@ __global__ void native_kernel(
  out_count[slot]=n;
 }
 extern "C" int launch_native(
- const int* cg1,const int* cg2,const int* ct1,const int* ct2,const double* margin,
- const int* counts,const int* active,const double* xpos,const double* xmat,
- const double* size,const double* rbound,const int* dataid,
+ const int* cg1,const int* cg2,const int* ct1,const int* ct2,const real_t* margin,
+ const int* counts,const int* active,const real_t* xpos,const real_t* xmat,
+ const real_t* size,const real_t* rbound,const int* dataid,
  const float* vert,const int* vertadr,const int* vertnum,const int* graphadr,const int* graph,
- int N,int P,int ngeom,int nmesh,int nvert,int ngraph,int maxiter,double tolerance,int multiccd,
- double* raw,int* out_count,int* status,int* diag,double* frame0,int* framewritten,cudaStream_t stream) {
+ int N,int P,int ngeom,int nmesh,int nvert,int ngraph,int maxiter,real_t tolerance,int multiccd,
+ real_t* raw,int* out_count,int* status,int* diag,real_t* frame0,int* framewritten,cudaStream_t stream) {
  native_kernel<<<(N*P+63)/64,64,0,stream>>>(cg1,cg2,ct1,ct2,margin,counts,active,xpos,xmat,
    size,rbound,dataid,vert,vertadr,vertnum,graphadr,graph,N,P,ngeom,nmesh,nvert,ngraph,
    maxiter,tolerance,multiccd,raw,out_count,status,diag,frame0,framewritten);
  return (int)cudaGetLastError();
 }
 extern "C" int native_private_abi(int* sizes){
- sizes[0]=sizeof(double);sizes[1]=sizeof(float);sizes[2]=sizeof(int);
+ sizes[0]=sizeof(real_t);sizes[1]=sizeof(float);sizes[2]=sizeof(int);
  sizes[3]=sizeof(mjContact);sizes[4]=offsetof(mjContact,dist);
  sizes[5]=offsetof(mjContact,pos);sizes[6]=offsetof(mjContact,frame);
  return 7;

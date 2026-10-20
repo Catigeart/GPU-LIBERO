@@ -4,6 +4,7 @@ Original runtime callbacks retain their physical refresh boundary. CUDA groups
 replace arithmetic, gates, cache refresh, reset, durable copies and publication.
 No Warp arithmetic is generated or copied into these sources.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import inspect
@@ -88,8 +89,8 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     args=control_args(c,emit_diagnostics=emit_diagnostics)
     if fast:
         cache={"valid":wp.zeros(c.nworld,dtype=wp.int32,device=c.device),
-            "key":wp.zeros((c.nworld,91),dtype=wp.float64,device=c.device),
-            "data":wp.zeros((c.nworld,206),dtype=wp.float64,device=c.device),
+            "key":wp.zeros((c.nworld,91),dtype=scalar.wp_real,device=c.device),
+            "data":wp.zeros((c.nworld,206),dtype=scalar.wp_real,device=c.device),
             "ranks":wp.zeros((c.nworld,3),dtype=wp.int32,device=c.device),
             "hits":wp.zeros(c.nworld,dtype=wp.int32,device=c.device)}
         owner._cuda_osc_derived_cache=cache
@@ -159,7 +160,7 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     owner.enqueue=types.MethodType(enqueue,owner)
     init_mask=wp.empty(owner.capacity,dtype=wp.int32,device=owner.device)
     init_nu=getattr(c,'actual_nu',9)
-    init_ctrl=wp.empty((owner.capacity,init_nu),dtype=wp.float64,device=owner.device)
+    init_ctrl=wp.empty((owner.capacity,init_nu),dtype=scalar.wp_real,device=owner.device)
     init_args=[init_mask,owner.first_error,init_ctrl,owner.public['ctrl'],owner.valid,owner.written,owner.event]
     init_fn='osc_cuda::reset_public'
     if getattr(c,'robot_projection',False):init_fn='osc_robot_cuda::reset_public';init_args.append(init_nu)
@@ -168,7 +169,7 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
         from libero.gpu.host.runtime.dynamics.runtime_adapter import _array
         self.validate(stream)
         _array(mask,(self.capacity,),wp.int32,self.device)
-        _array(initial_ctrl,(self.capacity,init_nu),wp.float64,self.device)
+        _array(initial_ctrl,(self.capacity,init_nu),scalar.wp_real,self.device)
         wp.copy(init_mask,mask,stream=self.stream);wp.copy(init_ctrl,initial_ctrl,stream=self.stream)
         init_plan.launch(self.stream)
     owner.initialize_ctrl_from_reset=types.MethodType(initialize,owner)

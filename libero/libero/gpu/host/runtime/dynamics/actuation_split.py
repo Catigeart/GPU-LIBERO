@@ -9,6 +9,7 @@ borrowed fused implementation is a source/control reference; this module
 still requires the complete original native and device scientific gate.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 import numpy as np
@@ -23,29 +24,29 @@ STATUS_ARITHMETIC = 3
 
 
 @wp.kernel(enable_backward=False)
-def _force_stage(length: wp.array(dtype=wp.float64, ndim=2),
-                 moment: wp.array(dtype=wp.float64, ndim=3),
-                 velocity: wp.array(dtype=wp.float64, ndim=2),
-                 ctrl: wp.array(dtype=wp.float64, ndim=2),
+def _force_stage(length: wp.array(dtype=scalar.wp_real, ndim=2),
+                 moment: wp.array(dtype=scalar.wp_real, ndim=3),
+                 velocity: wp.array(dtype=scalar.wp_real, ndim=2),
+                 ctrl: wp.array(dtype=scalar.wp_real, ndim=2),
                  active: wp.array(dtype=wp.int32),
                  vel_status: wp.array(dtype=wp.int32),
-                 gain: wp.array(dtype=wp.float64),
-                 bias0: wp.array(dtype=wp.float64),
-                 bias1: wp.array(dtype=wp.float64),
-                 bias2: wp.array(dtype=wp.float64),
+                 gain: wp.array(dtype=scalar.wp_real),
+                 bias0: wp.array(dtype=scalar.wp_real),
+                 bias1: wp.array(dtype=scalar.wp_real),
+                 bias2: wp.array(dtype=scalar.wp_real),
                  bias_type: wp.array(dtype=wp.int32),
-                 ctrl_lo: wp.array(dtype=wp.float64),
-                 ctrl_hi: wp.array(dtype=wp.float64),
-                 force_lo: wp.array(dtype=wp.float64),
-                 force_hi: wp.array(dtype=wp.float64),
+                 ctrl_lo: wp.array(dtype=scalar.wp_real),
+                 ctrl_hi: wp.array(dtype=scalar.wp_real),
+                 force_lo: wp.array(dtype=scalar.wp_real),
+                 force_hi: wp.array(dtype=scalar.wp_real),
                  force_limited: wp.array(dtype=wp.int32),
                  disable_flags: wp.int32,
-                 force: wp.array(dtype=wp.float64, ndim=2),
-                 force_pre: wp.array(dtype=wp.float64, ndim=2),
-                 ctrl_used: wp.array(dtype=wp.float64, ndim=2),
+                 force: wp.array(dtype=scalar.wp_real, ndim=2),
+                 force_pre: wp.array(dtype=scalar.wp_real, ndim=2),
+                 ctrl_used: wp.array(dtype=scalar.wp_real, ndim=2),
                  ctrl_route: wp.array(dtype=wp.int32, ndim=2),
                  force_route: wp.array(dtype=wp.int32, ndim=2),
-                 qfrc_actuator: wp.array(dtype=wp.float64, ndim=2),
+                 qfrc_actuator: wp.array(dtype=scalar.wp_real, ndim=2),
                  status: wp.array(dtype=wp.int32),
                  warn_badctrl_count: wp.array(dtype=wp.int32),
                  warn_badctrl_lastinfo: wp.array(dtype=wp.int32),
@@ -56,11 +57,11 @@ def _force_stage(length: wp.array(dtype=wp.float64, ndim=2),
     warn_badctrl_count[w] = 0
     warn_badctrl_lastinfo[w] = -1
     for j in range(43):
-        qfrc_actuator[w, j] = wp.float64(0.0)
+        qfrc_actuator[w, j] = scalar.wp_real(0.0)
     for i in range(9):
-        force[w, i] = wp.float64(0.0)
-        force_pre[w, i] = wp.float64(0.0)
-        ctrl_used[w, i] = wp.float64(0.0)
+        force[w, i] = scalar.wp_real(0.0)
+        force_pre[w, i] = scalar.wp_real(0.0)
+        ctrl_used[w, i] = scalar.wp_real(0.0)
         ctrl_route[w, i] = 0
         force_route[w, i] = 0
     if active[w] == 0:
@@ -87,7 +88,7 @@ def _force_stage(length: wp.array(dtype=wp.float64, ndim=2),
             elif u > ctrl_hi[i]:
                 u = ctrl_hi[i]
                 ctrl_route[w, i] = 1
-        if bad_index < 0 and (u != u or u > wp.float64(1.0e10) or u < wp.float64(-1.0e10)):
+        if bad_index < 0 and (u != u or u > scalar.wp_real(1.0e10) or u < scalar.wp_real(-1.0e10)):
             bad_index = i
     if bad_index >= 0:
         warn_badctrl_count[w] = 1
@@ -99,7 +100,7 @@ def _force_stage(length: wp.array(dtype=wp.float64, ndim=2),
         warning_lastinfo[w] = bad_index
 
     for i in range(9):
-        u = wp.float64(0.0)
+        u = scalar.wp_real(0.0)
         if bad_index < 0:
             u = ctrl[w, i]
             if ctrl_route[w, i] == -1:
@@ -123,7 +124,7 @@ def _force_stage(length: wp.array(dtype=wp.float64, ndim=2),
     # mju_mulMatTVec: row order, skip exactly-zero force rows.
     for i in range(9):
         f = force[w, i]
-        if f != wp.float64(0.0):
+        if f != scalar.wp_real(0.0):
             for j in range(43):
                 qfrc_actuator[w, j] = qfrc_actuator[w, j] + moment[w, i, j] * f
     for j in range(43):
@@ -175,9 +176,9 @@ class ActuationForceWorkspace:
         }
         for name, arr in arrays.items():
             arr = np.ascontiguousarray(arr)
-            dtype = wp.int32 if arr.dtype == np.int32 else wp.float64
+            dtype = wp.int32 if arr.dtype == np.int32 else scalar.wp_real
             setattr(self, name, wp.array(arr, dtype=dtype, device=device))
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         self.ctrl = wp.zeros((capacity, 9), dtype=F, device=device)
         self.active = wp.zeros(capacity, dtype=I, device=device)
         self.force = wp.zeros((capacity, 9), dtype=F, device=device)

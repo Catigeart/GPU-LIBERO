@@ -3,6 +3,7 @@
 Only cold configuration and explicit action boundary use NumPy. Every controller
 history field participates in the enclosing adapter's successful-world commit.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 import math
 import numpy as np
@@ -84,9 +85,9 @@ class JointControllerWorkspace:
         damplim = _bounds(cfg.get("damping_ratio_limits", [0, 100]), n, "damping", unlimited)
         if np.any(kplim[0] < 0) or np.any(damplim[0] < 0): raise ValueError("nonnegative variable impedance gains required")
         params = np.concatenate([inlo, inhi, outlo, outhi, kp, kd, *target, *kplim, *damplim])
-        self.config = wp.array(params, dtype=wp.float64, device=self.device)
+        self.config = wp.array(params, dtype=scalar.wp_real, device=self.device)
         self.actuator_ids = wp.array(ids, dtype=wp.int32, device=self.device)
-        self.actuator_ranges = wp.array(ranges.reshape(-1), dtype=wp.float64, device=self.device)
+        self.actuator_ranges = wp.array(ranges.reshape(-1), dtype=scalar.wp_real, device=self.device)
         low, high = inlo, inhi
         if self.impedance == 1: low, high = np.r_[kplim[0], low], np.r_[kplim[1], high]
         if self.impedance == 2: low, high = np.r_[damplim[0], kplim[0], low], np.r_[damplim[1], kplim[1], high]
@@ -100,7 +101,7 @@ class JointControllerWorkspace:
             "derivative_ring":5*n,"history":4,"drive":n,"product":n,"gripper":max(1,self.ng),
             "ctrl":self.nu,"torques_raw":n,"gains":2*n,"ctrl_range":2*self.nu}
         for name,width in self.WIDTHS.items():
-            setattr(self,name,wp.zeros((self.nworld,width),dtype=wp.float64,device=self.device))
+            setattr(self,name,wp.zeros((self.nworld,width),dtype=scalar.wp_real,device=self.device))
         self.gains.assign(np.tile(np.r_[kp,kd],(self.nworld,1)))
         self.current_gains.assign(np.tile(np.r_[kp,kd],(self.nworld,1)))
         self.history.assign(np.tile([-1.,0.,0.,0.],(self.nworld,1)))
@@ -180,7 +181,7 @@ class RuntimeJointControllerAdapter(original.RuntimeControllerAdapter):
     def initialize_ctrl_from_reset(self,mask,initial_ctrl,*,stream=None):
         self.validate(stream);c=self.controller
         original._array(mask,(self.capacity,),wp.int32,self.device)
-        original._array(initial_ctrl,(self.capacity,c.nu),wp.float64,self.device)
+        original._array(initial_ctrl,(self.capacity,c.nu),scalar.wp_real,self.device)
         wp.copy(self.call_mask,mask,stream=self.stream)
         wp.copy(c.ctrl,initial_ctrl,stream=self.stream)
         self._reset_public.launch(self.stream)

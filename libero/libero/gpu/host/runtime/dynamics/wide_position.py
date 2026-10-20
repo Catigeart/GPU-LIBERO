@@ -1,4 +1,5 @@
 """Fresh full-angle position owners; original mass/frame kernels unchanged."""
+import libero.gpu.precision as scalar
 import hashlib
 from types import SimpleNamespace
 import numpy as np
@@ -49,7 +50,7 @@ class GenericWidePositionWorkspace(GenericPositionWorkspace):
         self.crb_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         self.mass_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         for name, width in (('subtree_com', nb*3), ('cinert', nb*10), ('cdof', nv*6), ('crb', nb*10)):
-            setattr(self, name, wp.zeros((capacity, width), dtype=wp.float64, device=self.device))
+            setattr(self, name, wp.zeros((capacity, width), dtype=scalar.wp_real, device=self.device))
         for name in ('compos_status', 'crb_status', 'first_stage', 'first_code', 'result_kind',
                      'mass_first_stage', 'mass_first_code', 'mass_result_kind'):
             setattr(self, name, wp.zeros(capacity, dtype=wp.int32, device=self.device))

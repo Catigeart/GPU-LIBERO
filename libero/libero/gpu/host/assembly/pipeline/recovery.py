@@ -5,6 +5,7 @@ root reset launches remain unchanged; only its final warning stage shares a
 launch with the following runtime epoch protocol. Conditional forward and
 event snapshots retain their original producer/consumer boundaries.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 from libero.gpu.host.runtime.dynamics import recovery as data
 from libero.gpu.host.runtime.step import recovery_runtime_r02 as runtime
@@ -55,7 +56,7 @@ class FusedDataRecoveryWorkspace(data.DataRecoveryWorkspace):
         wp.launch(data._check, self.N, inputs=[self.views[field],self.active,self.reset_mask,
             self.reason,self.bad_index,self.source_error,self.catalog[field]["width"],warning],
             device=self.device,stream=stream)
-        kernels={wp.float64:data._reset_f64,wp.int32:data._reset_i32,wp.int64:data._reset_i64}
+        kernels={scalar.wp_real:data._reset_f64,wp.int32:data._reset_i32,wp.int64:data._reset_i64}
         for name,view in self.views.items():
             width=self.catalog[name]["width"]
             wp.launch(kernels[view.dtype],(self.N,width),inputs=[view,self.defaults[name],self.reset_mask,width],

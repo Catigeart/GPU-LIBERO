@@ -4,6 +4,7 @@ Cold ModelSpec identity and owner remain validated by the existing installer.
 Live finite/status/error/held guards remain in the original or tested CUDA leaf.
 The known table records measured domains, not a new mathematical admission.
 """
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 from types import SimpleNamespace
 import numpy as np
@@ -99,7 +100,7 @@ def prepare_selection(adapter,domains,wp,dataflow_profile):
         scalar_support='scalar_support' in features,fluid_parallel_payload='fluid_parallel_payload' in features,
         fused_rne_finite='fused_rne_finite' in features)
     if state.fluid_parallel_payload:
-        state.payload=wp.zeros((adapter.capacity,adapter.nbody,9),dtype=wp.float64,device=adapter.device)
+        state.payload=wp.zeros((adapter.capacity,adapter.nbody,9),dtype=scalar.wp_real,device=adapter.device)
         state.payload_ok=wp.zeros((adapter.capacity,adapter.nbody),dtype=wp.int32,device=adapter.device)
     state.tokens={key:(value.ptr,value.shape,value.dtype,value.device) for key,value in vars(state).items() if isinstance(value,wp.array)}
     adapter.cuda_selected_local=state
@@ -147,6 +148,6 @@ def allocate_selected_cold_stage(wp,nv,nbody,worlds,device,*,domain=None,model_s
         if bounded and getattr(device,'arch',None)!=120:
             raise ValueError('positive cold allocation measurement requires the tested SM120 device')
     shape=(worlds,1,1) if bounded else (worlds,nbody,33+7*nv)
-    stage=wp.zeros(shape,dtype=wp.float64,device=device)
+    stage=wp.zeros(shape,dtype=scalar.wp_real,device=device)
     return SimpleNamespace(stages=stage,profile='bounded' if bounded else 'full',
         owns_bytes=int(np.prod(shape))*8,cold_allocation_only=True,hot_binding_qualified=False)

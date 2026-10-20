@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include "newton_types.cuh"
 #include "newton_shared_layout.cuh"
@@ -64,7 +65,7 @@ struct NewtonControl {
     real_count
   };
   int integers[integer_count];
-  double reals[real_count];
+  real_t reals[real_count];
   int64_t expected;
 #if defined(__CUDACC__)
 #define CF_NEWTON_HD __host__ __device__
@@ -110,17 +111,17 @@ struct NewtonControl {
   CF_NEWTON_HD int &diagnostic() { return integers[slot_diagnostic]; }
   CF_NEWTON_HD int &invariant_valid() { return integers[slot_invariant_valid]; }
   CF_NEWTON_HD int &changed_count() { return integers[slot_changed_count]; }
-  CF_NEWTON_HD double &cost() { return reals[slot_cost]; }
-  CF_NEWTON_HD double &quad0() { return reals[slot_quad0]; }
-  CF_NEWTON_HD double &warm_cost() { return reals[slot_warm_cost]; }
-  CF_NEWTON_HD double &smooth_cost() { return reals[slot_smooth_cost]; }
-  CF_NEWTON_HD double &meaninertia() { return reals[slot_meaninertia]; }
-  CF_NEWTON_HD double &tolerance() { return reals[slot_tolerance]; }
-  CF_NEWTON_HD double &slope() { return reals[slot_slope]; }
-  CF_NEWTON_HD double &alpha() { return reals[slot_alpha]; }
-  CF_NEWTON_HD double &oldcost() { return reals[slot_oldcost]; }
-  CF_NEWTON_HD double &out_improvement() { return reals[slot_out_improvement]; }
-  CF_NEWTON_HD double &out_gradient() { return reals[slot_out_gradient]; }
+  CF_NEWTON_HD real_t &cost() { return reals[slot_cost]; }
+  CF_NEWTON_HD real_t &quad0() { return reals[slot_quad0]; }
+  CF_NEWTON_HD real_t &warm_cost() { return reals[slot_warm_cost]; }
+  CF_NEWTON_HD real_t &smooth_cost() { return reals[slot_smooth_cost]; }
+  CF_NEWTON_HD real_t &meaninertia() { return reals[slot_meaninertia]; }
+  CF_NEWTON_HD real_t &tolerance() { return reals[slot_tolerance]; }
+  CF_NEWTON_HD real_t &slope() { return reals[slot_slope]; }
+  CF_NEWTON_HD real_t &alpha() { return reals[slot_alpha]; }
+  CF_NEWTON_HD real_t &oldcost() { return reals[slot_oldcost]; }
+  CF_NEWTON_HD real_t &out_improvement() { return reals[slot_out_improvement]; }
+  CF_NEWTON_HD real_t &out_gradient() { return reals[slot_out_gradient]; }
 #undef CF_NEWTON_HD
 };
 // This POD describes the uniform scalar region only. It owns no allocation,

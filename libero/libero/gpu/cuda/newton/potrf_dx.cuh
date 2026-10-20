@@ -1,13 +1,14 @@
+#include "precision.cuh"
 #include "io_policy.cuh"
 // Collective FP64 Cholesky, embedded in the persistent Newton block.
 // All block threads must enter every function in this file together.
 #pragma once
 // The device bridge and caller both use FMA-enabled arithmetic.
-extern __device__ void dx_potrf_nv(double*, int*);
-extern __device__ void dx_potrf_1(double*, int*);
-extern __device__ void dx_potrf_3(double*, int*);
-extern __device__ void dx_potrf_4(double*, int*);
-extern __device__ void dx_potrf_6(double*, int*);
+extern __device__ void dx_potrf_nv(real_t*, int*);
+extern __device__ void dx_potrf_1(real_t*, int*);
+extern __device__ void dx_potrf_3(real_t*, int*);
+extern __device__ void dx_potrf_4(real_t*, int*);
+extern __device__ void dx_potrf_6(real_t*, int*);
 #ifndef LIBERO_CONE_HESSIAN_STRATEGY
 #define LIBERO_CONE_HESSIAN_STRATEGY 0
 #endif
@@ -22,8 +23,8 @@ extern __device__ void dx_potrf_6(double*, int*);
 #endif
 #if LIBERO_NEWTON_ISLANDS
 namespace libero_islands {
-__device__ bool factor(double*,double*,int*,const double*,const int*,int,
-    const int*,const int*,const double*,const int*,const int*,const int*,int*);
+__device__ bool factor(real_t*,real_t*,int*,const real_t*,const int*,int,
+    const int*,const int*,const real_t*,const int*,const int*,const int*,int*);
 }
 #endif
 
@@ -34,7 +35,7 @@ __device__ inline bool factor_any_bad(bool bad) {
 }
 
 template<int N>
-__device__ void block_potrf(double* H, double* temporary, int* diagnostic) {
+__device__ void block_potrf(real_t* H, real_t* temporary, int* diagnostic) {
     __shared__ int info;
     __shared__ int use_source;
 
@@ -62,8 +63,8 @@ __device__ void block_potrf(double* H, double* temporary, int* diagnostic) {
         // such regularization, even for positive but tiny pivots.
         if constexpr (N != NV || N <= 6) {
             for (int j = 0; j < N && !use_source; ++j) {
-                double d = temporary[j*N+j];
-                if (!isfinite(d) || d*d < 1e-15) use_source = 1;
+                real_t d = temporary[j*N+j];
+                if (!isfinite(d) || d*d < REAL_C(1e-15)) use_source = 1;
             }
         }
     }
@@ -72,8 +73,8 @@ __device__ void block_potrf(double* H, double* temporary, int* diagnostic) {
         bool bad = false;
         if (!use_source) {
             for (int j = threadIdx.x; j < N; j += blockDim.x) {
-                const double d = temporary[j*N+j];
-                bad |= !isfinite(d) || d*d < 1e-15;
+                const real_t d = temporary[j*N+j];
+                bad |= !isfinite(d) || d*d < REAL_C(1e-15);
             }
         }
         const bool bad_pivot = factor_any_bad(bad);
@@ -99,7 +100,7 @@ __device__ void block_potrf(double* H, double* temporary, int* diagnostic) {
     __syncthreads();
 }
 
-__device__ void local_potrf(int n, double* H, double* temporary, int* diagnostic) {
+__device__ void local_potrf(int n, real_t* H, real_t* temporary, int* diagnostic) {
     // Contact dimensionality is a runtime value; descriptors are compile-time.
     switch (n) {
         case 1: block_potrf<1>(H, temporary, diagnostic); break;
@@ -109,8 +110,8 @@ __device__ void local_potrf(int n, double* H, double* temporary, int* diagnostic
     }
 }
 
-__device__ bool hessian_potrf_dispatch_dx(double* H,double* temporary,int* diagnostic,
-    double* J,int* state,int count,int* id,int* dim,double* qm,int* madr,
+__device__ bool hessian_potrf_dispatch_dx(real_t* H,real_t* temporary,int* diagnostic,
+    real_t* J,int* state,int count,int* id,int* dim,real_t* qm,int* madr,
     int* parent,int* simple,int* islands_diagnostic) {
 #if LIBERO_NEWTON_ISLANDS
     // factor owns both exact-block admission and its complete dense fallback.
@@ -128,9 +129,9 @@ __device__ bool hessian_potrf_dispatch_dx(double* H,double* temporary,int* diagn
 
 #if LIBERO_HESSIAN_BLAS
 __device__ void hessian_cone_batch_dx(int* count,int* state,int* id,int* dim,
-    double* contact_H,double* J,double* H,double* HC,double* local,double* ltj,
-    int* nupdate,double* temporary,int* diagnostic,int* blas_diagnostic,
-    double* pending,int* algorithm_diagnostic,double* qm,int* madr,int* parent,
+    real_t* contact_H,real_t* J,real_t* H,real_t* HC,real_t* local,real_t* ltj,
+    int* nupdate,real_t* temporary,int* diagnostic,int* blas_diagnostic,
+    real_t* pending,int* algorithm_diagnostic,real_t* qm,int* madr,int* parent,
     int* simple,int* islands_diagnostic,int* factor_status) {
     // H remains the quadratic/base factor. The final HC lower factor is built
     // from exactly that effective base and the same regularized contact factors.
@@ -169,11 +170,11 @@ __device__ void hessian_cone_batch_dx(int* count,int* state,int* id,int* dim,
 #endif
 
 __device__ void hessian_cone_dx(int rows, int contacts, int* count, int* state,
-    int* id, int* dim, double* contact_H, double* J, double* H, double* HC,
-    double* local, double* ltj, double* vec, int* nupdate,
-    double* temporary, int* diagnostic,int* blas_diagnostic=nullptr,
-    double* pending=nullptr,int* algorithm_diagnostic=nullptr,
-    double* qm=nullptr,int* madr=nullptr,int* parent=nullptr,int* simple=nullptr,
+    int* id, int* dim, real_t* contact_H, real_t* J, real_t* H, real_t* HC,
+    real_t* local, real_t* ltj, real_t* vec, int* nupdate,
+    real_t* temporary, int* diagnostic,int* blas_diagnostic=nullptr,
+    real_t* pending=nullptr,int* algorithm_diagnostic=nullptr,
+    real_t* qm=nullptr,int* madr=nullptr,int* parent=nullptr,int* simple=nullptr,
     int* islands_diagnostic=nullptr,int* factor_status=nullptr) {
 #if LIBERO_HESSIAN_BLAS && LIBERO_CONE_HESSIAN_STRATEGY != 0
     int ranks=0;
@@ -213,10 +214,10 @@ __device__ void hessian_cone_dx(int rows, int contacts, int* count, int* state,
 #endif
         if (threadIdx.x == 0) {
 #if !LIBERO_HESSIAN_BLAS
-            for (int z = 0; z < d*NV; ++z) ltj[z] = 0.0;
+            for (int z = 0; z < d*NV; ++z) ltj[z] = REAL_C(0.0);
             for (int r = 0; r < d; ++r)
                 for (int c0 = 0; c0 <= r; ++c0) {
-                    double s = local[r*d+c0];
+                    real_t s = local[r*d+c0];
                     for (int k = 0; k < NV; ++k)
                         ltj[c0*NV+k] += J[(i+r)*NV+k]*s;
                 }
@@ -253,14 +254,14 @@ __device__ void hessian_cone_dx(int rows, int contacts, int* count, int* state,
 }
 
 __device__ void hessian_factor_update_dx(int w, int* count, int* ncon,
-    int* active, int* kind, double* J, double* D, int* state, int* oldstate,
-    double* qm, int* madr, int* parent, int* simple, int* id, int* dim,
-    double* contact_H, int* ncone, double* H, double* HC, int* nnz,
-    int* nupdate, double* local, double* ltj, double* vec, int* status,
-    int* route, int rows, int contacts, double* temporary, int* diagnostic,
-    int* blas_diagnostic=nullptr,double* pending=nullptr,
+    int* active, int* kind, real_t* J, real_t* D, int* state, int* oldstate,
+    real_t* qm, int* madr, int* parent, int* simple, int* id, int* dim,
+    real_t* contact_H, int* ncone, real_t* H, real_t* HC, int* nnz,
+    int* nupdate, real_t* local, real_t* ltj, real_t* vec, int* status,
+    int* route, int rows, int contacts, real_t* temporary, int* diagnostic,
+    int* blas_diagnostic=nullptr,real_t* pending=nullptr,
     int* algorithm_diagnostic=nullptr,int* islands_diagnostic=nullptr,
-    double* upper_backup=nullptr) {
+    real_t* upper_backup=nullptr) {
     // Python supplies per-world pointer views, so this collective uses w=0.
     if (!active[0] || status[0]) return;
     __shared__ int lost,forced,changed_rows;
@@ -305,7 +306,7 @@ __device__ void hessian_factor_update_dx(int w, int* count, int* ncon,
                 for (int r = 0; r < count[0]; ++r) {
                     const bool before = oldstate[r] == 1, after = state[r] == 1;
                     if (before == after) continue;
-                    const double s = sqrt(D[r]);
+                    const real_t s = sqrt(D[r]);
                     for (int j = 0; j < NV; ++j) vec[j] = J[r*NV+j]*s;
                     const int rank = chol_update(H, vec, after ? 1 : 0);
                     ++nupdate[0];
@@ -316,7 +317,7 @@ __device__ void hessian_factor_update_dx(int w, int* count, int* ncon,
             for (int r = 0; r < count[0]; ++r) {
                 const bool before = oldstate[r] == 1, after = state[r] == 1;
                 if (before == after) continue;
-                const double s = sqrt(D[r]);
+                const real_t s = sqrt(D[r]);
                 for (int j = threadIdx.x; j < NV; j += blockDim.x)
                     vec[j] = J[r*NV+j]*s;
                 __syncthreads();
@@ -357,7 +358,7 @@ __device__ void hessian_factor_update_dx(int w, int* count, int* ncon,
             for (int z = threadIdx.x; z < NV*NV; z += blockDim.x) {
                 int i = z/NV, j = z%NV;
                 if (j > i) continue;
-                double v = assembly_cell(0, i, j, rows, count, J, D, state,
+                real_t v = assembly_cell(0, i, j, rows, count, J, D, state,
                                           qm, madr, parent, simple);
                 H[z] = v;
                 if (i != j) H[j*NV+i] = v;

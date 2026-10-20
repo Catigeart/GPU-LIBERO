@@ -3,6 +3,7 @@
 Compilation/loading happen cold under the sole GPU runner. Cold bind retains
 owners and native argument boxes; hot launch changes no pointers/owners.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import ctypes as ct
@@ -93,7 +94,7 @@ class CooperativeRankModule:
         arrays=(data,vec,plus,active,status,rank)
         counts=(nworld*nv*nv,nworld*nv,nworld,nworld,nworld,nworld)
         for i,(array,count) in enumerate(zip(arrays,counts)):
-            dtype=wp.float64 if i<2 else wp.int32
+            dtype=scalar.wp_real if i<2 else wp.int32
             if array.dtype!=dtype or array.device!=self.device or array.ndim!=1 or array.size!=count or not array.is_contiguous:
                 raise ValueError('rank bound dtype/device/flat shape/contiguity')
         spans=[(int(x.ptr),int(x.ptr)+x.size*(8 if i<2 else 4)) for i,x in enumerate(arrays)]

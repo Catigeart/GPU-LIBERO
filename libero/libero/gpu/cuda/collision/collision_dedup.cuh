@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 
 // Exact coordinate grouping is a combinatorial operation: no tolerance, hash
@@ -7,20 +8,20 @@
 #endif
 
 namespace collision_cuda {
-__device__ __forceinline__ bool cf_raw_position_less(const double* raw,int a,int b){
+__device__ __forceinline__ bool cf_raw_position_less(const real_t* raw,int a,int b){
     for(int k=1;k<=3;++k){
-        const double x=raw[a*10+k],y=raw[b*10+k];
+        const real_t x=raw[a*10+k],y=raw[b*10+k];
         if(x<y)return true;
         if(y<x)return false;
     }
     // Finite inputs only. Numeric equality deliberately identifies +0/-0.
     return a<b;
 }
-__device__ __forceinline__ bool cf_raw_position_equal(const double* raw,int a,int b){
+__device__ __forceinline__ bool cf_raw_position_equal(const real_t* raw,int a,int b){
     return raw[a*10+1]==raw[b*10+1]&&raw[a*10+2]==raw[b*10+2]&&
            raw[a*10+3]==raw[b*10+3];
 }
-__device__ __forceinline__ void cf_raw_heap_sift(const double* raw,int* order,int root,int end){
+__device__ __forceinline__ void cf_raw_heap_sift(const real_t* raw,int* order,int root,int end){
     while(root*2+1<end){
         int child=root*2+1;
         if(child+1<end&&cf_raw_position_less(raw,order[child],order[child+1]))++child;
@@ -30,7 +31,7 @@ __device__ __forceinline__ void cf_raw_heap_sift(const double* raw,int* order,in
 }
 // Input has already passed the original validation of all 10 fields. Output
 // ordinals remain increasing; the greatest ordinal of each xyz group survives.
-__device__ __forceinline__ int cf_raw_keep_last(const double* raw,int nr,bool dedup,int* kept){
+__device__ __forceinline__ int cf_raw_keep_last(const real_t* raw,int nr,bool dedup,int* kept){
     if(!dedup){for(int r=0;r<nr;++r)kept[r]=r;return nr;}
     if(LIBERO_CF_DEDUP_SORT_MIN_RECORDS<=0||nr<LIBERO_CF_DEDUP_SORT_MIN_RECORDS){
         int out=0;

@@ -7,6 +7,7 @@ Only bounded Euler, observation and publication/count roots are copied here;
 large J/contact/history scratch stays excluded and is not used by same-step
 Euler. This opt-in installer leaves ordinary forward semantics unchanged.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from types import MethodType
@@ -24,7 +25,7 @@ def collect_roots(bundle):
     def add(name,a):
         if not isinstance(a,wp.array):return
         if not a.size:return
-        if a.dtype not in (wp.float64,wp.int32,wp.int64):return
+        if a.dtype not in (scalar.wp_real,wp.int32,wp.int64):return
         if not a.is_contiguous or a.device!=r.stream.device or a.size%W:
             raise ValueError('preservation needs exact contiguous world domain: '+name)
         # Public efc_force is committed only for admitted worlds. Its large
@@ -125,7 +126,7 @@ class ResetWorldPreserver:
             for name,a in self.roots:
                 if not a.size:continue
                 b=wp.zeros_like(a);self.snapshots.append(b)
-                kind={wp.float64:'f64',wp.int32:'i32',wp.int64:'i64'}[a.dtype]
+                kind={scalar.wp_real:'f64',wp.int32:'i32',wp.int64:'i64'}[a.dtype]
                 width=a.size//W
                 save.append(('reset_preservation::save_'+kind,[self.mask,a,b,width],'block'))
                 stage=('reset_preservation::restore_'+kind,[self.mask,a,b,width],'block')

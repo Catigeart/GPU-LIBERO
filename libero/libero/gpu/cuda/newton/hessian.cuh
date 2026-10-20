@@ -1,12 +1,13 @@
+#include "precision.cuh"
 #pragma once
-__device__ double assembly_cell(int w,int i,int j,int rows,int* count,double* J,double* D,int* state,
- double* qm,int* madr,int* parent,int* simple){
-  double s=0;for(int r=0;r<count[w];++r){int z=w*rows+r;
-    if(state[z]==1&&D[z]!=0){double v=J[z*NV+i];if(v!=0)s+=J[z*NV+j]*(v*D[z]);}}
+__device__ real_t assembly_cell(int w,int i,int j,int rows,int* count,real_t* J,real_t* D,int* state,
+ real_t* qm,int* madr,int* parent,int* simple){
+  real_t s=0;for(int r=0;r<count[w];++r){int z=w*rows+r;
+    if(state[z]==1&&D[z]!=0){real_t v=J[z*NV+i];if(v!=0)s+=J[z*NV+j]*(v*D[z]);}}
   int adr=mass_index(i,j,madr,parent,simple);if(adr>=0)s+=qm[w*NM+adr];return s;
 }
 __device__ void hessian_validate(int w,int* count,int* ncon,int* active,int* kind,int* state,int* oldstate,
- double* D,double* J,double* qm,double* H,int* id,int* dim,double* contact_H,int* ncone,int* nnz,int* status,int* route,int rows,int contacts,
+ real_t* D,real_t* J,real_t* qm,real_t* H,int* id,int* dim,real_t* contact_H,int* ncone,int* nnz,int* status,int* route,int rows,int contacts,
  int* invariant_valid=nullptr){
   status[w]=0;route[w]=0;if(!active[w])return;
   int k=kind[w],nr=count[w],nc=ncon[w],rb=w*rows;
@@ -35,7 +36,7 @@ __device__ void hessian_validate(int w,int* count,int* ncon,int* active,int* kin
 // All block threads enter; only the first full warp performs validation.
 // The caller must retain its stage barrier before consuming status/route.
 __device__ void hessian_validate_block(int w,int* count,int* ncon,int* active,int* kind,int* state,int* oldstate,
- double* D,double* J,double* qm,double* H,int* id,int* dim,double* contact_H,int* ncone,int* nnz,int* status,int* route,int rows,int contacts,
+ real_t* D,real_t* J,real_t* qm,real_t* H,int* id,int* dim,real_t* contact_H,int* ncone,int* nnz,int* status,int* route,int rows,int contacts,
  int* invariant_valid=nullptr){
   if(libero_warp::warp()!=0)return;
   const int lane=libero_warp::lane();
@@ -89,29 +90,29 @@ __device__ void hessian_validate_block(int w,int* count,int* ncon,int* active,in
   if(k==1)for(int j=lane;j<NM;j+=32)if(!isfinite(qm[w*NM+j]))bad=true;
   if(libero_warp::any(bad)&&lane==0)status[w]=4;
 }
-__device__ void hessian_assemble(int tid,int* count,int* active,int* kind,double* J,double* D,int* state,
- double* qm,int* madr,int* parent,int* simple,double* H,int* status,int rows){
+__device__ void hessian_assemble(int tid,int* count,int* active,int* kind,real_t* J,real_t* D,int* state,
+ real_t* qm,int* madr,int* parent,int* simple,real_t* H,int* status,int rows){
   int w=tid/(NV*NV),i=(tid/NV)%NV,j=tid%NV;
   if(!active[w]||kind[w]!=1||status[w]||j>i)return;
-  double v=assembly_cell(w,i,j,rows,count,J,D,state,qm,madr,parent,simple);
+  real_t v=assembly_cell(w,i,j,rows,count,J,D,state,qm,madr,parent,simple);
   H[w*NV*NV+i*NV+j]=v;if(i!=j)H[w*NV*NV+j*NV+i]=v;
 }
 __device__ void hessian_cone(int w,int rows,int contacts,int* count,int* state,int* id,int* dim,
- double* contact_H,double* J,double* H,double* HC,double* local,double* ltj,double* vec,int* nupdate){
+ real_t* contact_H,real_t* J,real_t* H,real_t* HC,real_t* local,real_t* ltj,real_t* vec,int* nupdate){
   int rb=w*rows;H+=w*NV*NV;HC+=w*NV*NV;local+=w*36;ltj+=w*6*NV;vec+=w*NV;
   for(int z=0;z<NV*NV;++z)HC[z]=H[z];
   for(int i=0;i<count[w];){if(state[rb+i]!=4){++i;continue;}int c=w*contacts+id[rb+i],d=dim[c];
     for(int z=0;z<d*d;++z)local[z]=contact_H[c*36+z];chol_factor(local,d,d);
-    for(int z=0;z<d*NV;++z)ltj[z]=0.0;
-    for(int r=0;r<d;++r)for(int c0=0;c0<=r;++c0){double s=local[r*d+c0];
+    for(int z=0;z<d*NV;++z)ltj[z]=REAL_C(0.0);
+    for(int r=0;r<d;++r)for(int c0=0;c0<=r;++c0){real_t s=local[r*d+c0];
       for(int k=0;k<NV;++k)ltj[c0*NV+k]+=J[(rb+i+r)*NV+k]*s;}
     for(int r=0;r<d;++r){for(int k=0;k<NV;++k)vec[k]=ltj[r*NV+k];chol_update(HC,vec,1);}
     nupdate[w]+=d;i+=d;
   }
 }
-__device__ void hessian_factor_update(int w,int* count,int* ncon,int* active,int* kind,double* J,double* D,
- int* state,int* oldstate,double* qm,int* madr,int* parent,int* simple,int* id,int* dim,double* contact_H,
- int* ncone,double* H,double* HC,int* nnz,int* nupdate,double* local,double* ltj,double* vec,int* status,int* route,int rows,int contacts){
+__device__ void hessian_factor_update(int w,int* count,int* ncon,int* active,int* kind,real_t* J,real_t* D,
+ int* state,int* oldstate,real_t* qm,int* madr,int* parent,int* simple,int* id,int* dim,real_t* contact_H,
+ int* ncone,real_t* H,real_t* HC,int* nnz,int* nupdate,real_t* local,real_t* ltj,real_t* vec,int* status,int* route,int rows,int contacts){
   if(!active[w]||status[w])return;int hb=w*NV*NV,vb=w*NV,k=kind[w];
   if(k==1){chol_factor(H+hb,NV,NV);nnz[w]=NV*NV;
     if(ncone[w]){nupdate[w]=0;hessian_cone(w,rows,contacts,count,state,id,dim,contact_H,J,H,HC,local,ltj,vec,nupdate);route[w]=2;}
@@ -119,7 +120,7 @@ __device__ void hessian_factor_update(int w,int* count,int* ncon,int* active,int
   }else if(k==2){hessian_cone(w,rows,contacts,count,state,id,dim,contact_H,J,H,HC,local,ltj,vec,nupdate);route[w]=6;}
   else{nupdate[w]=0;bool lost=false;
     for(int r=0;r<count[w];++r){int z=w*rows+r;bool before=oldstate[z]==1,after=state[z]==1;
-      if(before!=after){double s=sqrt(D[z]);for(int j=0;j<NV;++j)vec[vb+j]=J[z*NV+j]*s;
+      if(before!=after){real_t s=sqrt(D[z]);for(int j=0;j<NV;++j)vec[vb+j]=J[z*NV+j]*s;
         int rank=chol_update(H+hb,vec+vb,after?1:0);++nupdate[w];if(rank<NV){lost=true;break;}}
     }
     if(lost){for(int z=0;z<NM;++z)if(!isfinite(qm[w*NM+z])){status[w]=4;return;}
@@ -127,7 +128,7 @@ __device__ void hessian_factor_update(int w,int* count,int* ncon,int* active,int
         if(D[z]<0||!isfinite(D[z])){status[w]=4;return;}
         if(D[z]!=0)for(int j=0;j<NV;++j)if(!isfinite(J[z*NV+j])){status[w]=4;return;}
       }
-      for(int i=0;i<NV;++i)for(int j=0;j<=i;++j){double v=assembly_cell(w,i,j,rows,count,J,D,state,qm,madr,parent,simple);
+      for(int i=0;i<NV;++i)for(int j=0;j<=i;++j){real_t v=assembly_cell(w,i,j,rows,count,J,D,state,qm,madr,parent,simple);
         H[hb+i*NV+j]=v;if(i!=j)H[hb+j*NV+i]=v;}
       chol_factor(H+hb,NV,NV);nnz[w]=NV*NV;
       if(ncone[w]){nupdate[w]=0;hessian_cone(w,rows,contacts,count,state,id,dim,contact_H,J,H,HC,local,ltj,vec,nupdate);}
@@ -140,21 +141,21 @@ __device__ void hessian_factor_update(int w,int* count,int* ncon,int* active,int
     if(ncone[w]&&!isfinite(HC[hb+z])){status[w]=5;return;}
   }
 }
-__device__ void direction(int w,double* Ma,double* smooth,double* constraint,double* H,double* HC,
- int* ncone,int* nefc,int* active,int* upstream,double* grad,double* Mgrad,double* candidate,int* status,
- double* scratch_grad,double* x,double* fwd){
+__device__ void direction(int w,real_t* Ma,real_t* smooth,real_t* constraint,real_t* H,real_t* HC,
+ int* ncone,int* nefc,int* active,int* upstream,real_t* grad,real_t* Mgrad,real_t* candidate,int* status,
+ real_t* scratch_grad,real_t* x,real_t* fwd){
   if(upstream[w]){status[w]=upstream[w];return;}status[w]=0;if(!active[w])return;
   if(active[w]!=1){status[w]=1;return;}
   if(nefc[w]<0||ncone[w]<0||ncone[w]>nefc[w]){status[w]=2;return;}
-  double* L=(ncone[w]>0?HC:H)+w*NV*NV;int vb=w*NV;
+  real_t* L=(ncone[w]>0?HC:H)+w*NV*NV;int vb=w*NV;
   for(int i=0;i<NV;++i){if(!isfinite(Ma[vb+i])||!isfinite(smooth[vb+i])||!isfinite(constraint[vb+i])){status[w]=3;return;}
     for(int j=0;j<=i;++j)if(!isfinite(L[i*NV+j])){status[w]=3;return;}}
   for(int i=0;i<NV;++i)if(L[i*NV+i]==0){status[w]=4;return;}
-  for(int i=0;i<NV;++i){double v=(Ma[vb+i]-smooth[vb+i])-constraint[vb+i];if(!isfinite(v)){status[w]=5;return;}
+  for(int i=0;i<NV;++i){real_t v=(Ma[vb+i]-smooth[vb+i])-constraint[vb+i];if(!isfinite(v)){status[w]=5;return;}
     scratch_grad[vb+i]=v;x[vb+i]=v;}
-  for(int i=0;i<NV;++i){double v=x[vb+i];if(i)v-=dot4(L+i*NV,x+vb,i);v/=L[i*NV+i];
+  for(int i=0;i<NV;++i){real_t v=x[vb+i];if(i)v-=dot4(L+i*NV,x+vb,i);v/=L[i*NV+i];
     if(!isfinite(v)){status[w]=5;return;}x[vb+i]=v;fwd[vb+i]=v;}
-  for(int i=NV-1;i>=0;--i){double v=x[vb+i];for(int j=i+1;j<NV;++j)v-=L[j*NV+i]*x[vb+j];v/=L[i*NV+i];
+  for(int i=NV-1;i>=0;--i){real_t v=x[vb+i];for(int j=i+1;j<NV;++j)v-=L[j*NV+i]*x[vb+j];v/=L[i*NV+i];
     if(!isfinite(v)){status[w]=5;return;}x[vb+i]=v;}
-  for(int i=0;i<NV;++i){grad[vb+i]=scratch_grad[vb+i];Mgrad[vb+i]=x[vb+i];candidate[vb+i]=copysign(x[vb+i],-copysign(1.0,x[vb+i]));}
+  for(int i=0;i<NV;++i){grad[vb+i]=scratch_grad[vb+i];Mgrad[vb+i]=x[vb+i];candidate[vb+i]=copysign(x[vb+i],-copysign(REAL_C(1.0),x[vb+i]));}
 }

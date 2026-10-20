@@ -1,11 +1,12 @@
+#include "precision.cuh"
 // Direct CUDA port of MuJoCo 2.3.7 scalar collision mathematics.
 // Sources and notices: libero/libero/gpu/THIRD_PARTY_NOTICES.md.
 // Original Apache-2.0 notices remain below; no Warp-generated arithmetic.
 #pragma once
 #include "native/native_source.cuh"
-#define mjGETINFO const double* pos1=d->geom_xpos+3*g1; const double* pos2=d->geom_xpos+3*g2; const double* mat1=d->geom_xmat+9*g1; const double* mat2=d->geom_xmat+9*g2; const double* size1=m->geom_size+3*g1; const double* size2=m->geom_size+3*g2;
-__device__ double mju_clip(double a,double lo,double hi){return a<lo?lo:(a>hi?hi:a);}
-__device__ void mju_clampVec(double* a,const double* bound,int n){for(int i=0;i<n;i++)a[i]=mju_clip(a[i],-bound[i],bound[i]);}
+#define mjGETINFO const real_t* pos1=d->geom_xpos+3*g1; const real_t* pos2=d->geom_xpos+3*g2; const real_t* mat1=d->geom_xmat+9*g1; const real_t* mat2=d->geom_xmat+9*g2; const real_t* size1=m->geom_size+3*g1; const real_t* size2=m->geom_size+3*g2;
+__device__ real_t mju_clip(real_t a,real_t lo,real_t hi){return a<lo?lo:(a>hi?hi:a);}
+__device__ void mju_clampVec(real_t* a,const real_t* bound,int n){for(int i=0;i<n;i++)a[i]=mju_clip(a[i],-bound[i],bound[i]);}
 // Copyright 2021 DeepMind Technologies Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -152,7 +153,7 @@ __device__ int mjc_PlaneCylinder(const mjModel* m, const mjData* d,
     con[cnt].dist = dist0 + prjaxis + prjvec;
     mju_add3(con[cnt].pos, pos2, vec);
     mju_addTo3(con[cnt].pos, axis);
-    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*0.5);
+    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*REAL_C(0.5));
     mju_copy3(con[cnt].frame, normal);
     mju_zero3(con[cnt].frame+3);
     cnt++;
@@ -165,27 +166,27 @@ __device__ int mjc_PlaneCylinder(const mjModel* m, const mjData* d,
     con[cnt].dist = dist0 - prjaxis + prjvec;
     mju_add3(con[cnt].pos, pos2, vec);
     mju_subFrom3(con[cnt].pos, axis);
-    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*0.5);
+    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*REAL_C(0.5));
     mju_copy3(con[cnt].frame, normal);
     mju_zero3(con[cnt].frame+3);
     cnt++;
   }
 
   // try to add triangle points on side closer to plane
-  mjtNum prjvec1 = -prjvec*0.5;
+  mjtNum prjvec1 = -prjvec*REAL_C(0.5);
   if (dist0 + prjaxis + prjvec1 <= margin) {
     // compute sideways vector: vec1
     mjtNum vec1[3];
     mju_cross(vec1, vec, axis);
     mju_normalize3(vec1);
-    mju_scl3(vec1, vec1, size2[0]*mju_sqrt(3.0)/2);
+    mju_scl3(vec1, vec1, size2[0]*mju_sqrt(REAL_C(3.0))/2);
 
     // add point A
     con[cnt].dist = dist0 + prjaxis + prjvec1;
     mju_add3(con[cnt].pos, pos2, vec1);
     mju_addTo3(con[cnt].pos, axis);
-    mju_addToScl3(con[cnt].pos, vec, -0.5);
-    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*0.5);
+    mju_addToScl3(con[cnt].pos, vec, -REAL_C(0.5));
+    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*REAL_C(0.5));
     mju_copy3(con[cnt].frame, normal);
     mju_zero3(con[cnt].frame+3);
     cnt++;
@@ -194,8 +195,8 @@ __device__ int mjc_PlaneCylinder(const mjModel* m, const mjData* d,
     con[cnt].dist = dist0 + prjaxis + prjvec1;
     mju_sub3(con[cnt].pos, pos2, vec1);
     mju_addTo3(con[cnt].pos, axis);
-    mju_addToScl3(con[cnt].pos, vec, -0.5);
-    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*0.5);
+    mju_addToScl3(con[cnt].pos, vec, -REAL_C(0.5));
+    mju_addToScl3(con[cnt].pos, normal, -con[cnt].dist*REAL_C(0.5));
     mju_copy3(con[cnt].frame, normal);
     mju_zero3(con[cnt].frame+3);
     cnt++;
@@ -536,8 +537,8 @@ static __device__ int _SphereBox(mjContact* con, mjtNum mindist,
   } else {
     mju_addToScl3(deepest, tmp, size1[0]);
     mju_zero3(pos);
-    mju_addToScl3(pos, clamped, 0.5);
-    mju_addToScl3(pos, deepest, 0.5);
+    mju_addToScl3(pos, clamped, REAL_C(0.5));
+    mju_addToScl3(pos, deepest, REAL_C(0.5));
     mju_rotVecMat(con[0].frame, tmp, mat2);
   }
 
@@ -911,7 +912,7 @@ __device__ int mjc_CapsuleBox(const mjModel* m, const mjData* d, mjContact* con,
 
 
 
-    if (axis[ax]*axis[ax] > 0.5) {  // second point along the edge of the box
+    if (axis[ax]*axis[ax] > REAL_C(0.5)) {  // second point along the edge of the box
       secondpos = de;  // initial position from the
       e1 = 2 * size2[ax] / fabs(halfaxis[ax]);
 
@@ -1053,7 +1054,7 @@ skip:
 
   return n;
 }
-const int maxplanemesh = 3; const double tolplanemesh = 0.3;
+const int maxplanemesh = 3; const real_t tolplanemesh = REAL_C(0.3);
 static __device__ int addplanemesh(mjContact* con, const float vertex[3],
                         const mjtNum pos1[3], const mjtNum normal1[3],
                         const mjtNum pos2[3], const mjtNum mat2[9],
@@ -1077,7 +1078,7 @@ static __device__ int addplanemesh(mjContact* con, const float vertex[3],
 
   // set position
   mju_copy3(con->pos, pnt);
-  mju_addToScl3(con->pos, normal1, -0.5*con->dist);
+  mju_addToScl3(con->pos, normal1, -REAL_C(0.5)*con->dist);
 
   // set frame
   mju_copy3(con->frame, normal1);
@@ -1113,7 +1114,7 @@ __device__ int mjc_PlaneConvex(const mjModel* m, const mjData* d,
   // fill in contact data
   con->dist = dist;
   mju_copy3(con->pos, vec.v);
-  mju_addToScl3(con->pos, normal, -0.5*dist);
+  mju_addToScl3(con->pos, normal, -REAL_C(0.5)*dist);
   mju_copy3(con->frame, normal);
   mju_zero3(con->frame+3);
 
@@ -1211,7 +1212,7 @@ __device__ int mjc_PlaneConvex_warp(const mjModel* m,const mjData* d,
       if(dist>margin)result=0;
       else {
         con->dist=dist;mju_copy3(con->pos,vec.v);
-        mju_addToScl3(con->pos,normal,-0.5*dist);
+        mju_addToScl3(con->pos,normal,-REAL_C(0.5)*dist);
         mju_copy3(con->frame,normal);mju_zero3(con->frame+3);
       }
     }

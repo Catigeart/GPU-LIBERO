@@ -3,6 +3,7 @@
 No sensor is freshly evaluated during host packaging. CUDA execution/validation is
 scheduled externally. CPU Warp execution is useful only for independent testing.
 """
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 from .schema import pack_observations
@@ -11,17 +12,17 @@ from .packing_recipe import PackingRecipe
 wp.set_module_options({"enable_backward": False, "fast_math": False, "fuse_fp": True})
 
 @wp.func
-def rotation32(x: wp.float64, y: wp.float64, z: wp.float64, w: wp.float64):
+def rotation32(x: scalar.wp_real, y: scalar.wp_real, z: scalar.wp_real, w: scalar.wp_real):
     q = wp.vec4(wp.float32(w), wp.float32(x), wp.float32(y), wp.float32(z))
     n = wp.dot(q, q)
     result = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     if n >= wp.float32(4.0) * wp.float32(2.220446049250313e-16):
-        scale = wp.sqrt(wp.float64(2.0) / wp.float64(n))
-        q = wp.vec4(wp.float32(wp.float64(q[0])*scale), wp.float32(wp.float64(q[1])*scale),
-                    wp.float32(wp.float64(q[2])*scale), wp.float32(wp.float64(q[3])*scale))
-        result = wp.mat33(wp.float32(wp.float64(1.0)-wp.float64(q[2]*q[2])-wp.float64(q[3]*q[3])), q[1]*q[2]-q[3]*q[0], q[1]*q[3]+q[2]*q[0],
-                          q[1]*q[2]+q[3]*q[0], wp.float32(wp.float64(1.0)-wp.float64(q[1]*q[1])-wp.float64(q[3]*q[3])), q[2]*q[3]-q[1]*q[0],
-                          q[1]*q[3]-q[2]*q[0], q[2]*q[3]+q[1]*q[0], wp.float32(wp.float64(1.0)-wp.float64(q[1]*q[1])-wp.float64(q[2]*q[2])))
+        scale = wp.sqrt(scalar.wp_real(2.0) / scalar.wp_real(n))
+        q = wp.vec4(wp.float32(scalar.wp_real(q[0])*scale), wp.float32(scalar.wp_real(q[1])*scale),
+                    wp.float32(scalar.wp_real(q[2])*scale), wp.float32(scalar.wp_real(q[3])*scale))
+        result = wp.mat33(wp.float32(scalar.wp_real(1.0)-scalar.wp_real(q[2]*q[2])-scalar.wp_real(q[3]*q[3])), q[1]*q[2]-q[3]*q[0], q[1]*q[3]+q[2]*q[0],
+                          q[1]*q[2]+q[3]*q[0], wp.float32(scalar.wp_real(1.0)-scalar.wp_real(q[1]*q[1])-scalar.wp_real(q[3]*q[3])), q[2]*q[3]-q[1]*q[0],
+                          q[1]*q[3]-q[2]*q[0], q[2]*q[3]+q[1]*q[0], wp.float32(scalar.wp_real(1.0)-scalar.wp_real(q[1]*q[1])-scalar.wp_real(q[2]*q[2])))
     return result
 
 @wp.func
@@ -50,13 +51,13 @@ def update_kernel(
     op: wp.array(dtype=wp.int32), offsets: wp.array(dtype=wp.int32), sizes: wp.array(dtype=wp.int32),
     index_offsets: wp.array(dtype=wp.int32), indices: wp.array(dtype=wp.int32),
     dep0: wp.array(dtype=wp.int32), dep1: wp.array(dtype=wp.int32), dep2: wp.array(dtype=wp.int32),
-    presence_deps: wp.array(dtype=wp.int32), enabled: wp.array(dtype=wp.int32), periods: wp.array(dtype=wp.float64),
-    source: wp.array(dtype=wp.float64),
-    cache: wp.array(dtype=wp.float64), observed: wp.array(dtype=wp.float64),
-    sidequat: wp.array(dtype=wp.float64),
-    elapsed: wp.array(dtype=wp.float64), sampled: wp.array(dtype=wp.int32),
+    presence_deps: wp.array(dtype=wp.int32), enabled: wp.array(dtype=wp.int32), periods: wp.array(dtype=scalar.wp_real),
+    source: wp.array(dtype=scalar.wp_real),
+    cache: wp.array(dtype=scalar.wp_real), observed: wp.array(dtype=scalar.wp_real),
+    sidequat: wp.array(dtype=scalar.wp_real),
+    elapsed: wp.array(dtype=scalar.wp_real), sampled: wp.array(dtype=wp.int32),
     present: wp.array(dtype=wp.int32), world_mask: wp.array(dtype=wp.int32),
-    timestep: wp.float64, force: int, sampled_event: wp.array(dtype=wp.int32)):
+    timestep: scalar.wp_real, force: int, sampled_event: wp.array(dtype=wp.int32)):
     world = wp.tid()
     if world_mask[world] == 0: return
     b = world * width
@@ -74,7 +75,7 @@ def update_kernel(
                 d1 = b+dep1[s]
                 d2 = b+dep2[s]
                 for j in range(sizes[s]):
-                    value = wp.float64(0.0)
+                    value = scalar.wp_real(0.0)
                     if op[s] == 0:
                         value = source[world*source_stride+indices[index_offsets[s]+j]]
                     elif op[s] == 1:
@@ -86,16 +87,16 @@ def update_kernel(
                     # world_pose_in_gripper from already-sampled eef cache.
                     if present[sb+presence_deps[s*3+1]] == 0 or present[sb+presence_deps[s*3]] == 0:
                         for row in range(4):
-                            cache[at+row*4+row] = wp.float64(1.0)
+                            cache[at+row*4+row] = scalar.wp_real(1.0)
                     else:
                         r = rotation32(cache[d1], cache[d1+1], cache[d1+2], cache[d1+3])
                         for row in range(3):
-                            t = wp.float64(0.0)
+                            t = scalar.wp_real(0.0)
                             for col in range(3):
-                                cache[at+row*4+col] = wp.float64(r[col,row])
-                                t -= wp.float64(r[col,row]) * wp.float64(wp.float32(cache[d0+col]))
+                                cache[at+row*4+col] = scalar.wp_real(r[col,row])
+                                t -= scalar.wp_real(r[col,row]) * scalar.wp_real(wp.float32(cache[d0+col]))
                             cache[at+row*4+3] = t
-                        cache[at+15] = wp.float64(1.0)
+                        cache[at+15] = scalar.wp_real(1.0)
                 elif op[s] == 4:
                     if present[sb+presence_deps[s*3]] != 0 and present[sb+presence_deps[s*3+1]] != 0 and present[sb+presence_deps[s*3+2]] != 0:
                         # Object pose and inverse gripper pose are already cached.
@@ -104,13 +105,13 @@ def update_kernel(
                         for row in range(3):
                             t = cache[d2+row*4+3]
                             for col in range(3):
-                                t += cache[d2+row*4+col]*wp.float64(wp.float32(cache[d0+col]))
-                                v = wp.float64(0.0)
-                                for k in range(3): v += cache[d2+row*4+k] * wp.float64(ro[k,col])
+                                t += cache[d2+row*4+col]*scalar.wp_real(wp.float32(cache[d0+col]))
+                                v = scalar.wp_real(0.0)
+                                for k in range(3): v += cache[d2+row*4+k] * scalar.wp_real(ro[k,col])
                                 rr[row,col] = wp.float32(v)
                             cache[at+row] = t
                         q = matrix_quaternion32(rr)
-                        for j in range(4): sidequat[b+offsets[s]+j] = wp.float64(q[j])
+                        for j in range(4): sidequat[b+offsets[s]+j] = scalar.wp_real(q[j])
                 elif op[s] == 5:
                     if present[sb+presence_deps[s*3]] != 0:
                         for j in range(4): cache[at+j] = sidequat[d0+j]
@@ -124,18 +125,18 @@ def update_kernel(
 
 @wp.kernel
 def reset_kernel(nspec: int, width: int, mask: wp.array(dtype=wp.int32),
-                 elapsed: wp.array(dtype=wp.float64), present: wp.array(dtype=wp.int32),
-                 observed: wp.array(dtype=wp.float64), cache: wp.array(dtype=wp.float64), sidequat: wp.array(dtype=wp.float64)):
+                 elapsed: wp.array(dtype=scalar.wp_real), present: wp.array(dtype=wp.int32),
+                 observed: wp.array(dtype=scalar.wp_real), cache: wp.array(dtype=scalar.wp_real), sidequat: wp.array(dtype=scalar.wp_real)):
     world = wp.tid()
     if mask[world] == 0: return
     # Original Observable.reset does not clear _sampled; preserve this quirk.
     for s in range(nspec):
-        elapsed[world*nspec+s] = wp.float64(0.0)
+        elapsed[world*nspec+s] = scalar.wp_real(0.0)
         present[world*nspec+s] = 0
     for j in range(width):
-        observed[world*width+j] = wp.float64(0.0)
-        cache[world*width+j] = wp.float64(0.0)
-        sidequat[world*width+j] = wp.float64(0.0)
+        observed[world*width+j] = scalar.wp_real(0.0)
+        cache[world*width+j] = scalar.wp_real(0.0)
+        sidequat[world*width+j] = scalar.wp_real(0.0)
 
 class DeviceObservations:
     """Static plan plus persistent per-world buffers. No transfers in update().
@@ -183,12 +184,12 @@ class DeviceObservations:
         def ai(x): return wp.array(x,dtype=wp.int32,device=device)
         self.meta = [ai(ops),ai([offsets[s.name] for s in plan.specs]),ai([s.width for s in plan.specs]),
                      ai(ixoffs),ai(ix),ai(ds0),ai(ds1),ai(ds2),ai(presence_deps),ai([int(s.enabled) for s in plan.specs]),
-                     wp.array([s.period for s in plan.specs],dtype=wp.float64,device=device)]
+                     wp.array([s.period for s in plan.specs],dtype=scalar.wp_real,device=device)]
         total=nworld*plan.width; clocks=nworld*len(plan.specs)
-        self.cache=wp.zeros(total,dtype=wp.float64,device=device)
-        self.observed=wp.zeros(total,dtype=wp.float64,device=device)
-        self.sidequat=wp.zeros(total+4,dtype=wp.float64,device=device)
-        self.elapsed=wp.zeros(clocks,dtype=wp.float64,device=device)
+        self.cache=wp.zeros(total,dtype=scalar.wp_real,device=device)
+        self.observed=wp.zeros(total,dtype=scalar.wp_real,device=device)
+        self.sidequat=wp.zeros(total+4,dtype=scalar.wp_real,device=device)
+        self.elapsed=wp.zeros(clocks,dtype=scalar.wp_real,device=device)
         self.sampled=wp.zeros(clocks,dtype=wp.int32,device=device)
         self.present=wp.zeros(clocks,dtype=wp.int32,device=device)
         self.events=wp.zeros(clocks,dtype=wp.int32,device=device)
@@ -198,12 +199,12 @@ class DeviceObservations:
         if not np.isfinite(timestep) or timestep<=0:raise ValueError("sampling timestep must be positive finite")
         if world_mask is not None and (world_mask.dtype!=wp.int32 or world_mask.ndim!=1 or world_mask.size!=self.nworld or world_mask.device!=self.observed.device):
             raise ValueError("world mask must be a same-device int32 vector")
-        if source.dtype != wp.float64 or source.ndim!=1 or source.device!=self.observed.device or source.size != self.nworld*self.source_stride:
+        if source.dtype != scalar.wp_real or source.ndim!=1 or source.device!=self.observed.device or source.size != self.nworld*self.source_stride:
             raise ValueError("source must be flat FP64 with exact world stride")
         self.last_stream=(stream or wp.get_stream(self.device)) if self.observed.device.is_cuda else None
         wp.launch(update_kernel,dim=self.nworld,inputs=[len(self.plan.specs),self.plan.width,self.source_stride,
                   *self.meta,source,self.cache,self.observed,self.sidequat,self.elapsed,self.sampled,self.present,
-                  self.all_worlds if world_mask is None else world_mask,wp.float64(timestep),int(force),self.events],device=self.device,stream=stream)
+                  self.all_worlds if world_mask is None else world_mask,scalar.wp_real(timestep),int(force),self.events],device=self.device,stream=stream)
 
     def reset(self, world_mask=None, stream=None):
         self.last_stream=(stream or wp.get_stream(self.device)) if self.observed.device.is_cuda else None
@@ -228,13 +229,13 @@ class DeviceObservations:
         return pack_observations(self.plan, values, images=images)
 @wp.kernel
 def capture_scene_kernel(ncamera: int, scene_stride: int,
-                         source: wp.array(dtype=wp.float64), scene: wp.array(dtype=wp.float64),
-                         periods: wp.array(dtype=wp.float64), enabled: wp.array(dtype=wp.int32),
-                         elapsed: wp.array(dtype=wp.float64), sampled: wp.array(dtype=wp.int32),
+                         source: wp.array(dtype=scalar.wp_real), scene: wp.array(dtype=scalar.wp_real),
+                         periods: wp.array(dtype=scalar.wp_real), enabled: wp.array(dtype=wp.int32),
+                         elapsed: wp.array(dtype=scalar.wp_real), sampled: wp.array(dtype=wp.int32),
                          generation: wp.array(dtype=wp.int32), parents: wp.array(dtype=wp.int32),
                          parent_generation: wp.array(dtype=wp.int32), captured: wp.array(dtype=wp.int32),
                          mask: wp.array(dtype=wp.int32),
-                         timestep: wp.float64, force: int):
+                         timestep: scalar.wp_real, force: int):
     world=wp.tid()
     if mask[world]==0: return
     for camera in range(ncamera):
@@ -275,16 +276,16 @@ class DeviceSampledScenes:
         self.ncamera=len(image_specs)
         self.last_stream=None
         n=nworld*self.ncamera
-        self.periods=wp.array([s["period"] for s in image_specs],dtype=wp.float64,device=device)
+        self.periods=wp.array([s["period"] for s in image_specs],dtype=scalar.wp_real,device=device)
         self.enabled=wp.array([int(s["enabled"]) for s in image_specs],dtype=wp.int32,device=device)
-        self.elapsed=wp.zeros(n,dtype=wp.float64,device=device)
+        self.elapsed=wp.zeros(n,dtype=scalar.wp_real,device=device)
         self.sampled=wp.zeros(n,dtype=wp.int32,device=device)
         self.generation=wp.zeros(n,dtype=wp.int32,device=device)
         indexes={spec["name"]:i for i,spec in enumerate(image_specs)}
         self.parents=wp.array([indexes[camera+"_image"] if kind=="depth" else -1 for camera,kind in self.descriptors],dtype=wp.int32,device=device)
         self.parent_generation=wp.zeros(n,dtype=wp.int32,device=device)
         self.captured=wp.zeros(n,dtype=wp.int32,device=device)
-        self.scenes=wp.zeros(n*self.stride,dtype=wp.float64,device=device)
+        self.scenes=wp.zeros(n*self.stride,dtype=scalar.wp_real,device=device)
         self.mask=wp.array([1]*nworld,dtype=wp.int32,device=device)
         self.rendered_generation=np.zeros((nworld,self.ncamera),dtype=np.int32)
         self.images=[[np.zeros(tuple(s["shape"])) for s in self.specs] for _ in range(nworld)]
@@ -293,12 +294,12 @@ class DeviceSampledScenes:
         if not np.isfinite(timestep) or timestep<=0:raise ValueError("sampling timestep must be positive finite")
         if world_mask is not None and (world_mask.dtype!=wp.int32 or world_mask.ndim!=1 or world_mask.size!=self.nworld or world_mask.device!=self.scenes.device):
             raise ValueError("world mask must be a same-device int32 vector")
-        if source.dtype!=wp.float64 or source.ndim!=1 or source.device!=self.scenes.device or source.size!=self.nworld*self.stride:
+        if source.dtype!=scalar.wp_real or source.ndim!=1 or source.device!=self.scenes.device or source.size!=self.nworld*self.stride:
             raise ValueError("scene source must be flat FP64 with exact world stride")
         self.last_stream=(stream or wp.get_stream(self.device)) if self.scenes.device.is_cuda else None
         wp.launch(capture_scene_kernel,dim=self.nworld,inputs=[self.ncamera,self.stride,source,self.scenes,
                   self.periods,self.enabled,self.elapsed,self.sampled,self.generation,self.parents,self.parent_generation,self.captured,
-                  self.mask if world_mask is None else world_mask,wp.float64(timestep),int(force)],device=self.device,stream=stream)
+                  self.mask if world_mask is None else world_mask,scalar.wp_real(timestep),int(force)],device=self.device,stream=stream)
 
     def render_at_boundary(self,bridge,world=0,image_convention="opengl",scene_option=None, *, snapshot=None):
         from .sampled_images import render_sampled_images

@@ -6,6 +6,7 @@ checked by the qualified omitted-column guard on every group invocation. Any
 count change uses the complete original dense reference. No production default
 selects this module. Imports are CPU-only; caller creates NativePlan explicitly.
 """
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 import hashlib
 import json
@@ -80,11 +81,11 @@ def extract_function(source, declaration):
 
 
 GATE_NAMES=('active','status','committed','counts','qvel','epoch','expected','ready','rows','nv')
-GATE_TYPES=('const int32_t*','int32_t*','int32_t*','const int32_t*','const double*','const int64_t*','const int64_t*','int32_t*','int32_t','int32_t')
+GATE_TYPES=('const int32_t*','int32_t*','int32_t*','const int32_t*','const real_t*','const int64_t*','const int64_t*','int32_t*','int32_t','int32_t')
 REF_NAMES=('committed','counts','efc_J','kbip','efc_pos','efc_margin','qvel','qvel_epoch','vel','aref','ref_epoch','rows','nv')
-REF_TYPES=('const int32_t*','const int32_t*',*('const double*',)*5,'const int64_t*','double*','double*','const int64_t*','int32_t','int32_t')
+REF_TYPES=('const int32_t*','const int32_t*',*('const real_t*',)*5,'const int64_t*','real_t*','real_t*','const int64_t*','int32_t','int32_t')
 COMMIT_NAMES=('ready','status','committed','counts','sv','sa','epoch','pv','pa','ref_epoch','rows')
-COMMIT_TYPES=('int32_t*','int32_t*','int32_t*','const int32_t*','const double*','const double*','const int64_t*','double*','double*','int64_t*','int32_t')
+COMMIT_TYPES=('int32_t*','int32_t*','int32_t*','const int32_t*','const real_t*','const real_t*','const int64_t*','real_t*','real_t*','int64_t*','int32_t')
 
 
 def signature(macro,name,names,types):

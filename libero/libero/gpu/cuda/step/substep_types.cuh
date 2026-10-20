@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Named inputs for one FP64 physical substep. No control-step loop.
 #pragma once
 #include <cstddef>
@@ -16,7 +17,8 @@ enum class SubstepEntry : int {
   ControllerPosition = 1,
   PhysicsPosition = 2,
   AccelerationReset = 3,
-  Complete = 4
+  Complete = 4,
+  PositionChecks = 5
 };
 
 struct FoundationGateData {
@@ -71,20 +73,20 @@ struct VelocityGateData {
 };
 
 struct TransmissionData {
-  double *moment;
-  double *qvel;
+  real_t *moment;
+  real_t *qvel;
   int *active;
   int *position_status;
   int nv;
   int nu;
-  double *velocity;
+  real_t *velocity;
   int *status;
 };
 
 struct BodyVelocityData {
   int *active;
-  double *cdof;
-  double *qvel;
+  real_t *cdof;
+  real_t *qvel;
   int *bp;
   int *ba;
   int *bn;
@@ -92,14 +94,14 @@ struct BodyVelocityData {
   int *jt;
   int nb;
   int nv;
-  double *cvel;
-  double *cdot;
+  real_t *cvel;
+  real_t *cdot;
   int *status;
-  double *cinert;
-  double *gravity;
+  real_t *cinert;
+  real_t *gravity;
   int disabled;
-  double *cache_acc;
-  double *cache_force;
+  real_t *cache_acc;
+  real_t *cache_force;
   int *cache_status;
   int *cache_valid;
   int64_t *cache_state;
@@ -112,16 +114,16 @@ struct BodyVelocityData {
 };
 
 struct JointPassiveData {
-  double *qpos;
-  double *qvel;
+  real_t *qpos;
+  real_t *qvel;
   int *active;
   int *jtype;
   int *qadr;
   int *dadr;
-  double *stiffness;
-  double *spring;
-  double *damping;
-  double *out;
+  real_t *stiffness;
+  real_t *spring;
+  real_t *damping;
+  real_t *out;
   int *status;
   int nv;
   int nq;
@@ -132,22 +134,22 @@ struct JointPassiveData {
 };
 
 struct FluidPassiveData {
-  double *cvel;
-  double *subtree_com;
-  double *xipos;
-  double *ximat;
-  double *cdof;
+  real_t *cvel;
+  real_t *subtree_com;
+  real_t *xipos;
+  real_t *ximat;
+  real_t *cdof;
   int *active;
   int *rootid;
-  double *mass;
-  double *box;
+  real_t *mass;
+  real_t *box;
   int *ancestor;
-  double *wind;
-  double *opt;
+  real_t *wind;
+  real_t *opt;
   int passive_disabled;
   int diagnostic;
-  double *stages;
-  double *qfrc;
+  real_t *stages;
+  real_t *qfrc;
   int *status;
   int nbody;
   int nv;
@@ -186,7 +188,7 @@ struct ReferenceGateData {
   int32_t *status;
   int32_t *committed;
   int32_t *counts;
-  double *qvel;
+  real_t *qvel;
   int64_t *epoch;
   int64_t *expected;
   int32_t *ready;
@@ -197,14 +199,14 @@ struct ReferenceGateData {
 struct ConstraintReferenceData {
   int32_t *committed;
   int32_t *counts;
-  double *efc_J;
-  double *kbip;
-  double *efc_pos;
-  double *efc_margin;
-  double *qvel;
+  real_t *efc_J;
+  real_t *kbip;
+  real_t *efc_pos;
+  real_t *efc_margin;
+  real_t *qvel;
   int64_t *qvel_epoch;
-  double *vel;
-  double *aref;
+  real_t *vel;
+  real_t *aref;
   int64_t *ref_epoch;
   int32_t rows;
   int32_t nv;
@@ -215,11 +217,11 @@ struct ReferenceCommitData {
   int32_t *status;
   int32_t *committed;
   int32_t *counts;
-  double *sv;
-  double *sa;
+  real_t *sv;
+  real_t *sa;
   int64_t *epoch;
-  double *pv;
-  double *pa;
+  real_t *pv;
+  real_t *pa;
   int64_t *ref_epoch;
   int32_t rows;
 };
@@ -248,25 +250,25 @@ struct BiasReferenceData {
 
 struct BiasForcesData {
   int *active;
-  double *cdot;
-  double *qvel;
-  double *cinert;
-  double *cvel;
-  double *cdof;
+  real_t *cdot;
+  real_t *qvel;
+  real_t *cinert;
+  real_t *cvel;
+  real_t *cdof;
   int *bp;
   int *ba;
   int *bn;
   int *db;
-  double *gravity;
+  real_t *gravity;
   int disabled;
   int nb;
   int nv;
-  double *cacc;
-  double *frc;
-  double *result;
+  real_t *cacc;
+  real_t *frc;
+  real_t *result;
   int *status;
-  const double *cache_acc;
-  const double *cache_force;
+  const real_t *cache_acc;
+  const real_t *cache_force;
   const int *cache_status;
   const int *cache_valid;
   const int64_t *cache_state;
@@ -286,8 +288,8 @@ struct BiasCommitData {
   int *status;
   int64_t *epoch;
   int *error;
-  double *work;
-  double *pub;
+  real_t *work;
+  real_t *pub;
   int *valid;
   int64_t *written;
   int width;
@@ -312,35 +314,35 @@ struct ControlGateData {
 
 struct ControlCopyData {
   int *gate;
-  double *source;
-  double *target;
+  real_t *source;
+  real_t *target;
   int width;
 };
 
 struct ActuationData {
-  double *length;
-  double *moment;
-  double *velocity;
-  double *ctrl;
+  real_t *length;
+  real_t *moment;
+  real_t *velocity;
+  real_t *ctrl;
   int *active;
   int *vel_status;
-  double *gain;
-  double *bias0;
-  double *bias1;
-  double *bias2;
+  real_t *gain;
+  real_t *bias0;
+  real_t *bias1;
+  real_t *bias2;
   int *bias_type;
-  double *ctrl_lo;
-  double *ctrl_hi;
-  double *force_lo;
-  double *force_hi;
+  real_t *ctrl_lo;
+  real_t *ctrl_hi;
+  real_t *force_lo;
+  real_t *force_hi;
   int *force_limited;
   int disable_flags;
-  double *force;
-  double *force_pre;
-  double *ctrl_used;
+  real_t *force;
+  real_t *force_pre;
+  real_t *ctrl_used;
   int *ctrl_route;
   int *force_route;
-  double *qfrc_actuator;
+  real_t *qfrc_actuator;
   int *status;
   int *warn_badctrl_count;
   int *warn_badctrl_lastinfo;
@@ -374,47 +376,47 @@ struct SmoothForceGateData {
 };
 
 struct SmoothAccelerationData {
-  const double *passive;
-  const double *bias;
-  const double *applied;
-  const double *actuator;
+  const real_t *passive;
+  const real_t *bias;
+  const real_t *applied;
+  const real_t *actuator;
   const int *active;
   int *entry_status;
-  double *smooth;
-  double *seed;
+  real_t *smooth;
+  real_t *seed;
   int nv;
-  const double *xfrc;
-  const double *xipos;
-  const double *subtree_com;
-  const double *cdof;
+  const real_t *xfrc;
+  const real_t *xipos;
+  const real_t *subtree_com;
+  const real_t *cdof;
   const int *body_ids;
   const int *body_count;
   const int *body_rootid;
   const int *ancestor;
-  double *scratch;
-  double *stages;
-  double *qfrc;
+  real_t *scratch;
+  real_t *stages;
+  real_t *qfrc;
   int *d02_status;
   int nbody;
-  const double *qm;
+  const real_t *qm;
   const int *count;
   const int *madr;
   const int *parent;
-  double *ld;
-  double *inv;
-  double *sqrt_inv;
-  double *solution;
+  real_t *ld;
+  real_t *inv;
+  real_t *sqrt_inv;
+  real_t *solution;
   int *pivot;
   int *solve_status;
   int *warning_count;
   int *warning_last;
   int nm;
-  double *rhs;
-  double *qacc_smooth;
+  real_t *rhs;
+  real_t *qacc_smooth;
   int *status;
-  const double *source_ld;
-  const double *source_inv;
-  const double *source_sqrt_inv;
+  const real_t *source_ld;
+  const real_t *source_inv;
+  const real_t *source_sqrt_inv;
   const int *source_pivot;
   const int *source_status;
   const int *source_warning_count;
@@ -434,10 +436,10 @@ struct SmoothCommitData {
   int *status;
   int64_t *epoch;
   int *error;
-  double *wf;
-  double *wa;
-  double *pf;
-  double *pa;
+  real_t *wf;
+  real_t *wa;
+  real_t *pf;
+  real_t *pa;
   int *valid;
   int64_t *written;
   int *repaired;
@@ -482,11 +484,11 @@ struct ConeParametersData {
   const int *typ;
   const int *id;
   const int *dim;
-  const double *mu;
-  const double *friction;
+  const real_t *mu;
+  const real_t *friction;
   int *out_dim;
-  double *out_mu;
-  double *out_friction;
+  real_t *out_mu;
+  real_t *out_friction;
   int *status;
   int *item;
   int rows;
@@ -495,8 +497,8 @@ struct ConeParametersData {
   const int *compact_count;
   const int *compact_valid;
   const int *head_dim;
-  double *head_mu;
-  double *head_friction;
+  real_t *head_mu;
+  real_t *head_friction;
   int *head_cone_valid;
 };
 
@@ -540,48 +542,48 @@ struct GatherGateData {
 };
 
 struct EndEffectorPoseData {
-  const double *pos;
-  const double *mat;
+  const real_t *pos;
+  const real_t *mat;
   const int32_t *active;
-  double *outp;
-  double *outm;
+  real_t *outp;
+  real_t *outm;
   int ns;
   int id;
 };
 
 struct ControllerInputsData {
-  const double *cdof;
-  const double *subtree;
-  const double *pos;
+  const real_t *cdof;
+  const real_t *subtree;
+  const real_t *pos;
   const int32_t *active;
   const int32_t *ancestor;
   int root;
   int body;
   int nv;
   int nb;
-  double *jp;
-  double *jr;
+  real_t *jp;
+  real_t *jr;
   int32_t *jac_status;
   int32_t *adapter_active;
-  const double *qpos;
-  const double *qvel;
-  const double *rot;
-  const double *qm;
-  const double *qbias;
+  const real_t *qpos;
+  const real_t *qvel;
+  const real_t *rot;
+  const real_t *qm;
+  const real_t *qbias;
   const int32_t *qi;
   const int32_t *vi;
   const int32_t *sparse;
   int nq;
   int nm;
-  double *ep;
-  double *er;
-  double *vp;
-  double *vo;
-  double *q;
-  double *qd;
-  double *J;
-  double *M;
-  double *bias;
+  real_t *ep;
+  real_t *er;
+  real_t *vp;
+  real_t *vo;
+  real_t *q;
+  real_t *qd;
+  real_t *J;
+  real_t *M;
+  real_t *bias;
   int32_t *adapter_status;
   int32_t *out_status;
   const int32_t *body_dof_offsets;
@@ -591,9 +593,9 @@ struct ControllerInputsData {
 struct EndEffectorVelocityData {
   const int32_t *active;
   const int32_t *status;
-  const double *vp;
-  const double *vo;
-  double *target;
+  const real_t *vp;
+  const real_t *vo;
+  real_t *target;
   int32_t *first;
 };
 
@@ -605,8 +607,8 @@ struct ControllerBiasData {
   const int64_t *epoch;
   const int32_t *valid;
   const int64_t *written;
-  const double *bias;
-  double *selected;
+  const real_t *bias;
+  real_t *selected;
   const int32_t *indices;
   int32_t *parent_valid;
   int64_t *parent_written;
@@ -625,58 +627,58 @@ struct ControllerGateData {
 };
 
 struct ControllerSolveData {
-  double *mass;
-  double *jacobian;
-  double *q;
-  double *qvel;
-  double *bias;
-  double *q0;
-  double *ee_pos;
-  double *ee_rot;
-  double *ee_velocity;
-  double *action;
-  double *goal_pos;
-  double *goal_rot;
-  double *gripper;
+  real_t *mass;
+  real_t *jacobian;
+  real_t *q;
+  real_t *qvel;
+  real_t *bias;
+  real_t *q0;
+  real_t *ee_pos;
+  real_t *ee_rot;
+  real_t *ee_velocity;
+  real_t *action;
+  real_t *goal_pos;
+  real_t *goal_rot;
+  real_t *gripper;
   int *active;
-  double *gains;
-  double *range;
-  double *ctrl;
-  double *raw_tau;
+  real_t *gains;
+  real_t *range;
+  real_t *ctrl;
+  real_t *raw_tau;
   int *error;
   int *ranks;
   int *policy;
   int *needs;
-  double *mass_inv;
-  double *A_full;
-  double *A_pos;
-  double *A_ori;
-  double *lambda_full;
-  double *lambda_pos;
-  double *lambda_ori;
-  double *nullspace_matrix;
-  double *position_error;
-  double *orientation_error;
-  double *quat_input;
+  real_t *mass_inv;
+  real_t *A_full;
+  real_t *A_pos;
+  real_t *A_ori;
+  real_t *lambda_full;
+  real_t *lambda_pos;
+  real_t *lambda_ori;
+  real_t *nullspace_matrix;
+  real_t *position_error;
+  real_t *orientation_error;
+  real_t *quat_input;
   float *quat_cast;
-  double *quat_result;
+  real_t *quat_result;
   int *quat_valid;
-  double *nullspace_torque;
-  double *clipped;
+  real_t *nullspace_torque;
+  real_t *clipped;
   int diagnostics;
   int uncouple;
   int *derived_valid;
-  double *derived_key;
-  double *derived_data;
+  real_t *derived_key;
+  real_t *derived_data;
   int *derived_ranks;
   int *cache_hits;
-  double *pm;
-  double *pj;
-  double *pq;
-  double *pv;
-  double *pp;
-  double *pr;
-  double *pe;
+  real_t *pm;
+  real_t *pj;
+  real_t *pq;
+  real_t *pv;
+  real_t *pp;
+  real_t *pr;
+  real_t *pe;
   int *cache_valid;
 };
 
@@ -700,55 +702,55 @@ struct ControllerPublishData {
 
 struct EulerData {
   int *active;
-  double *qp;
-  double *qv;
-  double *time;
-  const double *qm;
-  const double *smooth;
-  const double *constraint;
-  const double *acc;
-  const double *damping;
+  real_t *qp;
+  real_t *qv;
+  real_t *time;
+  const real_t *qm;
+  const real_t *smooth;
+  const real_t *constraint;
+  const real_t *acc;
+  const real_t *damping;
   const int *madr;
-  double *mq;
-  double *rhs;
+  real_t *mq;
+  real_t *rhs;
   int *count;
   int *ma;
   int *damp;
   int *status;
-  double dt;
+  real_t dt;
   int nq;
   int nv;
   int nm;
   const int *parent;
-  double *ld;
-  double *inv;
-  double *si;
-  double *solution;
+  real_t *ld;
+  real_t *inv;
+  real_t *si;
+  real_t *solution;
   int *pivot;
   int *ms;
   int *wc;
   int *wl;
   const int *simple;
-  double *work;
+  real_t *work;
   int *skip;
   const int *jt;
   const int *padr;
   const int *vadr;
-  double *sp;
-  double *sv;
-  double *used;
-  double *st;
-  double *axis;
-  double *angle;
-  double *increment;
-  double *pre;
+  real_t *sp;
+  real_t *sv;
+  real_t *used;
+  real_t *st;
+  real_t *axis;
+  real_t *angle;
+  real_t *increment;
+  real_t *pre;
   int *af;
   int *za;
   int *qf;
   int nj;
   int nq4;
-  double *qh;
-  double *qhi;
+  real_t *qh;
+  real_t *qhi;
   int qacc_stride;
   const int *joint_quat;
   const int *joint_type_offsets;
@@ -756,8 +758,8 @@ struct EulerData {
 };
 
 struct DoubleChannel {
-  double *published;
-  double *working;
+  real_t *published;
+  real_t *working;
   int width;
   // Cold binding proves both spans independent of every other channel.
   int parallel_copy;  // bit 0: disjoint copy, bit 1: seed old value
@@ -776,8 +778,8 @@ struct EpochCopy {
 };
 
 struct ResetField {
-  double *values;
-  const double *defaults;
+  real_t *values;
+  const real_t *defaults;
   int width;
 };
 
@@ -794,9 +796,9 @@ struct StateData {
   int *step_valid;
   int64_t *step_written;
   int64_t *integration_count;
-  double *qpos;
-  double *qvel;
-  double *qacc;
+  real_t *qpos;
+  real_t *qvel;
+  real_t *qacc;
   int nq;
   int nv;
 };
@@ -851,14 +853,14 @@ struct NewtonData {
   const int64_t *written;
   int stop_policy;                 // physics_newton::StopPolicy
   int64_t *audit;                   // optional [worlds, 8]
-  double *first_disagreement;       // optional [worlds, 8]
+  real_t *first_disagreement;       // optional [worlds, 8]
 };
 
 // A packet addresses one/two consecutive doubles of one original field.
 // Bases include the packet offset; width remains the per-world field stride.
 struct ControllerCopyPacket {
-  double *published;
-  double *working;
+  real_t *published;
+  real_t *working;
   int width;
   int words;
 };

@@ -5,6 +5,7 @@ half-angle >4 uses CUDA double sin/cos; accepted-domain Taylor remains exact.
 Unscaled norm/overflow guards and atomic public commit/held policy are inherited.
 Not production-qualified until actual native/source-prior independent acceptance.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 from .kernel import _prepare, _source_solve_labels, _commit
 from .certified_trig import sin45, cos44
@@ -13,29 +14,29 @@ wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False}
 
 @wp.kernel(enable_backward=False)
 def _integrate_wide(active: wp.array(dtype=wp.int32),
-               qpos: wp.array(dtype=wp.float64, ndim=2),
-               qvel: wp.array(dtype=wp.float64, ndim=2),
-               time: wp.array(dtype=wp.float64),
-               qacc: wp.array(dtype=wp.float64, ndim=2),
-               solution: wp.array(dtype=wp.float64, ndim=3),
+               qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+               qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+               time: wp.array(dtype=scalar.wp_real),
+               qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+               solution: wp.array(dtype=scalar.wp_real, ndim=3),
                mass_status: wp.array(dtype=wp.int32),
                damped: wp.array(dtype=wp.int32),
                jtype: wp.array(dtype=wp.int32),
                padr: wp.array(dtype=wp.int32),
                vadr: wp.array(dtype=wp.int32),
-               scratch_pos: wp.array(dtype=wp.float64, ndim=2),
-               scratch_vel: wp.array(dtype=wp.float64, ndim=2),
-               used_acc: wp.array(dtype=wp.float64, ndim=2),
-               scratch_time: wp.array(dtype=wp.float64),
-               axis: wp.array(dtype=wp.float64, ndim=3),
-               angle: wp.array(dtype=wp.float64, ndim=2),
-               increment: wp.array(dtype=wp.float64, ndim=3),
-               pre_norm: wp.array(dtype=wp.float64, ndim=3),
+               scratch_pos: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_vel: wp.array(dtype=scalar.wp_real, ndim=2),
+               used_acc: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_time: wp.array(dtype=scalar.wp_real),
+               axis: wp.array(dtype=scalar.wp_real, ndim=3),
+               angle: wp.array(dtype=scalar.wp_real, ndim=2),
+               increment: wp.array(dtype=scalar.wp_real, ndim=3),
+               pre_norm: wp.array(dtype=scalar.wp_real, ndim=3),
                axis_fallback: wp.array(dtype=wp.int32, ndim=2),
                zero_angle: wp.array(dtype=wp.int32, ndim=2),
                quat_fallback: wp.array(dtype=wp.int32, ndim=2),
                status: wp.array(dtype=wp.int32),
-               dt: wp.float64, nq: int, nv: int, njnt: int):
+               dt: scalar.wp_real, nq: int, nv: int, njnt: int):
     w = wp.tid()
     if active[w] != 1 or status[w] != 0:
         return
@@ -85,13 +86,13 @@ def _integrate_wide(active: wp.array(dtype=wp.int32),
                 status[w]=3
                 return
             axis_fallback[w,qi]=0
-            if length < wp.float64(1.0e-15):
+            if length < scalar.wp_real(1.0e-15):
                 axis_fallback[w,qi]=1
-                x = wp.float64(1.0)
-                y = wp.float64(0.0)
-                z = wp.float64(0.0)
+                x = scalar.wp_real(1.0)
+                y = scalar.wp_real(0.0)
+                z = scalar.wp_real(0.0)
             else:
-                inv = wp.float64(1.0)/length
+                inv = scalar.wp_real(1.0)/length
                 x = x*inv
                 y = y*inv
                 z = z*inv
@@ -104,14 +105,14 @@ def _integrate_wide(active: wp.array(dtype=wp.int32),
             axis[w, qi, 2] = z
             angle[w, qi] = a
             zero_angle[w,qi]=0
-            c = wp.float64(1.0)
-            s = wp.float64(0.0)
-            if a != wp.float64(0.0):
-                half = a*wp.float64(0.5)
+            c = scalar.wp_real(1.0)
+            s = scalar.wp_real(0.0)
+            if a != scalar.wp_real(0.0):
+                half = a*scalar.wp_real(0.5)
                 if not wp.isfinite(half):
                     status[w] = 3
                     return
-                if wp.abs(half) <= wp.float64(4.0):
+                if wp.abs(half) <= scalar.wp_real(4.0):
                     s = sin45(half)
                     c = cos44(half)
                 else:
@@ -130,10 +131,10 @@ def _integrate_wide(active: wp.array(dtype=wp.int32),
             if not wp.isfinite(b0) or not wp.isfinite(b1) or not wp.isfinite(b2) or not wp.isfinite(b3):
                 status[w]=3
                 return
-            if a == wp.float64(0.0):
-                b1 = wp.float64(0.0)
-                b2 = wp.float64(0.0)
-                b3 = wp.float64(0.0)
+            if a == scalar.wp_real(0.0):
+                b1 = scalar.wp_real(0.0)
+                b2 = scalar.wp_real(0.0)
+                b3 = scalar.wp_real(0.0)
             increment[w, qi, 0] = b0
             increment[w, qi, 1] = b1
             increment[w, qi, 2] = b2
@@ -168,14 +169,14 @@ def _integrate_wide(active: wp.array(dtype=wp.int32),
                 status[w]=3
                 return
             quat_fallback[w,qi]=0
-            if qlength < wp.float64(1.0e-15):
+            if qlength < scalar.wp_real(1.0e-15):
                 quat_fallback[w,qi]=1
-                t0 = wp.float64(1.0)
-                t1 = wp.float64(0.0)
-                t2 = wp.float64(0.0)
-                t3 = wp.float64(0.0)
+                t0 = scalar.wp_real(1.0)
+                t1 = scalar.wp_real(0.0)
+                t2 = scalar.wp_real(0.0)
+                t3 = scalar.wp_real(0.0)
             else:
-                qinv = wp.float64(1.0)/qlength
+                qinv = scalar.wp_real(1.0)/qlength
                 t0 = t0*qinv
                 t1 = t1*qinv
                 t2 = t2*qinv

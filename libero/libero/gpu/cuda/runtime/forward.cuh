@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Handwritten forward protocol and S-to-Newton projection. No physics oracle.
 #pragma once
 #include <stdint.h>
@@ -66,8 +67,8 @@ __device__ void counts(int w,const int* admitted,const int* source,const int* so
 }
 __device__ void cone_heads(int w,const int* admitted,const int* nefc,const int* ne,
     const int* nf,const int* ncon,const int* type,const int* id,const int* dim,
-    const double* mu,const double* friction,int* cone_dim,double* cone_mu,
-    double* cone_friction,int* status,int* item,int rows,int contacts) {
+    const real_t* mu,const real_t* friction,int* cone_dim,real_t* cone_mu,
+    real_t* cone_friction,int* status,int* item,int rows,int contacts) {
     if(admitted[w]!=1 || status[w]) return;
     int n=nefc[w],i=ne[w]+nf[w];
     if(n<0 || n>rows || ne[w]<0 || nf[w]<0 || i<0 || i>n) {
@@ -85,10 +86,10 @@ __device__ void cone_heads(int w,const int* admitted,const int* nefc,const int* 
             for(int k=0;k<d;++k) if(type[off+i+k]!=7 || id[off+i+k]!=c) {
                 status[w]=9004;item[w]=i+k;return;
             }
-            if(!isfinite(mu[coff+c]) || mu[coff+c]<=0.) {status[w]=9006;item[w]=i;return;}
+            if(!isfinite(mu[coff+c]) || mu[coff+c]<=REAL_C(0.)) {status[w]=9006;item[w]=i;return;}
             for(int k=0;k<d-1;++k) {
-                double v=friction[(coff+c)*5+k];
-                if(!isfinite(v) || v<=0.) {status[w]=9007;item[w]=i;return;}
+                real_t v=friction[(coff+c)*5+k];
+                if(!isfinite(v) || v<=REAL_C(0.)) {status[w]=9007;item[w]=i;return;}
             }
             i+=d;
         } else if(t>=0 && t<=6) {

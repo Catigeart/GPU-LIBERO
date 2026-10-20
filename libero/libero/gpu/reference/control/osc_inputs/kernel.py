@@ -5,6 +5,7 @@ full mj_jacSite 3×nv times full qvel. Mass uses the original MuJoCo 2.3.7
 engine_support.c:mj_fullM sparse ancestor layout; only the selected 7×7
 block is written. No controller refresh/cache state or forward is changed.
 """
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -29,41 +30,41 @@ def _integer_vector(value,name,length):
 
 
 @wp.kernel(enable_backward=False)
-def _osc_inputs(qpos:wp.array(dtype=wp.float64,ndim=2),
-                qvel:wp.array(dtype=wp.float64,ndim=2),
-                site_pos:wp.array(dtype=wp.float64,ndim=2),
-                site_mat:wp.array(dtype=wp.float64,ndim=2),
-                jacp:wp.array(dtype=wp.float64,ndim=3),
-                jacr:wp.array(dtype=wp.float64,ndim=3),
-                qM:wp.array(dtype=wp.float64,ndim=2),
-                qfrc_bias:wp.array(dtype=wp.float64,ndim=2),
+def _osc_inputs(qpos:wp.array(dtype=scalar.wp_real,ndim=2),
+                qvel:wp.array(dtype=scalar.wp_real,ndim=2),
+                site_pos:wp.array(dtype=scalar.wp_real,ndim=2),
+                site_mat:wp.array(dtype=scalar.wp_real,ndim=2),
+                jacp:wp.array(dtype=scalar.wp_real,ndim=3),
+                jacr:wp.array(dtype=scalar.wp_real,ndim=3),
+                qM:wp.array(dtype=scalar.wp_real,ndim=2),
+                qfrc_bias:wp.array(dtype=scalar.wp_real,ndim=2),
                 active:wp.array(dtype=wp.int32),
                 qpos_index:wp.array(dtype=wp.int32),
                 qvel_index:wp.array(dtype=wp.int32),
                 sparse_map:wp.array(dtype=wp.int32,ndim=2),
-                ee_pos:wp.array(dtype=wp.float64,ndim=2),
-                ee_mat:wp.array(dtype=wp.float64,ndim=2),
-                xvelp:wp.array(dtype=wp.float64,ndim=2),
-                xvelr:wp.array(dtype=wp.float64,ndim=2),
-                joint_pos:wp.array(dtype=wp.float64,ndim=2),
-                joint_vel:wp.array(dtype=wp.float64,ndim=2),
-                J:wp.array(dtype=wp.float64,ndim=3),
-                M:wp.array(dtype=wp.float64,ndim=3),
-                bias:wp.array(dtype=wp.float64,ndim=2),
+                ee_pos:wp.array(dtype=scalar.wp_real,ndim=2),
+                ee_mat:wp.array(dtype=scalar.wp_real,ndim=2),
+                xvelp:wp.array(dtype=scalar.wp_real,ndim=2),
+                xvelr:wp.array(dtype=scalar.wp_real,ndim=2),
+                joint_pos:wp.array(dtype=scalar.wp_real,ndim=2),
+                joint_vel:wp.array(dtype=scalar.wp_real,ndim=2),
+                J:wp.array(dtype=scalar.wp_real,ndim=3),
+                M:wp.array(dtype=scalar.wp_real,ndim=3),
+                bias:wp.array(dtype=scalar.wp_real,ndim=2),
                 status:wp.array(dtype=wp.int32)):
     w=wp.tid()
     status[w]=0
     for k in range(3):
-        ee_pos[w,k]=wp.float64(0.0)
-        xvelp[w,k]=wp.float64(0.0)
-        xvelr[w,k]=wp.float64(0.0)
-    for k in range(9): ee_mat[w,k]=wp.float64(0.0)
+        ee_pos[w,k]=scalar.wp_real(0.0)
+        xvelp[w,k]=scalar.wp_real(0.0)
+        xvelr[w,k]=scalar.wp_real(0.0)
+    for k in range(9): ee_mat[w,k]=scalar.wp_real(0.0)
     for k in range(7):
-        joint_pos[w,k]=wp.float64(0.0)
-        joint_vel[w,k]=wp.float64(0.0)
-        bias[w,k]=wp.float64(0.0)
-        for r in range(6): J[w,r,k]=wp.float64(0.0)
-        for c in range(7): M[w,k,c]=wp.float64(0.0)
+        joint_pos[w,k]=scalar.wp_real(0.0)
+        joint_vel[w,k]=scalar.wp_real(0.0)
+        bias[w,k]=scalar.wp_real(0.0)
+        for r in range(6): J[w,r,k]=scalar.wp_real(0.0)
+        for c in range(7): M[w,k,c]=scalar.wp_real(0.0)
     if active[w]==0: return
     if active[w]!=1:
         status[w]=1
@@ -95,8 +96,8 @@ def _osc_inputs(qpos:wp.array(dtype=wp.float64,ndim=2),
     for k in range(3): ee_pos[w,k]=site_pos[w,k]
     for k in range(9): ee_mat[w,k]=site_mat[w,k]
     for r in range(3):
-        vp=wp.float64(0.0)
-        vr=wp.float64(0.0)
+        vp=scalar.wp_real(0.0)
+        vr=scalar.wp_real(0.0)
         for k in range(43):
             vp=vp+jacp[w,r,k]*qvel[w,k]
             vr=vr+jacr[w,r,k]*qvel[w,k]
@@ -165,7 +166,7 @@ class OSCInputsWorkspace:
              ('joint_pos',(7,)),('joint_vel',(7,)),
              ('J',(6,7)),('M',(7,7)),('bias',(7,))):
             setattr(self,name,wp.zeros((capacity,)+tail,
-                                      dtype=wp.float64,device=device))
+                                      dtype=scalar.wp_real,device=device))
         self.active=wp.zeros(capacity,dtype=wp.int32,device=device)
         self.status=wp.zeros(capacity,dtype=wp.int32,device=device)
         self.qpos_index=wp.array(np.ascontiguousarray(qi,np.int32),

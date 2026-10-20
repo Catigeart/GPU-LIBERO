@@ -1,4 +1,5 @@
 """Handwritten multi-field copies retaining alias fallback and sample boundaries."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import types
@@ -9,7 +10,7 @@ from libero.gpu.host.assembly.compose.backup import _overlap
 from libero.gpu.host.runtime.step.shape_runtime import _token
 
 HEADER=(GPU_ROOT / 'cuda/runtime/copies.cuh')
-KINDS={wp.float64:'f64',wp.int32:'i32',wp.int64:'i64'}
+KINDS={scalar.wp_real:'f64',wp.int32:'i32',wp.int64:'i64'}
 
 
 def entry_copy_kind(source, target, width, block_threads):
@@ -20,7 +21,7 @@ def entry_copy_kind(source, target, width, block_threads):
     retain their existing vector implementation.
     """
     kind = KINDS[source.dtype]
-    if (source.dtype == wp.float64 and block_threads == 64 and width == 342
+    if (source.dtype == scalar.wp_real and block_threads == 64 and width == 342
             and source.ptr % 16 == 0 and target.ptr % 16 == 0):
         return 'f64_vector'
     return kind
@@ -92,7 +93,7 @@ class CopyPlan:
                     raise ValueError('copy target requires (world,rows,width) or (world*rows,width)')
                 if rows<1:raise ValueError('event history rows must be positive')
             args=[s,t,width,rows,slot if slot is not None else 0]
-            ctype={'f64':'double','i32':'int32_t','i64':'int64_t'}[KINDS[s.dtype]]
+            ctype={'f64':'real_t','i32':'int32_t','i64':'int64_t'}[KINDS[s.dtype]]
             stages.append(('cf_copy::'+KINDS[s.dtype],args,'block',[ctype+'*',ctype+'*','int32_t','int32_t','int32_t*'] if slot is not None else [ctype+'*',ctype+'*','int32_t','int32_t','size_t']))
         self.tokens=tuple((_token(s),_token(t)) for s,t in self.pairs)
         self.slot_token=None if slot is None else _token(slot)
@@ -100,7 +101,7 @@ class CopyPlan:
         source=HEADER.read_text()
         if slot is None:
             source+='\n#ifndef LIBERO_CF_COPY_NULL_WRAPPERS\n#define LIBERO_CF_COPY_NULL_WRAPPERS\nnamespace cf_copy {\n'
-            for kind,typ in [('f64','double'),('i32','int32_t'),('i64','int64_t')]:
+            for kind,typ in [('f64','real_t'),('i32','int32_t'),('i64','int64_t')]:
                 source+=f'__device__ void {kind}_null(int w,const {typ}*s,{typ}*t,int n,int r,size_t zero){{field(w,s,t,n,r,nullptr);}}\n'
             source+='}\n#endif // LIBERO_CF_COPY_NULL_WRAPPERS\n'
             stages=[(fn+'_null',args,mode,spec) for fn,args,mode,spec in stages]
@@ -128,7 +129,7 @@ class CopyPlan:
                     if s.dtype==wp.int64:raise TypeError('aliased event i64 unsupported by original')
                     width=s.size//self.nworld;rows=t.size//(self.nworld*width)
                     view=t.reshape((self.nworld*rows,width))
-                    wp.launch(_copy_f64 if s.dtype==wp.float64 else _copy_i32,(self.nworld,width),inputs=[s.reshape((-1,)),self.slot,view,width,rows],device=s.device,stream=stream)
+                    wp.launch(_copy_f64 if s.dtype==scalar.wp_real else _copy_i32,(self.nworld,width),inputs=[s.reshape((-1,)),self.slot,view,width,rows],device=s.device,stream=stream)
 
 class MaskedRestorePlan:
     def __init__(self,old,mask,root):

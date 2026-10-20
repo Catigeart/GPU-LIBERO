@@ -1,5 +1,6 @@
 """Preallocated C07 CUDA boundary; upload/download are outside production."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import ctypes as ct
 from pathlib import Path
 import numpy as np
@@ -41,7 +42,7 @@ class MeshMPRWorkspace:
         self.cuda.cudaMemcpy.restype=ct.c_int
         self.cuda.cudaDeviceSynchronize.argtypes=[]
         self.cuda.cudaDeviceSynchronize.restype=ct.c_int
-        self.lib.launch_mesh_mpr.argtypes=[ct.c_void_p]*7+[ct.c_int]*5+[ct.c_double]+[ct.c_void_p]*4+[ct.c_int]+[ct.c_void_p]*7
+        self.lib.launch_mesh_mpr.argtypes=[ct.c_void_p]*7+[ct.c_int]*5+[scalar.ct_real]+[ct.c_void_p]*4+[ct.c_int]+[ct.c_void_p]*7
         self.lib.launch_mesh_mpr.restype=ct.c_int
         self.model={}
         for name,dtype in STATIC.items():

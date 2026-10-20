@@ -1,4 +1,5 @@
 """Independent complete factor_update diagnostic loader, no runtime grant."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import ctypes as ct
@@ -49,7 +50,7 @@ class CooperativeFactorModule(CooperativeRankModule):
         owners=tuple(arrays[name] for name in FIELDS)
         spans=[]
         for name,a in zip(FIELDS,owners):
-            dtype=wp.float64 if name in FLOAT_FIELDS else wp.int32
+            dtype=scalar.wp_real if name in FLOAT_FIELDS else wp.int32
             if a.dtype!=dtype or a.device!=self.device or a.ndim!=1 or a.size!=sizes[name] or not a.is_contiguous:raise ValueError('factor typed/device/shape/contiguity')
             spans.append((int(a.ptr),int(a.ptr)+a.size*(8 if name in FLOAT_FIELDS else 4)))
         for i,(a,b) in enumerate(spans):

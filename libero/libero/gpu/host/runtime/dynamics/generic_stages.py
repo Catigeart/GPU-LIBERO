@@ -4,6 +4,7 @@ Static preparation is explicit and source-pinned. Original fixed kernels and
 their licences remain untouched. Hot methods allocate nothing and read no host
 results. New models require separate independent numerical acceptance.
 """
+import libero.gpu.precision as scalar
 import math
 import numpy as np
 import warp as wp
@@ -34,7 +35,7 @@ class _Prepared:
     def _static(self, name, value, dtype=None):
         a = np.ascontiguousarray(value)
         if dtype is None:
-            dtype = wp.int32 if a.dtype == np.int32 else wp.float64
+            dtype = wp.int32 if a.dtype == np.int32 else scalar.wp_real
         setattr(self, name, wp.array(a, dtype=dtype, device=self.device))
     def _init(self, arrays, metadata, spec, capacity, fields, registry, candidate_id,
               source_records, metadata_record, mode, device):
@@ -100,11 +101,11 @@ class GenericPassiveWorkspace(_Prepared):
             ('cvel',(capacity,self.nbody,6)),('subtree_com',(capacity,self.nbody,3)),
             ('xipos',(capacity,self.nbody,3)),('ximat',(capacity,self.nbody,9)),
             ('cdof',(capacity,self.nv,6))):
-            self._input(name,shape,wp.float64,inputs)
+            self._input(name,shape,scalar.wp_real,inputs)
         self._input('active',(capacity,),wp.int32,inputs)
-        self.qfrc=wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device)
+        self.qfrc=wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device)
         self.status=wp.zeros(capacity,dtype=wp.int32,device=self.device)
-        self.stages=wp.zeros((capacity,self.nbody,33+7*self.nv),dtype=wp.float64,device=self.device)
+        self.stages=wp.zeros((capacity,self.nbody,33+7*self.nv),dtype=scalar.wp_real,device=self.device)
         self._finish_prepare()
     def launch(self, stream=None):
         self.validate_bindings()
@@ -143,16 +144,16 @@ class GenericActuationWorkspace(_Prepared):
             raise ValueError('native ctrl range source')
         self.disable_flags=wp.int32(metadata['options']['disableflags'])
         inputs={} if inputs is None else inputs
-        for name,shape,dtype in (('length',(capacity,self.nu),wp.float64),
-            ('moment',(capacity,self.nu,self.nv),wp.float64),('velocity',(capacity,self.nu),wp.float64),
-            ('ctrl',(capacity,self.nu),wp.float64),('active',(capacity,),wp.int32),
+        for name,shape,dtype in (('length',(capacity,self.nu),scalar.wp_real),
+            ('moment',(capacity,self.nu,self.nv),scalar.wp_real),('velocity',(capacity,self.nu),scalar.wp_real),
+            ('ctrl',(capacity,self.nu),scalar.wp_real),('active',(capacity,),wp.int32),
             ('vel_status',(capacity,),wp.int32)):
             self._input(name,shape,dtype,inputs)
         for name in ('force','force_pre','ctrl_used'):
-            setattr(self,name,wp.zeros((capacity,self.nu),dtype=wp.float64,device=self.device))
+            setattr(self,name,wp.zeros((capacity,self.nu),dtype=scalar.wp_real,device=self.device))
         for name in ('ctrl_route','force_route'):
             setattr(self,name,wp.zeros((capacity,self.nu),dtype=wp.int32,device=self.device))
-        self.qfrc_actuator=wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device)
+        self.qfrc_actuator=wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device)
         for name in ('status','warn_badctrl_count','warn_badctrl_lastinfo','warning_number','warning_lastinfo'):
             setattr(self,name,wp.zeros(capacity,dtype=wp.int32,device=self.device))
         self._finish_prepare()
@@ -192,18 +193,18 @@ class GenericSmoothWorkspace(_Prepared):
         self.solver=GenericMassWorkspace(metadata,self.static,capacity,self.device)
         self.solver.count.fill_(1)
         inputs={} if inputs is None else inputs
-        for name,shape,dtype in (('passive',(capacity,self.nv),wp.float64),
-            ('bias',(capacity,self.nv),wp.float64),('applied',(capacity,self.nv),wp.float64),
-            ('actuator',(capacity,self.nv),wp.float64),('xfrc',(capacity,self.nbody,6),wp.float64),
-            ('xipos',(capacity,self.nbody,3),wp.float64),('subtree_com',(capacity,self.nbody,3),wp.float64),
-            ('cdof',(capacity,self.nv,6),wp.float64),('qm',(capacity,self.solver.nM),wp.float64),
+        for name,shape,dtype in (('passive',(capacity,self.nv),scalar.wp_real),
+            ('bias',(capacity,self.nv),scalar.wp_real),('applied',(capacity,self.nv),scalar.wp_real),
+            ('actuator',(capacity,self.nv),scalar.wp_real),('xfrc',(capacity,self.nbody,6),scalar.wp_real),
+            ('xipos',(capacity,self.nbody,3),scalar.wp_real),('subtree_com',(capacity,self.nbody,3),scalar.wp_real),
+            ('cdof',(capacity,self.nv,6),scalar.wp_real),('qm',(capacity,self.solver.nM),scalar.wp_real),
             ('active',(capacity,),wp.int32)):
             self._input(name,shape,dtype,inputs)
         # All assignments are prepare-only and followed by the sole token freeze.
         self.solver.qm=self.qm;self.solver.active=self.active
         for name in ('smooth','seed','qfrc','scratch','qacc_smooth'):
-            setattr(self,name,wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device))
-        self.stages=wp.zeros((capacity,1,1,1),dtype=wp.float64,device=self.device)
+            setattr(self,name,wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device))
+        self.stages=wp.zeros((capacity,1,1,1),dtype=scalar.wp_real,device=self.device)
         for name in ('entry_status','d02_status','status'):
             setattr(self,name,wp.zeros(capacity,dtype=wp.int32,device=self.device))
         self._finish_prepare()

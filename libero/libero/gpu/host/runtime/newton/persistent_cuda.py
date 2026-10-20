@@ -4,6 +4,7 @@ One block owns a world. Flat transpose/assembly grids become block loops;
 world stages and S07 retain their arithmetic and run on lane zero. Diagnostic
 tail slots remain source-equivalent after stop. Original entry is retained.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path
 import ctypes as ct
@@ -142,7 +143,7 @@ class PersistentCudaCore:
             if token not in field_index:
                 name='a%d'%len(fields);field_index[token]=name
                 box=value.__ctype__() if isinstance(value,wp.array) else (
-                    ct.c_double(value) if 'float64' in cuda_type else ct.c_int32(value))
+                    scalar.ct_real(value) if 'float64' in cuda_type else ct.c_int32(value))
                 fields.append((name,cuda_type,type(box)));field_values.append(box)
                 if isinstance(value,wp.array):owners.append(value)
             return 'p->'+field_index[token]

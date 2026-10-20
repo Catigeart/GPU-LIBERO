@@ -6,6 +6,7 @@ data copy and publication stamp run in one per-world kernel on the producer's
 retained stream.  No failed result is copied then restored.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import warp as wp
 
@@ -16,8 +17,8 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': F
 def commit_bias(active: wp.array(dtype=wp.int32), gate: wp.array(dtype=wp.int32),
                 status: wp.array(dtype=wp.int32), epoch: wp.array(dtype=wp.int64),
                 error: wp.array(dtype=wp.int32),
-                work: wp.array(dtype=wp.float64, ndim=2),
-                public: wp.array(dtype=wp.float64, ndim=2),
+                work: wp.array(dtype=scalar.wp_real, ndim=2),
+                public: wp.array(dtype=scalar.wp_real, ndim=2),
                 valid: wp.array(dtype=wp.int32), written: wp.array(dtype=wp.int64),
                 width: int):
     w = wp.tid()
@@ -37,10 +38,10 @@ def commit_bias(active: wp.array(dtype=wp.int32), gate: wp.array(dtype=wp.int32)
 def commit_smooth(active: wp.array(dtype=wp.int32), gate: wp.array(dtype=wp.int32),
                   status: wp.array(dtype=wp.int32), epoch: wp.array(dtype=wp.int64),
                   error: wp.array(dtype=wp.int32),
-                  work_force: wp.array(dtype=wp.float64, ndim=2),
-                  work_acceleration: wp.array(dtype=wp.float64, ndim=2),
-                  public_force: wp.array(dtype=wp.float64, ndim=2),
-                  public_acceleration: wp.array(dtype=wp.float64, ndim=2),
+                  work_force: wp.array(dtype=scalar.wp_real, ndim=2),
+                  work_acceleration: wp.array(dtype=scalar.wp_real, ndim=2),
+                  public_force: wp.array(dtype=scalar.wp_real, ndim=2),
+                  public_acceleration: wp.array(dtype=scalar.wp_real, ndim=2),
                   valid: wp.array(dtype=wp.int32), written: wp.array(dtype=wp.int64),
                   repaired: wp.array(dtype=wp.int32), width: int):
     w = wp.tid()
@@ -100,7 +101,7 @@ class ProducerPublication:
         with wp.ScopedStream(self._stream):
             for name in self.NAMES:
                 setattr(self, name, wp.zeros((self._capacity, self._width),
-                                            dtype=wp.float64, device=self._device))
+                                            dtype=scalar.wp_real, device=self._device))
         self.original_stage_catalog = s.binding_catalog()
         self._prepare_consumers()
         self.prepared_stage_catalog = s.binding_catalog()
@@ -117,7 +118,7 @@ class ProducerPublication:
         # The producer attaches this owner then validates, before source uploads.
 
     def _check_result_layout(self, array):
-        if (not isinstance(array, wp.array) or array.dtype != wp.float64 or
+        if (not isinstance(array, wp.array) or array.dtype != scalar.wp_real or
                 array.shape != (self._capacity, self._width) or
                 array.device != self._device or not array.is_contiguous or
                 tuple(array.strides) != (self._width * 8, 8)):

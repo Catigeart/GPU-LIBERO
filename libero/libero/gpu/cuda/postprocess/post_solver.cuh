@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <cuda_runtime.h>
 #include "../step/newton_types.cuh"
@@ -11,5 +12,5 @@ namespace physics_post {
 // A deferred call publishes working qacc, invalidates Post, and returns false;
 // it never stamps stale force/sensor arrays as current. Diagnostics always run.
 __device__ __noinline__ bool run(const physics_newton::NewtonPostData &post, int world,
-                                double *qacc, double *workspace, bool outputs_required);
+                                real_t *qacc, real_t *workspace, bool outputs_required);
 } // namespace physics_post

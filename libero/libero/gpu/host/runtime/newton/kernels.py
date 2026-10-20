@@ -9,6 +9,7 @@ download or host-side branching on device values; the 100-iteration masked
 schedule only reads the static shape.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import warp as wp
 
@@ -25,17 +26,17 @@ TAPE_UNUSED_TAG = -101
 
 
 @wp.func
-def _dot4(a: wp.array(dtype=wp.float64), b: wp.array(dtype=wp.float64),
-          basea: int, baseb: int, n: int) -> wp.float64:
+def _dot4(a: wp.array(dtype=scalar.wp_real), b: wp.array(dtype=scalar.wp_real),
+          basea: int, baseb: int, n: int) -> scalar.wp_real:
     # engine_util_blas.c mju_dot: four independent lanes then (0+2)+(1+3).
     # Structure mirrors the frozen S05 _dot: the while sits outside the n>=4
     # lane priming so the induction variable stays a dynamic value.
-    res = wp.float64(0.0)
+    res = scalar.wp_real(0.0)
     i = int(0)
-    s0 = wp.float64(0.0)
-    s1 = wp.float64(0.0)
-    s2 = wp.float64(0.0)
-    s3 = wp.float64(0.0)
+    s0 = scalar.wp_real(0.0)
+    s1 = scalar.wp_real(0.0)
+    s2 = scalar.wp_real(0.0)
+    s3 = scalar.wp_real(0.0)
     if n >= 4:
         s0 = a[basea] * b[baseb]
         s1 = a[basea + 1] * b[baseb + 1]
@@ -67,10 +68,10 @@ def _dot4(a: wp.array(dtype=wp.float64), b: wp.array(dtype=wp.float64),
 @wp.kernel(enable_backward=False)
 def _jacvec_sub(active: wp.array(dtype=wp.int32),
                 nefc: wp.array(dtype=wp.int32),
-                J: wp.array(dtype=wp.float64),
-                qacc: wp.array(dtype=wp.float64),
-                aref: wp.array(dtype=wp.float64),
-                out: wp.array(dtype=wp.float64),
+                J: wp.array(dtype=scalar.wp_real),
+                qacc: wp.array(dtype=scalar.wp_real),
+                aref: wp.array(dtype=scalar.wp_real),
+                out: wp.array(dtype=scalar.wp_real),
                 rows: int):
     # mj_mulJacVec then mju_subFrom: out[j] = (J*qacc)[j] - aref[j].
     # All row-outer buffers are flat world-outer; qacc is flat (w*NV base).
@@ -88,12 +89,12 @@ def _jacvec_sub(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _mulM(active: wp.array(dtype=wp.int32),
-          qacc: wp.array(dtype=wp.float64, ndim=2),
-          qM: wp.array(dtype=wp.float64),
+          qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+          qM: wp.array(dtype=scalar.wp_real),
           madr: wp.array(dtype=wp.int32),
           parent: wp.array(dtype=wp.int32),
           simple: wp.array(dtype=wp.int32),
-          out: wp.array(dtype=wp.float64, ndim=2)):
+          out: wp.array(dtype=scalar.wp_real, ndim=2)):
     # mj_mulM: tree multiply with madr walk, exact source accumulation order.
     w = wp.tid()
     if active[w] == 0:
@@ -101,7 +102,7 @@ def _mulM(active: wp.array(dtype=wp.int32),
     qb = w * NV
     mb = w * NM
     for i in range(NV):
-        out[w, i] = wp.float64(0.0)
+        out[w, i] = scalar.wp_real(0.0)
     for i in range(NV):
         adr = madr[i]
         if simple[i] != 0:
@@ -119,12 +120,12 @@ def _mulM(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _gauss_compute(active: wp.array(dtype=wp.int32),
-                   Ma: wp.array(dtype=wp.float64, ndim=2),
-                   qfrc_smooth: wp.array(dtype=wp.float64, ndim=2),
-                   qacc: wp.array(dtype=wp.float64, ndim=2),
-                   qacc_smooth: wp.array(dtype=wp.float64, ndim=2),
-                   cost: wp.array(dtype=wp.float64),
-                   quad0: wp.array(dtype=wp.float64),
+                   Ma: wp.array(dtype=scalar.wp_real, ndim=2),
+                   qfrc_smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+                   qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                   qacc_smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+                   cost: wp.array(dtype=scalar.wp_real),
+                   quad0: wp.array(dtype=scalar.wp_real),
                    add_to_cost: wp.array(dtype=wp.int32)):
     # CGupdateConstraint Gauss half / warmstart Gauss half (engine_solver.c:793-798,
     # engine_forward.c:427-432): sum 0.5*(Ma-qfrc_smooth)*(qacc-qacc_smooth),
@@ -132,9 +133,9 @@ def _gauss_compute(active: wp.array(dtype=wp.int32),
     w = wp.tid()
     if active[w] == 0:
         return
-    acc = wp.float64(0.0)
+    acc = scalar.wp_real(0.0)
     for i in range(NV):
-        acc = acc + wp.float64(0.5) * (Ma[w, i] - qfrc_smooth[w, i]) * (qacc[w, i] - qacc_smooth[w, i])
+        acc = acc + scalar.wp_real(0.5) * (Ma[w, i] - qfrc_smooth[w, i]) * (qacc[w, i] - qacc_smooth[w, i])
     quad0[w] = acc
     if add_to_cost[w] != 0:
         cost[w] = cost[w] + acc
@@ -167,9 +168,9 @@ def _count_active_cone(active: wp.array(dtype=wp.int32),
 def _save_old(active: wp.array(dtype=wp.int32),
               nefc: wp.array(dtype=wp.int32),
               state: wp.array(dtype=wp.int32),
-              cost: wp.array(dtype=wp.float64),
+              cost: wp.array(dtype=scalar.wp_real),
               oldstate: wp.array(dtype=wp.int32),
-              oldcost: wp.array(dtype=wp.float64),
+              oldcost: wp.array(dtype=scalar.wp_real),
               rows: int):
     # mj_solCGNewton "save old" (engine_solver.c:1548-1551): memcpy(oldstate,
     # nefc elements) and oldcost = ctx.cost.  The copy is bounded by the
@@ -186,7 +187,7 @@ def _save_old(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _gate_ls(active: wp.array(dtype=wp.int32),
-             alpha: wp.array(dtype=wp.float64),
+             alpha: wp.array(dtype=scalar.wp_real),
              s07_status: wp.array(dtype=wp.int32),
              stop_reason: wp.array(dtype=wp.int32),
              err_code: wp.array(dtype=wp.int32)):
@@ -201,7 +202,7 @@ def _gate_ls(active: wp.array(dtype=wp.int32),
             err_code[w] = 1000 + s07_status[w]
         active[w] = 0
         return
-    if alpha[w] == wp.float64(0.0):
+    if alpha[w] == scalar.wp_real(0.0):
         stop_reason[w] = 10
         active[w] = 0
 
@@ -263,8 +264,8 @@ def _gate_maxiter(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _direction_commit(active: wp.array(dtype=wp.int32),
-                      candidate: wp.array(dtype=wp.float64, ndim=2),
-                      search: wp.array(dtype=wp.float64, ndim=2)):
+                      candidate: wp.array(dtype=scalar.wp_real, ndim=2),
+                      search: wp.array(dtype=scalar.wp_real, ndim=2)):
     # engine_solver.c:1528 / :1585-1586 mju_scl(search, Mgrad, -1).
     # Only the world still looping writes search: the tolerance/maxiter break
     # and the alpha==0 break leave the previous search untouched (source
@@ -278,8 +279,8 @@ def _direction_commit(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _init_direction(active: wp.array(dtype=wp.int32),
-                    candidate: wp.array(dtype=wp.float64, ndim=2),
-                    search: wp.array(dtype=wp.float64, ndim=2)):
+                    candidate: wp.array(dtype=scalar.wp_real, ndim=2),
+                    search: wp.array(dtype=scalar.wp_real, ndim=2)):
     # engine_solver.c:1528 "start both with preconditioned gradient":
     # unconditional search = -Mgrad before the loop for every Newton world.
     w = wp.tid()
@@ -291,10 +292,10 @@ def _init_direction(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _empty_fast_path(empty: wp.array(dtype=wp.int32),
-                     qacc_smooth: wp.array(dtype=wp.float64, ndim=2),
-                     qacc: wp.array(dtype=wp.float64, ndim=2),
-                     warmstart: wp.array(dtype=wp.float64, ndim=2),
-                     qfrc_constraint: wp.array(dtype=wp.float64, ndim=2),
+                     qacc_smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+                     qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                     warmstart: wp.array(dtype=scalar.wp_real, ndim=2),
+                     qfrc_constraint: wp.array(dtype=scalar.wp_real, ndim=2),
                      solver_iter: wp.array(dtype=wp.int32)):
     # engine_forward.c:462-468: qacc=qacc_smooth, qacc_warmstart=qacc_smooth,
     # qfrc_constraint=+0, solver_iter=0.  solver_nnz and the old stats tail
@@ -305,14 +306,14 @@ def _empty_fast_path(empty: wp.array(dtype=wp.int32),
     for i in range(NV):
         qacc[w, i] = qacc_smooth[w, i]
         warmstart[w, i] = qacc_smooth[w, i]
-        qfrc_constraint[w, i] = wp.float64(0.0)  # mju_zero writes +0
+        qfrc_constraint[w, i] = scalar.wp_real(0.0)  # mju_zero writes +0
     solver_iter[w] = 0
 
 
 @wp.kernel(enable_backward=False)
 def _copy_qacc(active: wp.array(dtype=wp.int32),
-               src: wp.array(dtype=wp.float64, ndim=2),
-               dst: wp.array(dtype=wp.float64, ndim=2)):
+               src: wp.array(dtype=scalar.wp_real, ndim=2),
+               dst: wp.array(dtype=scalar.wp_real, ndim=2)):
     # mju_copy(d->qacc, d->qacc_warmstart/d->qacc_smooth, nv) at warmstart entry
     # and the cold branch (engine_forward.c:395 / :450).
     w = wp.tid()
@@ -324,8 +325,8 @@ def _copy_qacc(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _copy_cost(active: wp.array(dtype=wp.int32),
-               src: wp.array(dtype=wp.float64),
-               dst: wp.array(dtype=wp.float64)):
+               src: wp.array(dtype=scalar.wp_real),
+               dst: wp.array(dtype=scalar.wp_real)):
     # Preserve the warm-start evaluator total before the smooth evaluator
     # overwrites cost (engine_forward.c:418-438).
     w = wp.tid()
@@ -337,7 +338,7 @@ def _copy_cost(active: wp.array(dtype=wp.int32),
 @wp.kernel(enable_backward=False)
 def _zero_rows(active: wp.array(dtype=wp.int32),
                nefc: wp.array(dtype=wp.int32),
-               arr: wp.array(dtype=wp.float64),
+               arr: wp.array(dtype=scalar.wp_real),
                rows: int):
     # cold branch mju_zero(d->efc_force, nefc) (engine_forward.c:450):
     # exactly nefc rows become +0; rows [nefc, rows) keep their values.
@@ -347,7 +348,7 @@ def _zero_rows(active: wp.array(dtype=wp.int32),
     base = w * rows
     n = nefc[w]
     for r in range(n):
-        arr[base + r] = wp.float64(0.0)
+        arr[base + r] = scalar.wp_real(0.0)
 
 
 @wp.kernel(enable_backward=False)
@@ -379,7 +380,7 @@ def _finalize_exit(newton_world: wp.array(dtype=wp.int32),
 
 
 @wp.kernel(enable_backward=False)
-def _seed_eval(evals: wp.array(dtype=wp.float64, ndim=3),
+def _seed_eval(evals: wp.array(dtype=scalar.wp_real, ndim=3),
                tags: wp.array(dtype=wp.int32, ndim=2)):
     # S07 acceptance discipline applied every iteration: seed the full
     # evaluation diagnostics with the untouched markers BEFORE the launch, so
@@ -389,21 +390,21 @@ def _seed_eval(evals: wp.array(dtype=wp.float64, ndim=3),
     for e in range(TRACECAP):
         tags[w, e] = TAPE_UNUSED_TAG
         for c in range(4):
-            evals[w, e, c] = wp.float64(TAPE_UNUSED_F)
+            evals[w, e, c] = scalar.wp_real(TAPE_UNUSED_F)
 
 
 @wp.kernel(enable_backward=False)
 def _tape_commit(slot: int,
                  tape_slots: int,
                  loop_active: wp.array(dtype=wp.int32),
-                 alpha: wp.array(dtype=wp.float64),
-                 slope: wp.array(dtype=wp.float64),
-                 lineslope: wp.array(dtype=wp.float64),
-                 improvement: wp.array(dtype=wp.float64),
-                 gradient: wp.array(dtype=wp.float64),
-                 cost: wp.array(dtype=wp.float64),
-                 oldcost: wp.array(dtype=wp.float64),
-                 quad0: wp.array(dtype=wp.float64),
+                 alpha: wp.array(dtype=scalar.wp_real),
+                 slope: wp.array(dtype=scalar.wp_real),
+                 lineslope: wp.array(dtype=scalar.wp_real),
+                 improvement: wp.array(dtype=scalar.wp_real),
+                 gradient: wp.array(dtype=scalar.wp_real),
+                 cost: wp.array(dtype=scalar.wp_real),
+                 oldcost: wp.array(dtype=scalar.wp_real),
+                 quad0: wp.array(dtype=scalar.wp_real),
                  LSiter: wp.array(dtype=wp.int32),
                  LSresult: wp.array(dtype=wp.int32),
                  committed: wp.array(dtype=wp.int32),
@@ -419,12 +420,12 @@ def _tape_commit(slot: int,
                  s08b_status: wp.array(dtype=wp.int32),
                  stage_status: wp.array(dtype=wp.int32),
                  s08c_status: wp.array(dtype=wp.int32),
-                 tape_f: wp.array(dtype=wp.float64, ndim=3),
+                 tape_f: wp.array(dtype=scalar.wp_real, ndim=3),
                  tape_i: wp.array(dtype=wp.int32, ndim=3),
                  tape_status: wp.array(dtype=wp.int32, ndim=3),
-                 eval_trace: wp.array(dtype=wp.float64, ndim=3),
+                 eval_trace: wp.array(dtype=scalar.wp_real, ndim=3),
                  eval_tag: wp.array(dtype=wp.int32, ndim=2),
-                 tape_eval: wp.array(dtype=wp.float64, ndim=4),
+                 tape_eval: wp.array(dtype=scalar.wp_real, ndim=4),
                  tape_tag: wp.array(dtype=wp.int32, ndim=3)):
     # Witness tape: one slot per masked-schedule iteration.  Written on device
     # so the production loop never downloads to decide or to observe.
@@ -465,8 +466,8 @@ def _tape_commit(slot: int,
 
 @wp.kernel(enable_backward=False)
 def _tape_ls_input(slot: int, tape_slots: int,
-                   quad0: wp.array(dtype=wp.float64),
-                   tape: wp.array(dtype=wp.float64, ndim=2)):
+                   quad0: wp.array(dtype=scalar.wp_real),
+                   tape: wp.array(dtype=scalar.wp_real, ndim=2)):
     if slot >= tape_slots:
         return
     w = wp.tid()
@@ -475,14 +476,14 @@ def _tape_ls_input(slot: int, tape_slots: int,
 
 @wp.kernel(enable_backward=False)
 def _tape_ls_buffers(slot: int, tape_slots: int, rows: int,
-                     Mv: wp.array(dtype=wp.float64, ndim=2),
-                     Jv: wp.array(dtype=wp.float64, ndim=2),
-                     quad: wp.array(dtype=wp.float64, ndim=3),
-                     quadGauss: wp.array(dtype=wp.float64, ndim=2),
-                     tape_Mv: wp.array(dtype=wp.float64, ndim=3),
-                     tape_Jv: wp.array(dtype=wp.float64, ndim=3),
-                     tape_quad: wp.array(dtype=wp.float64, ndim=4),
-                     tape_quadGauss: wp.array(dtype=wp.float64, ndim=3)):
+                     Mv: wp.array(dtype=scalar.wp_real, ndim=2),
+                     Jv: wp.array(dtype=scalar.wp_real, ndim=2),
+                     quad: wp.array(dtype=scalar.wp_real, ndim=3),
+                     quadGauss: wp.array(dtype=scalar.wp_real, ndim=2),
+                     tape_Mv: wp.array(dtype=scalar.wp_real, ndim=3),
+                     tape_Jv: wp.array(dtype=scalar.wp_real, ndim=3),
+                     tape_quad: wp.array(dtype=scalar.wp_real, ndim=4),
+                     tape_quadGauss: wp.array(dtype=scalar.wp_real, ndim=3)):
     if slot >= tape_slots:
         return
     w = wp.tid()
@@ -537,11 +538,11 @@ def _validate_contact_rows(nefc: wp.array(dtype=wp.int32),
                            typ: wp.array(dtype=wp.int32),
                            cid: wp.array(dtype=wp.int32),
                            row_dim: wp.array(dtype=wp.int32),
-                           row_mu: wp.array(dtype=wp.float64),
-                           row_fr: wp.array(dtype=wp.float64),
+                           row_mu: wp.array(dtype=scalar.wp_real),
+                           row_fr: wp.array(dtype=scalar.wp_real),
                            con_dim: wp.array(dtype=wp.int32),
-                           con_mu: wp.array(dtype=wp.float64),
-                           con_fr: wp.array(dtype=wp.float64),
+                           con_mu: wp.array(dtype=scalar.wp_real),
+                           con_fr: wp.array(dtype=scalar.wp_real),
                            newton: wp.array(dtype=wp.int32),
                            active: wp.array(dtype=wp.int32),
                            err_code: wp.array(dtype=wp.int32),
@@ -567,14 +568,14 @@ def _validate_contact_rows(nefc: wp.array(dtype=wp.int32),
                 return
             d = con_dim[cb+c]
             m = con_mu[cb+c]
-            if (d != 1 and d != 3 and d != 4 and d != 6) or i+d > n or m <= wp.float64(0.0) or not wp.isfinite(m):
+            if (d != 1 and d != 3 and d != 4 and d != 6) or i+d > n or m <= scalar.wp_real(0.0) or not wp.isfinite(m):
                 return
             for j in range(d):
                 if typ[rb+i+j] != 7 or cid[rb+i+j] != c:
                     return
             for j in range(d-1):
                 f = con_fr[(cb+c)*5+j]
-                if f <= wp.float64(0.0) or not wp.isfinite(f):
+                if f <= scalar.wp_real(0.0) or not wp.isfinite(f):
                     return
             i += d
         elif t >= 0 and t <= 6:

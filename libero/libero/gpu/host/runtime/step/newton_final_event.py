@@ -4,6 +4,7 @@ Only successful original empty/finalize exits produce completed=1. A finite
 check rejection at finalize is recorded separately as rejected_final_entry;
 intermediate errors cannot masquerade as a completed native acceleration.
 """
+import libero.gpu.precision as scalar
 import ast
 import inspect
 import hashlib
@@ -12,10 +13,10 @@ from libero.gpu.host.runtime.newton import live_copy_api as original
 wp.set_module_options({"enable_backward":False,"fuse_fp":True,"fast_math":False})
 
 @wp.kernel(enable_backward=False)
-def _final_event(qacc:wp.array(dtype=wp.float64,ndim=2), empty:wp.array(dtype=wp.int32),
+def _final_event(qacc:wp.array(dtype=scalar.wp_real,ndim=2), empty:wp.array(dtype=wp.int32),
         newton_world:wp.array(dtype=wp.int32), solver_exit:wp.array(dtype=wp.int32),
         error:wp.array(dtype=wp.int32), finalize_status:wp.array(dtype=wp.int32),
-        attempted:wp.array(dtype=wp.int64), candidate:wp.array(dtype=wp.float64,ndim=2),
+        attempted:wp.array(dtype=wp.int64), candidate:wp.array(dtype=scalar.wp_real,ndim=2),
         stamp:wp.array(dtype=wp.int64), completed:wp.array(dtype=wp.int32),
         origin:wp.array(dtype=wp.int32), stage:wp.array(dtype=wp.int32),
         rejected_final_entry:wp.array(dtype=wp.int32), nv:int):
@@ -46,7 +47,7 @@ class FinalEventAdapter(original.ColdNewtonRuntimeAdapter):
         class EventSolver(original_factory):
             def __init__(self,ws):
                 super().__init__(ws)
-                self.candidate=wp.zeros(ws.qacc.shape,dtype=wp.float64,device=ws.device)
+                self.candidate=wp.zeros(ws.qacc.shape,dtype=scalar.wp_real,device=ws.device)
                 self.candidate_attempt=wp.zeros(ws.nworld,dtype=wp.int64,device=ws.device)
                 self.candidate_completed=wp.zeros(ws.nworld,dtype=wp.int32,device=ws.device)
                 self.candidate_origin=wp.zeros(ws.nworld,dtype=wp.int32,device=ws.device)

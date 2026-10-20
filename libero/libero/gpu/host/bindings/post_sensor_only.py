@@ -5,6 +5,7 @@ supplies the complete legacy mutable-owner inventory, which remains held. This
 entry does not install adapter.enqueue or the full-force forward callback.
 Only sensor/valid/written returned here belong to post_sensor_only_v1.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 from types import SimpleNamespace
 import hashlib
@@ -38,7 +39,7 @@ def bind(raw,*,force_mask,acc_mask,worlds,root,legacy_mutable_owners,
         if '*' not in decl:
             if isinstance(a,bool) or not isinstance(a,(int,np.integer)):raise ValueError('sensor-only exact scalar: '+name)
             scalars[name]=int(a);continue
-        dtype=wp.int64 if 'long long' in decl or 'int64_t' in decl else wp.float64 if 'double' in decl else wp.int32
+        dtype=wp.int64 if 'long long' in decl or 'int64_t' in decl else scalar.wp_real if 'real_t' in decl else wp.int32
         if not isinstance(a,wp.array) or a.dtype!=dtype or int(a.ptr)<=0 or int(a.ptr)%wp.types.type_size_in_bytes(dtype):
             raise ValueError('sensor-only typed owner: '+name)
         arrays[name]=a

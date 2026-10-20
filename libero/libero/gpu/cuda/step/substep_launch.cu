@@ -6,13 +6,17 @@
 using namespace flash_libero;
 
 // Kept with the maintained ctypes mirror in host/runtime/step/substep_types.py.
-static_assert(sizeof(SubstepArguments) == 6288, "Update both CUDA and ctypes argument layouts");
+static_assert(sizeof(SubstepArguments) == (FLASH_REAL_BITS == 64 ? 6288 : 6280), "Update both CUDA and ctypes argument layouts");
 
 extern "C" size_t flash_libero_newton_arguments_size() { return sizeof(physics_newton::NewtonArguments); }
 extern "C" size_t flash_libero_newton_world_size() { return sizeof(physics_newton::NewtonWorldData); }
 extern "C" size_t flash_libero_newton_model_size() { return sizeof(physics_newton::NewtonModelData); }
 extern "C" size_t flash_libero_newton_post_size() { return sizeof(physics_newton::NewtonPostData); }
 
+extern "C" int flash_libero_scalar_bytes() { return sizeof(real_t); }
+extern "C" int flash_libero_substep_solves_per_substep() {
+  return 3;
+}
 extern "C" size_t flash_libero_substep_arguments_size() { return sizeof(SubstepArguments); }
 extern "C" size_t flash_libero_substep_shared_bytes() { return substep_shared_bytes; }
 extern "C" int flash_libero_substep_dimension(int index) {
@@ -59,6 +63,33 @@ extern "C" int flash_libero_select_substep_continuation(const SubstepArguments *
       arguments, static_cast<SubstepEntry>(entry), worlds, predicate);
   return int(cudaGetLastError());
 }
+
+#if FLASH_REAL_BITS == 32
+extern "C" int flash_libero_substep_single_solves_per_substep() { return 1; }
+extern "C" int flash_libero_substep_single_configure(int *registers, int *static_shared) {
+  cudaError_t status = cudaFuncSetAttribute(single_solve_substep_kernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, substep_shared_bytes);
+  if (status != cudaSuccess) return int(status);
+  cudaFuncAttributes attributes;
+  status = cudaFuncGetAttributes(&attributes, single_solve_substep_kernel);
+  if (status != cudaSuccess) return int(status);
+  *registers = attributes.numRegs;
+  *static_shared = attributes.sharedSizeBytes;
+  return 0;
+}
+extern "C" int flash_libero_launch_substep_single_with_post(const SubstepArguments *arguments, int worlds,
+    int policy_step, int entry, int publish_post, void *stream) {
+  if (publish_post != 0 && publish_post != 1) return int(cudaErrorInvalidValue);
+  single_solve_substep_kernel<<<dim3(1, worlds), substep_threads, substep_shared_bytes,
+      static_cast<cudaStream_t>(stream)>>>(arguments, policy_step != 0,
+      static_cast<SubstepEntry>(entry), publish_post != 0);
+  return int(cudaGetLastError());
+}
+extern "C" int flash_libero_launch_substep_single(const SubstepArguments *arguments, int worlds,
+    int policy_step, int entry, void *stream) {
+  return flash_libero_launch_substep_single_with_post(arguments, worlds, policy_step, entry, 1, stream);
+}
+#endif
 
 #if defined(FLASH_SUBSTEP_PROFILE)
 namespace flash_libero::substep_profile {

@@ -1,4 +1,5 @@
 """One offline build of the complete shipped LIBERO instance set."""
+import libero.gpu.precision as scalar
 import gc
 import hashlib
 import importlib.metadata
@@ -14,10 +15,11 @@ import time
 
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import cache_root
+from .project_paths import project_paths
 
 
 def project_root(root=None):
-    return Path(root).expanduser().resolve() if root is not None else cache_root() / 'project'
+    return project_paths(root).precision
 
 
 def _sha(path):
@@ -35,7 +37,7 @@ _NEWTON_LEGACY_SOURCE_ROOTS = ('/rjs2/lhw/Flash-LIBERO',)
 def _newton_recipe(source, bridge, closure, archive_sha):
     encoded = json.dumps(closure, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256((source + bridge + encoded + archive_sha +
-        '|fma=true|prec-div=true|prec-sqrt=true').encode()).hexdigest()
+        '|fma=true|prec-div=true|prec-sqrt=true|real='+str(scalar.bits)).encode()).hexdigest()
 
 
 def collect_newton_dependency_inputs(commands, *, architecture, mathdx_archive):
@@ -402,17 +404,52 @@ def migrate_newton_path_alias(root, *, target, identity, source, bridge_source,
 
 
 def _source_identity_files(*, include_excluded=False):
-    """Enumerate source inputs; session guards also watch the excluded hosts."""
+    """Native inputs; optional MJWarp owns separate source/binary receipts.
+
+    Session guards also watch excluded hosts and optional engine sources.
+    """
     excluded = {'host/build/aot.py', 'host/build/task_catalog.py', 'host/build/compilation.py',
                 'build.py', 'host/adapters/environment/batch_env.py',
-                'host/runtime/core/product_paths.py'}
+                'host/runtime/core/product_paths.py', 'cuda/control/mjwarp_controller.cu',
+                'data/mjwarp_source_pin.json', 'host/backends/selection.py',
+                # Opt-in FP32 leaf owns its CUDA fingerprint/local replay
+                # receipt. It is not linked into either native scalar engine.
+                'cuda/newton/mjwarp_hessian.cu', 'cuda/newton/mjwarp_hessian.cuh',
+                'host/runtime/newton/mjwarp_hessian.py',
+                'cuda/newton/mjwarp_direction.cu', 'cuda/newton/mjwarp_direction.cuh',
+                'host/runtime/newton/mjwarp_direction.py',
+                'cuda/newton/mjwarp_constraint.cu', 'cuda/newton/mjwarp_constraint.cuh',
+                'host/runtime/newton/mjwarp_constraint.py',
+                'cuda/newton/mjwarp_linesearch.cu', 'cuda/newton/mjwarp_linesearch.cuh',
+                'host/runtime/newton/mjwarp_linesearch.py',
+                'cuda/newton/mjwarp_solver_state.cu', 'cuda/newton/mjwarp_solver_state.cuh',
+                'cuda/newton/mjwarp_products.cuh', 'host/runtime/newton/mjwarp_solver_state.py',
+                'cuda/dynamics/mjwarp_mass_solve.cu', 'cuda/dynamics/mjwarp_mass_solve.cuh',
+                'host/runtime/dynamics/mjwarp_mass_solve.py',
+                'cuda/dynamics/mjwarp_smooth_force.cu', 'cuda/dynamics/mjwarp_smooth_force.cuh',
+                'host/runtime/dynamics/mjwarp_smooth_force.py',
+                'cuda/dynamics/mjwarp_mass_factor.cu', 'cuda/dynamics/mjwarp_mass_factor.cuh',
+                'host/runtime/dynamics/mjwarp_mass_factor.py',
+                'cuda/dynamics/mjwarp_mass_matrix.cu', 'cuda/dynamics/mjwarp_mass_matrix.cuh',
+                'host/runtime/dynamics/mjwarp_mass_matrix.py',
+                'cuda/dynamics/mjwarp_velocity.cu', 'cuda/dynamics/mjwarp_velocity.cuh',
+                'cuda/dynamics/mjwarp_bias.cu', 'cuda/dynamics/mjwarp_bias.cuh',
+                'cuda/dynamics/mjwarp_spatial.cuh', 'host/runtime/dynamics/mjwarp_motion.py',
+                'host/runtime/dynamics/mjwarp_velocity.py', 'host/runtime/dynamics/mjwarp_bias.py',
+                'cuda/dynamics/mjwarp_postconstraint.cu', 'cuda/dynamics/mjwarp_postconstraint.cuh',
+                'host/runtime/dynamics/mjwarp_postconstraint.py',
+                'cuda/dynamics/mjwarp_passive.cu', 'cuda/dynamics/mjwarp_passive.cuh',
+                'host/runtime/dynamics/mjwarp_passive.py',
+                'cuda/dynamics/mjwarp_actuation.cu', 'cuda/dynamics/mjwarp_actuation.cuh',
+                'host/runtime/dynamics/mjwarp_actuation.py'}
     files = {}
     for base in (GPU_ROOT, REPO_ROOT / 'scripts'):
         for path in sorted(base.rglob('*')):
             if path.is_file() and path.suffix in ('.py', '.cu', '.cuh', '.h', '.hpp', '.json'):
                 if '__pycache__' not in path.parts and not (
                         not include_excluded and base == GPU_ROOT and
-                        path.relative_to(base).as_posix() in excluded):
+                        (path.relative_to(base).as_posix() in excluded or
+                         path.relative_to(base).as_posix().startswith('host/backends/mjwarp/'))):
                     files[str(path.relative_to(REPO_ROOT))] = path
     return files
 
@@ -420,7 +457,7 @@ def _source_identity_files(*, include_excluded=False):
 def source_identity():
     files = {name: _sha(path) for name, path in _source_identity_files().items()}
     encoded = json.dumps(files, sort_keys=True, separators=(',', ':')).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return hashlib.sha256(encoded + ('|real='+str(scalar.bits)).encode()).hexdigest()
 
 
 def save(path, value):
@@ -872,6 +909,7 @@ def _compile_instance_in_scope(job, *, reuse_events=()):
     states = np.load(Path(task['directory'])/'initial_states.npy', allow_pickle=False)
     with GpuBatchEnv(bddl, num_envs, init_states=states, seed=seed, device=device,
                      build_root=root, initialize=False, allow_compile=True,
+                     physics_engine='native',
                      use_camera_obs=False, ignore_done=True) as env:
         from .compilation import compilation_scope
         with compilation_scope(True) as module_scope:
@@ -891,7 +929,7 @@ def _compile_instance_in_scope(job, *, reuse_events=()):
         warp_artifacts = {}
         for module in _loaded_warp_artifacts(root, device).values():
             warp_artifacts.update(module['artifacts'])
-        row = dict(key=task['key'], source_identity=fingerprint, num_envs=num_envs, seed=seed,
+        row = dict(key=task['key'], source_identity=fingerprint, real_bits=scalar.bits, num_envs=num_envs, seed=seed,
             model_sha256=diagnostics['model_sha256'], seconds=time.monotonic()-tick,
             constraint_package=str(env.built._gpu_native_intake_binding.package),
             native_artifacts=native_artifacts, warp_required=sorted(warp_artifacts), warp_artifacts=warp_artifacts,
@@ -940,7 +978,7 @@ def _compile_catalog_in_scope(root, tasks, *, num_envs, seed, device, jobs, prog
     contract = observation_product_contract()
     previous_complete = preserve_complete_build(root)
     record = dict(schema='libero-unified-aot-build-v1', status='building',
-                  source_identity=fingerprint, num_envs=num_envs, seed=seed, tasks={},
+                  source_identity=fingerprint, real_bits=scalar.bits, num_envs=num_envs, seed=seed, tasks={},
                   observation_contract=contract)
     if reuse_only:
         record.update(reuse_only=True, refresh_kind='reuse_validation_refresh')

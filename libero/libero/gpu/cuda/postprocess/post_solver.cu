@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // FP64 force/acceleration postprocessing, independent of Newton iteration.
 // One dimension-general device object serves every catalogue specialization.
 #include <cuda_runtime.h>
@@ -9,24 +10,24 @@
 #include "../common/warp.cuh"
 
 namespace physics_post {
-static __device__ __forceinline__ void cross3(const double *a, const double *b, double *out) {
-  const double x = a[1] * b[2] - a[2] * b[1];
-  const double y = a[2] * b[0] - a[0] * b[2];
-  const double z = a[0] * b[1] - a[1] * b[0];
+static __device__ __forceinline__ void cross3(const real_t *a, const real_t *b, real_t *out) {
+  const real_t x = a[1] * b[2] - a[2] * b[1];
+  const real_t y = a[2] * b[0] - a[0] * b[2];
+  const real_t z = a[0] * b[1] - a[1] * b[0];
   out[0] = x; out[1] = y; out[2] = z;
 }
 
 namespace libero_post {
-static __device__ inline double dof(const double *a, const double *q, int adr, int n, int k) {
+static __device__ inline real_t dof(const real_t *a, const real_t *q, int adr, int n, int k) {
   if (n == 1)
     return a[6 * adr + k] * q[adr];
-  double v = 0;
+  real_t v = 0;
   for (int i = 0; i < n; i++)
     if (q[adr + i] != 0)
       v += a[6 * (adr + i) + k] * q[adr + i];
   return v;
 }
-static __device__ inline void inert(const double *i, const double *v, double *f) {
+static __device__ inline void inert(const real_t *i, const real_t *v, real_t *f) {
   f[0] = i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5];
   f[1] = i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5];
   f[2] = i[4] * v[0] + i[5] * v[1] + i[2] * v[2] - i[7] * v[3] + i[6] * v[4];
@@ -34,9 +35,9 @@ static __device__ inline void inert(const double *i, const double *v, double *f)
   f[4] = i[6] * v[2] - i[8] * v[0] + i[9] * v[4];
   f[5] = i[7] * v[0] - i[6] * v[1] + i[9] * v[5];
 }
-static __device__ inline void wrench(double *out, const double *f, const double *t, const double *com,
-                                     const double *pos, double sign) {
-  double d[3], c[3];
+static __device__ inline void wrench(real_t *out, const real_t *f, const real_t *t, const real_t *com,
+                                     const real_t *pos, real_t sign) {
+  real_t d[3], c[3];
   for (int k = 0; k < 3; k++)
     d[k] = com[k] - pos[k];
   cross3(d, f, c);
@@ -265,10 +266,10 @@ static __device__ inline void post_contact_index(int n, int cc, int b, const int
 namespace libero_post {
 // Each source view is guarded independently; workspace starts require only
 // double alignment. Plane-to-AoS pairs intentionally use separate scalar reads.
-static __device__ __forceinline__ bool post_finite(const double *p, int n) {
+static __device__ __forceinline__ bool post_finite(const real_t *p, int n) {
   return !libero_vec::any_nonfinite_lane(p, n, 0, 1);
 }
-static __device__ __forceinline__ void post_export(const double *src, double *dst, int n, int b,
+static __device__ __forceinline__ void post_export(const real_t *src, real_t *dst, int n, int b,
                                                    bool planes) {
   if (!planes) {
     libero_vec::copy_block(src, dst, n);
@@ -276,7 +277,7 @@ static __device__ __forceinline__ void post_export(const double *src, double *ds
   }
   for (int pair = threadIdx.x; pair < n / 2; pair += blockDim.x) {
     const int k = 2 * pair;
-    const double x = src[(k % 6) * b + k / 6], y = src[((k + 1) % 6) * b + (k + 1) / 6];
+    const real_t x = src[(k % 6) * b + k / 6], y = src[((k + 1) % 6) * b + (k + 1) / 6];
     libero_vec::store_pair(dst + k, x, y);
   }
   if ((n & 1) && threadIdx.x == 0) {
@@ -285,10 +286,10 @@ static __device__ __forceinline__ void post_export(const double *src, double *ds
   }
 }
 // Exactly count valid values of an enabled, schema-validated contact only.
-static __device__ __forceinline__ void post_decode(const double *ef, int count, double *d) {
+static __device__ __forceinline__ void post_decode(const real_t *ef, int count, real_t *d) {
   int k = 0;
   for (; k + 1 < count; k += 2) {
-    const double2 p = libero_vec::load_pair(ef + k);
+    const real2_t p = libero_vec::load_pair(ef + k);
     d[k] = p.x;
     d[k + 1] = p.y;
   }
@@ -296,15 +297,15 @@ static __device__ __forceinline__ void post_decode(const double *ef, int count, 
     d[k] = ef[k];
 }
 static __device__ inline void
-rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, const double *ci,
-                  const double *cv, const double *cd, const double *cdd, const double *xi, const double *com,
-                  const double *sp, const double *sm, const double *xf, const double *ef, const int *nc,
+rne_shared_scalar(int w, const int *active, const real_t *qv, const real_t *qa, const real_t *ci,
+                  const real_t *cv, const real_t *cd, const real_t *cdd, const real_t *xi, const real_t *com,
+                  const real_t *sp, const real_t *sm, const real_t *xf, const real_t *ef, const int *nc,
                   const int *ne, const int *neq, const int *dim, const int *adr, const int *g1, const int *g2,
-                  const double *frame, const double *pos, const int *parent, const int *da, const int *dn,
-                  const int *root, const int *gb, const double *grav, int cc, int ec, double *acc,
-                  double *ext, double *intr, double *decoded, int *status, int b, int v, int ns, int ng,
-                  bool local_outputs, bool diagnostics, bool qacc_world_stride, const double *bias_acc,
-                  const double *bias_force, bool cache_ok, bool validated = false) {
+                  const real_t *frame, const real_t *pos, const int *parent, const int *da, const int *dn,
+                  const int *root, const int *gb, const real_t *grav, int cc, int ec, real_t *acc,
+                  real_t *ext, real_t *intr, real_t *decoded, int *status, int b, int v, int ns, int ng,
+                  bool local_outputs, bool diagnostics, bool qacc_world_stride, const real_t *bias_acc,
+                  const real_t *bias_force, bool cache_ok, bool validated = false) {
   status[w] = 0;
   qv += w * v;
   if (qacc_world_stride)
@@ -332,11 +333,11 @@ rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, 
   }
   decoded += w * cc * 6;
   if (!validated) {
-    libero_vec::fill_serial(acc, b * 6, 0.0);
-    libero_vec::fill_serial(ext, b * 6, 0.0);
-    libero_vec::fill_serial(intr, b * 6, 0.0);
+    libero_vec::fill_serial(acc, b * 6, REAL_C(0.0));
+    libero_vec::fill_serial(ext, b * 6, REAL_C(0.0));
+    libero_vec::fill_serial(intr, b * 6, REAL_C(0.0));
     if (diagnostics)
-      libero_vec::fill_serial(decoded, cc * 6, 0.0);
+      libero_vec::fill_serial(decoded, cc * 6, REAL_C(0.0));
   }
   if (active[w] == 0)
     return;
@@ -385,14 +386,14 @@ rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, 
   }
   for (int j = 0; j < n; j++)
     if (adr[j] >= 0) {
-      double d[6] = {0, 0, 0, 0, 0, 0};
+      real_t d[6] = {0, 0, 0, 0, 0, 0};
       post_decode(ef + adr[j], dim[j], d);
-      double fm[9], point[3];
+      real_t fm[9], point[3];
       libero_vec::copy_serial(frame + 9 * j, fm, 9);
       libero_vec::copy_serial(pos + 3 * j, point, 3);
       if (diagnostics)
         libero_vec::copy_serial(d, decoded + 6 * j, 6);
-      double f[3], t[3];
+      real_t f[3], t[3];
       for (int k = 0; k < 3; k++) {
         f[k] = fm[k] * d[0] + fm[3 + k] * d[1] + fm[6 + k] * d[2];
         t[k] = fm[k] * d[3] + fm[3 + k] * d[4] + fm[6 + k] * d[5];
@@ -405,14 +406,14 @@ rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, 
     }
   if (cache_ok) {
     // Cached velocity-only RNE; shared acc first holds the qacc-only increment.
-    libero_vec::fill_serial(acc, 6 * b, 0.0);
+    libero_vec::fill_serial(acc, 6 * b, REAL_C(0.0));
     bias_acc += w * 6 * b;
     bias_force += w * 6 * b;
     for (int j = 1; j < b; j++)
       for (int k = 0; k < 6; k++)
         acc[6 * j + k] = acc[6 * parent[j] + k] + dof(cd, qa, da[j], dn[j], k);
     for (int j = 1; j < b; j++) {
-      double f[6];
+      real_t f[6];
       inert(ci + 10 * j, acc + 6 * j, f);
       for (int k = 0; k < 6; k++)
         intr[6 * j + k] = (bias_force[k * b + j] + f[k]) - ext[6 * j + k];
@@ -421,13 +422,13 @@ rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, 
       acc[k] += bias_acc[(k % 6) * b + k / 6];
   } else {
     for (int j = 1; j < b; j++) {
-      double *a = acc + 6 * j;
-      const double *c = cv + 6 * j;
+      real_t *a = acc + 6 * j;
+      const real_t *c = cv + 6 * j;
       for (int k = 0; k < 6; k++)
         a[k] = acc[6 * parent[j] + k] + dof(cdd, qv, da[j], dn[j], k);
       for (int k = 0; k < 6; k++)
         a[k] += dof(cd, qa, da[j], dn[j], k);
-      double f[6], r[6], x[6];
+      real_t f[6], r[6], x[6];
       inert(ci + 10 * j, a, f);
       inert(ci + 10 * j, c, r);
       x[0] = -c[2] * r[1] + c[1] * r[2];
@@ -448,9 +449,9 @@ rne_shared_scalar(int w, const int *active, const double *qv, const double *qa, 
       intr[6 * parent[j] + k] += intr[6 * j + k];
   if (!validated && (!post_finite(acc, 6 * b) || !post_finite(ext, 6 * b) || !post_finite(intr, 6 * b))) {
     status[w] = 5;
-    libero_vec::fill_serial(acc, 6 * b, 0.0);
-    libero_vec::fill_serial(ext, 6 * b, 0.0);
-    libero_vec::fill_serial(intr, 6 * b, 0.0);
+    libero_vec::fill_serial(acc, 6 * b, REAL_C(0.0));
+    libero_vec::fill_serial(ext, 6 * b, REAL_C(0.0));
+    libero_vec::fill_serial(intr, 6 * b, REAL_C(0.0));
   }
 }
 // Register reduction followed by one shared result per warp. Full block call.
@@ -471,19 +472,19 @@ static __device__ __forceinline__ int post_block_min(int value, int *scratch) {
   __syncthreads();
   return result;
 }
-static __device__ __forceinline__ bool post_bad_strided(const double *values, int length) {
+static __device__ __forceinline__ bool post_bad_strided(const real_t *values, int length) {
   return libero_vec::any_nonfinite_block_lane(values, length);
 }
 // Validated independent bodies. Shared acc/ext/intr are [component][body].
 // FP64 lanes span paired 32-bit banks; no float-style +1 padding assumption.
 // Direct-child sums keep descending original body IDs.
 static __device__ inline void rne_body_ordered(
-    int w, const double *qv, const double *qa, const double *ci, const double *cv, const double *cd,
-    const double *cdd, const double *xi, const double *com, const double *xf, const double *ef, const int *nc,
-    const int *dim, const int *adr, const int *g1, const int *g2, const double *frame, const double *pos,
-    const int *parent, const int *da, const int *dn, const int *root, const int *gb, const double *grav,
-    int cc, double *acc, double *ext, double *intr, double *decoded, int b, int v, bool diagnostics,
-    bool qacc_world_stride, const double *bias_acc, const double *bias_force, bool cache_ok, int *body_index,
+    int w, const real_t *qv, const real_t *qa, const real_t *ci, const real_t *cv, const real_t *cd,
+    const real_t *cdd, const real_t *xi, const real_t *com, const real_t *xf, const real_t *ef, const int *nc,
+    const int *dim, const int *adr, const int *g1, const int *g2, const real_t *frame, const real_t *pos,
+    const int *parent, const int *da, const int *dn, const int *root, const int *gb, const real_t *grav,
+    int cc, real_t *acc, real_t *ext, real_t *intr, real_t *decoded, int b, int v, bool diagnostics,
+    bool qacc_world_stride, const real_t *bias_acc, const real_t *bias_force, bool cache_ok, int *body_index,
     int *body_offsets, int *body_counts, const int *level_offsets, const int *level_bodies, int nlevels,
     const int *children_offsets, const int *children_indices, int *event_ping = nullptr,
     int *event_pong = nullptr, int contact_index_mode = 0, int radix_min_contacts = 256,
@@ -517,12 +518,12 @@ static __device__ inline void rne_body_ordered(
   CF_POST_PROFILE_NEXT(Contacts);
   // Bounded contact tile replaces repeated per-incidence wrench decoding.
   // Every body keeps its stable CSR cursor; tile progression cannot reorder sides.
-  __shared__ double contact_tile[9 * 32];
+  __shared__ real_t contact_tile[9 * 32];
   // Supported body levels fit one block in the qualified path. For larger body
   // sets the body owner loops below use the existing per-body path instead.
   if (b - 1 <= int(blockDim.x)) {
     const int body = 1 + int(threadIdx.x);
-    double local[6] = {0, 0, 0, 0, 0, 0};
+    real_t local[6] = {0, 0, 0, 0, 0, 0};
     int cursor = body < b ? body_offsets[body] : 0;
     if (body < b) {
       bool nz = false;
@@ -536,9 +537,9 @@ static __device__ inline void rne_body_ordered(
       for (int j = base + int(threadIdx.x); j < end; j += blockDim.x)
         if (adr[j] >= 0) {
           const int slot = j - base;
-          double d[6] = {0, 0, 0, 0, 0, 0};
+          real_t d[6] = {0, 0, 0, 0, 0, 0};
           post_decode(ef + adr[j], dim[j], d);
-          double fm[9], point[3];
+          real_t fm[9], point[3];
           libero_vec::copy_serial(frame + 9 * j, fm, 9);
           libero_vec::copy_serial(pos + 3 * j, point, 3);
           if (diagnostics)
@@ -556,7 +557,7 @@ static __device__ inline void rne_body_ordered(
           if (j >= end)
             break;
           const int slot = j - base;
-          double f[3], t[3], point[3];
+          real_t f[3], t[3], point[3];
           for (int k = 0; k < 3; k++) {
             f[k] = contact_tile[k * 32 + slot];
             t[k] = contact_tile[(3 + k) * 32 + slot];
@@ -577,7 +578,7 @@ static __device__ inline void rne_body_ordered(
         if (adr[j] >= 0)
           libero_vec::copy_serial(ef + adr[j], decoded + 6 * j, dim[j]);
     for (int body = 1 + threadIdx.x; body < b; body += blockDim.x) {
-      double local[6] = {0, 0, 0, 0, 0, 0};
+      real_t local[6] = {0, 0, 0, 0, 0, 0};
       bool nz = false;
       for (int k = 0; k < 6; k++)
         nz |= xf[6 * body + k] != 0;
@@ -585,12 +586,12 @@ static __device__ inline void rne_body_ordered(
         wrench(local, xf + 6 * body, xf + 6 * body + 3, com + 3 * root[body], xi + 3 * body, 1);
       for (int i = body_offsets[body]; i < body_offsets[body + 1]; i++) {
         const int event = body_index[i], j = event >> 1, side = event & 1;
-        double d[6] = {0, 0, 0, 0, 0, 0};
+        real_t d[6] = {0, 0, 0, 0, 0, 0};
         post_decode(ef + adr[j], dim[j], d);
-        double fm[9], point[3];
+        real_t fm[9], point[3];
         libero_vec::copy_serial(frame + 9 * j, fm, 9);
         libero_vec::copy_serial(pos + 3 * j, point, 3);
-        double f[3], t[3];
+        real_t f[3], t[3];
         for (int k = 0; k < 3; k++) {
           f[k] = fm[k] * d[0] + fm[3 + k] * d[1] + fm[6 + k] * d[2];
           t[k] = fm[k] * d[3] + fm[3 + k] * d[4] + fm[6 + k] * d[5];
@@ -611,7 +612,7 @@ static __device__ inline void rne_body_ordered(
     // linear-work level recurrence instead of quadratic ancestor traversal.
     for (int i = threadIdx.x; i < 6 * (b - 1); i += blockDim.x) {
       const int body = 1 + i / 6, k = i % 6;
-      double value = 0.0;
+      real_t value = REAL_C(0.0);
       for (int ancestor = body; ancestor; ancestor = parent[ancestor])
         value += dof(cd, qa, da[ancestor], dn[ancestor], k);
       acc[k * b + body] = value;
@@ -641,7 +642,7 @@ static __device__ inline void rne_body_ordered(
     bias_force += w * 6 * b;
   }
   for (int j = 1 + threadIdx.x; j < b; j += blockDim.x) {
-    double f[6], a_body[6];
+    real_t f[6], a_body[6];
     for (int k = 0; k < 6; k++)
       a_body[k] = acc[k * b + j];
     inert(ci + 10 * j, a_body, f);
@@ -649,8 +650,8 @@ static __device__ inline void rne_body_ordered(
       for (int k = 0; k < 6; k++)
         intr[k * b + j] = (bias_force[k * b + j] + f[k]) - ext[k * b + j];
     } else {
-      const double *c = cv + 6 * j;
-      double r[6], x[6];
+      const real_t *c = cv + 6 * j;
+      real_t r[6], x[6];
       inert(ci + 10 * j, c, r);
       x[0] = -c[2] * r[1] + c[1] * r[2];
       x[1] = c[2] * r[0] - c[0] * r[2];
@@ -678,7 +679,7 @@ static __device__ inline void rne_body_ordered(
     // original descending-body order while distributing components over lanes.
     for (int i = threadIdx.x; i < 6 * count; i += blockDim.x) {
       const int j = level_bodies[first + i / 6], k = i % 6;
-      double value = intr[k * b + j];
+      real_t value = intr[k * b + j];
       for (int c = children_offsets[j]; c < children_offsets[j + 1]; c++)
         value += intr[k * b + children_indices[c]];
       intr[k * b + j] = value;
@@ -687,7 +688,7 @@ static __device__ inline void rne_body_ordered(
   }
   if (threadIdx.x < 6) {
     const int k = threadIdx.x;
-    double value = intr[k * b];
+    real_t value = intr[k * b];
     for (int c = children_offsets[0]; c < children_offsets[1]; c++)
       value += intr[k * b + children_indices[c]];
     intr[k * b] = value;
@@ -696,14 +697,14 @@ static __device__ inline void rne_body_ordered(
 }
 
 static __device__ inline void
-rne_shared(int w, const int *active, const double *qv, const double *qa, const double *ci, const double *cv,
-           const double *cd, const double *cdd, const double *xi, const double *com, const double *sp,
-           const double *sm, const double *xf, const double *ef, const int *nc, const int *ne, const int *neq,
-           const int *dim, const int *adr, const int *g1, const int *g2, const double *frame,
-           const double *pos, const int *parent, const int *da, const int *dn, const int *root, const int *gb,
-           const double *grav, int cc, int ec, double *acc, double *ext, double *intr, double *decoded,
+rne_shared(int w, const int *active, const real_t *qv, const real_t *qa, const real_t *ci, const real_t *cv,
+           const real_t *cd, const real_t *cdd, const real_t *xi, const real_t *com, const real_t *sp,
+           const real_t *sm, const real_t *xf, const real_t *ef, const int *nc, const int *ne, const int *neq,
+           const int *dim, const int *adr, const int *g1, const int *g2, const real_t *frame,
+           const real_t *pos, const int *parent, const int *da, const int *dn, const int *root, const int *gb,
+           const real_t *grav, int cc, int ec, real_t *acc, real_t *ext, real_t *intr, real_t *decoded,
            int *status, int b, int v, int ns, int ng, bool local_outputs, bool diagnostics,
-           bool qacc_world_stride, const double *bias_acc, const double *bias_force, bool cache_ok,
+           bool qacc_world_stride, const real_t *bias_acc, const real_t *bias_force, bool cache_ok,
            int *body_index = nullptr, int *body_offsets = nullptr, int *body_counts = nullptr,
            const int *level_offsets = nullptr, const int *level_bodies = nullptr, int nlevels = 0,
            const int *children_offsets = nullptr, const int *children_indices = nullptr,
@@ -711,20 +712,20 @@ rne_shared(int w, const int *active, const double *qv, const double *qa, const d
            int radix_min_contacts = 256, int *cached_event_body = nullptr, int *cached_contact_meta = nullptr,
            int topology_cache = 0) {
 
-  double *wa = acc + (local_outputs ? 0 : w * b * 6);
-  double *we = ext + (local_outputs ? 0 : w * b * 6);
-  double *wi = intr + (local_outputs ? 0 : w * b * 6);
+  real_t *wa = acc + (local_outputs ? 0 : w * b * 6);
+  real_t *we = ext + (local_outputs ? 0 : w * b * 6);
+  real_t *wi = intr + (local_outputs ? 0 : w * b * 6);
   __shared__ int post_vote[32];
   {
     CF_POST_PROFILE_STAGES(Validate);
     // Collective entry: a whole block owns one world. All full warps participate.
     if (threadIdx.x == 0)
       status[w] = 0;
-    libero_vec::fill_block(wa, 6 * b, 0.0);
-    libero_vec::fill_block(we, 6 * b, 0.0);
-    libero_vec::fill_block(wi, 6 * b, 0.0);
+    libero_vec::fill_block(wa, 6 * b, REAL_C(0.0));
+    libero_vec::fill_block(we, 6 * b, REAL_C(0.0));
+    libero_vec::fill_block(wi, 6 * b, REAL_C(0.0));
     if (diagnostics)
-      libero_vec::fill_block(decoded + w * cc * 6, 6 * cc, 0.0);
+      libero_vec::fill_block(decoded + w * cc * 6, 6 * cc, REAL_C(0.0));
     __syncthreads();
     if (active[w] == 0)
       return;
@@ -807,21 +808,21 @@ rne_shared(int w, const int *active, const double *qv, const double *qa, const d
   if (post_block_min(bad ? 0 : libero_warp::no_index, post_vote) == 0) {
     if (threadIdx.x == 0)
       status[w] = 5;
-    libero_vec::fill_block(wa, 6 * b, 0.0);
-    libero_vec::fill_block(we, 6 * b, 0.0);
-    libero_vec::fill_block(wi, 6 * b, 0.0);
+    libero_vec::fill_block(wa, 6 * b, REAL_C(0.0));
+    libero_vec::fill_block(we, 6 * b, REAL_C(0.0));
+    libero_vec::fill_block(wi, 6 * b, REAL_C(0.0));
   }
   __syncthreads();
 }
-static __device__ inline void sensor_shared(int w, const double *fr, const double *com, const double *pos,
-                                            const double *mat, const int *active, const int *type,
+static __device__ inline void sensor_shared(int w, const real_t *fr, const real_t *com, const real_t *pos,
+                                            const real_t *mat, const int *active, const int *type,
                                             const int *site, const int *adr, const int *sb, const int *br,
-                                            double *result, int *status, int b, int ns, bool local_force,
+                                            real_t *result, int *status, int b, int ns, bool local_force,
                                             bool prevalidated, bool local_result, bool force_planes = false) {
   status[w] = 0;
   if (!local_result)
     result += 6 * w;
-  libero_vec::fill_serial(result, 6, 0.0);
+  libero_vec::fill_serial(result, 6, REAL_C(0.0));
   if (active[w] == 0)
     return;
   if (active[w] != 1) {
@@ -840,17 +841,17 @@ static __device__ inline void sensor_shared(int w, const double *fr, const doubl
   }
   for (int s = 0; s < 2; s++) {
     int st = site[s], body = sb[st], root = br[body];
-    double d[3], c[3], t[3];
-    double body_force[6];
+    real_t d[3], c[3], t[3];
+    real_t body_force[6];
     for (int k = 0; k < 6; k++)
       body_force[k] = force_planes ? fr[k * b + body] : fr[6 * body + k];
-    const double *f = body_force + 3;
+    const real_t *f = body_force + 3;
     for (int k = 0; k < 3; k++)
       d[k] = pos[3 * st + k] - com[3 * root + k];
     cross3(d, f, c);
     for (int k = 0; k < 3; k++)
       t[k] = body_force[k] - c[k];
-    const double *v = type[s] == 4 ? f : t;
+    const real_t *v = type[s] == 4 ? f : t;
     for (int k = 0; k < 3; k++)
       result[adr[s] + k] = mat[9 * st + k] * v[0] + mat[9 * st + 3 + k] * v[1] + mat[9 * st + 6 + k] * v[2];
   }
@@ -863,20 +864,20 @@ static __device__ __forceinline__ void run_workspace(
     int w, const int *g_active, const int *g_first, const int *g_dv, const int *g_nv, const int *g_ne,
     const int64_t *g_nw, const int64_t *g_na, const int64_t *g_expected, const int64_t *g_state,
     const int64_t *g_consumed, const int64_t *g_forward, const int64_t *g_cf, int *g_g, const int *r_active,
-    const double *r_qv, const double *r_qa, const double *r_ci, const double *r_cv, const double *r_cd,
-    const double *r_cdd, const double *r_xi, const double *r_com, const double *r_sp, const double *r_sm,
-    const double *r_xf, const double *r_ef, const int *r_nc, const int *r_ne, const int *r_neq,
-    const int *r_dim, const int *r_adr, const int *r_g1, const int *r_g2, const double *r_frame,
-    const double *r_pos, const int *r_parent, const int *r_da, const int *r_dn, const int *r_root,
-    const int *r_gb, const double *r_grav, int r_cc, int r_ec, double *r_acc, double *r_ext, double *r_intr,
-    double *r_decoded, int *r_status, int r_b, int r_v, int r_ns, int r_ng, const double *s_fr,
-    const double *s_com, const double *s_pos, const double *s_mat, const int *s_active, const int *s_type,
-    const int *s_site, const int *s_adr, const int *s_sb, const int *s_br, double *s_result, int *s_status,
+    const real_t *r_qv, const real_t *r_qa, const real_t *r_ci, const real_t *r_cv, const real_t *r_cd,
+    const real_t *r_cdd, const real_t *r_xi, const real_t *r_com, const real_t *r_sp, const real_t *r_sm,
+    const real_t *r_xf, const real_t *r_ef, const int *r_nc, const int *r_ne, const int *r_neq,
+    const int *r_dim, const int *r_adr, const int *r_g1, const int *r_g2, const real_t *r_frame,
+    const real_t *r_pos, const int *r_parent, const int *r_da, const int *r_dn, const int *r_root,
+    const int *r_gb, const real_t *r_grav, int r_cc, int r_ec, real_t *r_acc, real_t *r_ext, real_t *r_intr,
+    real_t *r_decoded, int *r_status, int r_b, int r_v, int r_ns, int r_ng, const real_t *s_fr,
+    const real_t *s_com, const real_t *s_pos, const real_t *s_mat, const int *s_active, const int *s_type,
+    const int *s_site, const int *s_adr, const int *s_sb, const int *s_br, real_t *s_result, int *s_status,
     int s_b, int s_ns, const int *c_gate, const int *c_status, const int *c_ss, int *c_first,
-    const int64_t *c_epoch, const double *c_ext, const double *c_intr, const double *c_sensor, double *c_pe,
-    double *c_pi, double *c_ps, int *c_valid, int64_t *c_written, int c_bw, int c_sw, int diagnostics,
-    double *workspace, bool qacc_world_stride = true, const double *bias_acc = nullptr,
-    const double *bias_force = nullptr, bool cache_ok = false, int *body_index = nullptr,
+    const int64_t *c_epoch, const real_t *c_ext, const real_t *c_intr, const real_t *c_sensor, real_t *c_pe,
+    real_t *c_pi, real_t *c_ps, int *c_valid, int64_t *c_written, int c_bw, int c_sw, int diagnostics,
+    real_t *workspace, bool qacc_world_stride = true, const real_t *bias_acc = nullptr,
+    const real_t *bias_force = nullptr, bool cache_ok = false, int *body_index = nullptr,
     int *body_offsets = nullptr, int *body_counts = nullptr, const int *level_offsets = nullptr,
     const int *level_bodies = nullptr, int nlevels = 0, const int *children_offsets = nullptr,
     const int *children_indices = nullptr, int *event_ping = nullptr, int *event_pong = nullptr,
@@ -884,10 +885,10 @@ static __device__ __forceinline__ void run_workspace(
     int *cached_contact_meta = nullptr, int topology_cache = 0) {
   const bool work_planes = body_index && body_offsets && body_counts && level_offsets && level_bodies &&
                            children_offsets && children_indices;
-  double *work_acc = workspace;
-  double *work_ext = work_acc + 6 * r_b;
-  double *work_int = work_ext + 6 * r_b;
-  double *work_sensor = work_int + 6 * r_b;
+  real_t *work_acc = workspace;
+  real_t *work_ext = work_acc + 6 * r_b;
+  real_t *work_int = work_ext + 6 * r_b;
+  real_t *work_sensor = work_int + 6 * r_b;
   {
     CF_POST_PROFILE_STAGES(Gate);
     if (threadIdx.x == 0)
@@ -913,7 +914,7 @@ static __device__ __forceinline__ void run_workspace(
           r_status[w] = 4;
         else if (!post_finite(work_sensor, 6)) {
           r_status[w] = 5;
-          libero_vec::fill_serial(work_sensor, 6, 0.0);
+          libero_vec::fill_serial(work_sensor, 6, REAL_C(0.0));
         }
       }
     }
@@ -953,23 +954,23 @@ static __device__ __forceinline__ void run_workspace(
 // r_qa is the current world private N view; every other array is owner-based.
 namespace libero_tail {
 static __device__ __forceinline__ void post_private(
-    int w, double *post_work, const int *g_active, const int *g_first, const int *g_dv, const int *g_nv,
+    int w, real_t *post_work, const int *g_active, const int *g_first, const int *g_dv, const int *g_nv,
     const int *g_ne, const int64_t *g_nw, const int64_t *g_na, const int64_t *g_expected,
     const int64_t *g_state, const int64_t *g_consumed, const int64_t *g_forward, const int64_t *g_cf,
-    int *g_g, const int *r_active, const double *r_qv, const double *r_qa, const double *r_ci,
-    const double *r_cv, const double *r_cd, const double *r_cdd, const double *r_xi, const double *r_com,
-    const double *r_sp, const double *r_sm, const double *r_xf, const double *r_ef, const int *r_nc,
+    int *g_g, const int *r_active, const real_t *r_qv, const real_t *r_qa, const real_t *r_ci,
+    const real_t *r_cv, const real_t *r_cd, const real_t *r_cdd, const real_t *r_xi, const real_t *r_com,
+    const real_t *r_sp, const real_t *r_sm, const real_t *r_xf, const real_t *r_ef, const int *r_nc,
     const int *r_ne, const int *r_neq, const int *r_dim, const int *r_adr, const int *r_g1, const int *r_g2,
-    const double *r_frame, const double *r_pos, const int *r_parent, const int *r_da, const int *r_dn,
-    const int *r_root, const int *r_gb, const double *r_grav, int r_cc, int r_ec, double *r_acc,
-    double *r_ext, double *r_intr, double *r_decoded, int *r_status, int r_b, int r_v, int r_ns, int r_ng,
-    const double *s_fr, const double *s_com, const double *s_pos, const double *s_mat, const int *s_active,
+    const real_t *r_frame, const real_t *r_pos, const int *r_parent, const int *r_da, const int *r_dn,
+    const int *r_root, const int *r_gb, const real_t *r_grav, int r_cc, int r_ec, real_t *r_acc,
+    real_t *r_ext, real_t *r_intr, real_t *r_decoded, int *r_status, int r_b, int r_v, int r_ns, int r_ng,
+    const real_t *s_fr, const real_t *s_com, const real_t *s_pos, const real_t *s_mat, const int *s_active,
     const int *s_type, const int *s_site, const int *s_adr, const int *s_sb, const int *s_br,
-    double *s_result, int *s_status, int s_b, int s_ns, const int *c_gate, const int *c_status,
-    const int *c_ss, int *c_first, const int64_t *c_epoch, const double *c_ext, const double *c_intr,
-    const double *c_sensor, double *c_pe, double *c_pi, double *c_ps, int *c_valid, int64_t *c_written,
-    int c_bw, int c_sw, int diagnostics, const double *cache_acc = nullptr,
-    const double *cache_force = nullptr, const int *cache_status = nullptr, const int *cache_valid = nullptr,
+    real_t *s_result, int *s_status, int s_b, int s_ns, const int *c_gate, const int *c_status,
+    const int *c_ss, int *c_first, const int64_t *c_epoch, const real_t *c_ext, const real_t *c_intr,
+    const real_t *c_sensor, real_t *c_pe, real_t *c_pi, real_t *c_ps, int *c_valid, int64_t *c_written,
+    int c_bw, int c_sw, int diagnostics, const real_t *cache_acc = nullptr,
+    const real_t *cache_force = nullptr, const int *cache_status = nullptr, const int *cache_valid = nullptr,
     const int64_t *cache_state = nullptr, const int64_t *cache_forward = nullptr,
     int cache_gravity_disabled = 0, int *body_index = nullptr, int *body_offsets = nullptr,
     int *body_counts = nullptr, const int *level_offsets = nullptr, const int *level_bodies = nullptr,
@@ -999,7 +1000,7 @@ static __device__ __forceinline__ void post_private(
 // Post is a forward stage, separate from the Newton numerical solve. Its
 // scratch lifetime starts after the final Newton reader has rendezvoused.
 __device__ __noinline__ bool run(const physics_newton::NewtonPostData &post, int w,
-                                double *shared_qacc, double *shared_mathdx, bool outputs_required) {
+                                real_t *shared_qacc, real_t *shared_mathdx, bool outputs_required) {
   if (!outputs_required && !post.diagnostics) {
     // Keep the complete Newton/D/state/forward lineage check even when no
     // force consumer is present. A failed admission follows the original full

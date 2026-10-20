@@ -1,12 +1,13 @@
 """Scene-only camera/light transforms from already-produced GPU body poses."""
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 wp.set_module_options({"enable_backward":False,"fast_math":False,"fuse_fp":True})
 
 @wp.kernel
-def camera_kernel(nbody:int,ncam:int,body_xpos:wp.array(dtype=wp.float64),body_xmat:wp.array(dtype=wp.float64),
-                  mask:wp.array(dtype=wp.int32),bodyid:wp.array(dtype=wp.int32),local_pos:wp.array(dtype=wp.float64),local_mat:wp.array(dtype=wp.float64),
-                  cam_xpos:wp.array(dtype=wp.float64),cam_xmat:wp.array(dtype=wp.float64)):
+def camera_kernel(nbody:int,ncam:int,body_xpos:wp.array(dtype=scalar.wp_real),body_xmat:wp.array(dtype=scalar.wp_real),
+                  mask:wp.array(dtype=wp.int32),bodyid:wp.array(dtype=wp.int32),local_pos:wp.array(dtype=scalar.wp_real),local_mat:wp.array(dtype=scalar.wp_real),
+                  cam_xpos:wp.array(dtype=scalar.wp_real),cam_xmat:wp.array(dtype=scalar.wp_real)):
     world,camera=wp.tid()
     if mask[world]==0:return
     body=bodyid[camera];bo=world*nbody+body;co=world*ncam+camera
@@ -15,19 +16,19 @@ def camera_kernel(nbody:int,ncam:int,body_xpos:wp.array(dtype=wp.float64),body_x
         for j in range(3):position+=body_xmat[bo*9+i*3+j]*local_pos[camera*3+j]
         cam_xpos[co*3+i]=position
         for j in range(3):
-            value=wp.float64(0.0)
+            value=scalar.wp_real(0.0)
             for k in range(3):value+=body_xmat[bo*9+i*3+k]*local_mat[camera*9+k*3+j]
             cam_xmat[co*9+i*3+j]=value
 
 @wp.kernel
-def light_kernel(nbody:int,nlight:int,body_xpos:wp.array(dtype=wp.float64),body_xmat:wp.array(dtype=wp.float64),
-                 mask:wp.array(dtype=wp.int32),bodyid:wp.array(dtype=wp.int32),local_pos:wp.array(dtype=wp.float64),local_dir:wp.array(dtype=wp.float64),
-                 light_xpos:wp.array(dtype=wp.float64),light_xdir:wp.array(dtype=wp.float64)):
+def light_kernel(nbody:int,nlight:int,body_xpos:wp.array(dtype=scalar.wp_real),body_xmat:wp.array(dtype=scalar.wp_real),
+                 mask:wp.array(dtype=wp.int32),bodyid:wp.array(dtype=wp.int32),local_pos:wp.array(dtype=scalar.wp_real),local_dir:wp.array(dtype=scalar.wp_real),
+                 light_xpos:wp.array(dtype=scalar.wp_real),light_xdir:wp.array(dtype=scalar.wp_real)):
     world,light=wp.tid()
     if mask[world]==0:return
     body=bodyid[light];bo=world*nbody+body;lo=world*nlight+light
     for i in range(3):
-        position=body_xpos[bo*3+i];direction=wp.float64(0.0)
+        position=body_xpos[bo*3+i];direction=scalar.wp_real(0.0)
         for j in range(3):
             position+=body_xmat[bo*9+i*3+j]*local_pos[light*3+j]
             direction+=body_xmat[bo*9+i*3+j]*local_dir[light*3+j]
@@ -53,16 +54,16 @@ class DeviceSceneTransforms:
         def a(value,dtype):return wp.array(np.asarray(value).reshape(-1),dtype=dtype,device=device)
         mats=np.zeros((self.ncam,9))
         for i in range(self.ncam):mujoco.mju_quat2Mat(mats[i],np.asarray(model.cam_quat[i]))
-        self.camera_static=[a(model.cam_bodyid,wp.int32),a(model.cam_pos,wp.float64),a(mats,wp.float64)]
-        self.light_static=[a(model.light_bodyid,wp.int32),a(model.light_pos,wp.float64),a(model.light_dir,wp.float64)]
-        self.cam_xpos=wp.zeros(nworld*self.ncam*3,dtype=wp.float64,device=device)
-        self.cam_xmat=wp.zeros(nworld*self.ncam*9,dtype=wp.float64,device=device)
-        self.light_xpos=wp.zeros(nworld*self.nlight*3,dtype=wp.float64,device=device)
-        self.light_xdir=wp.zeros(nworld*self.nlight*3,dtype=wp.float64,device=device)
+        self.camera_static=[a(model.cam_bodyid,wp.int32),a(model.cam_pos,scalar.wp_real),a(mats,scalar.wp_real)]
+        self.light_static=[a(model.light_bodyid,wp.int32),a(model.light_pos,scalar.wp_real),a(model.light_dir,scalar.wp_real)]
+        self.cam_xpos=wp.zeros(nworld*self.ncam*3,dtype=scalar.wp_real,device=device)
+        self.cam_xmat=wp.zeros(nworld*self.ncam*9,dtype=scalar.wp_real,device=device)
+        self.light_xpos=wp.zeros(nworld*self.nlight*3,dtype=scalar.wp_real,device=device)
+        self.light_xdir=wp.zeros(nworld*self.nlight*3,dtype=scalar.wp_real,device=device)
 
     def update(self,body_xpos,body_xmat,world_mask=None,stream=None):
         for field,size in ((body_xpos,self.nworld*self.nbody*3),(body_xmat,self.nworld*self.nbody*9)):
-            if field.dtype!=wp.float64 or field.ndim!=1 or field.size!=size:
+            if field.dtype!=scalar.wp_real or field.ndim!=1 or field.size!=size:
                 raise ValueError("scene input must be flat FP64 body arrays")
         if self.ncam:
             wp.launch(camera_kernel,dim=(self.nworld,self.ncam),inputs=[self.nbody,self.ncam,body_xpos,body_xmat,

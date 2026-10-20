@@ -1,4 +1,5 @@
 """Typed current collision slab to resident S input leaves, all on device."""
+import libero.gpu.precision as scalar
 import warp as wp
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
@@ -10,13 +11,13 @@ def _extract(active: wp.array(dtype=wp.int32),
              first_error: wp.array(dtype=wp.int32),
              c_error: wp.array(dtype=wp.int32),
              c_active: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int32),
-             cf: wp.array(dtype=wp.float64), ci: wp.array(dtype=wp.int32),
+             cf: wp.array(dtype=scalar.wp_real), ci: wp.array(dtype=wp.int32),
              target_active: wp.array(dtype=wp.int32),
              target_ncon: wp.array(dtype=wp.int32),
-             dist: wp.array(dtype=wp.float64), pos: wp.array(dtype=wp.float64),
-             frame: wp.array(dtype=wp.float64), margin: wp.array(dtype=wp.float64),
-             friction: wp.array(dtype=wp.float64), solref: wp.array(dtype=wp.float64),
-             solreffriction: wp.array(dtype=wp.float64), solimp: wp.array(dtype=wp.float64),
+             dist: wp.array(dtype=scalar.wp_real), pos: wp.array(dtype=scalar.wp_real),
+             frame: wp.array(dtype=scalar.wp_real), margin: wp.array(dtype=scalar.wp_real),
+             friction: wp.array(dtype=scalar.wp_real), solref: wp.array(dtype=scalar.wp_real),
+             solreffriction: wp.array(dtype=scalar.wp_real), solimp: wp.array(dtype=scalar.wp_real),
              dim: wp.array(dtype=wp.int32), geom1: wp.array(dtype=wp.int32),
              geom2: wp.array(dtype=wp.int32), exclude: wp.array(dtype=wp.int32),
              source_capacity: int, target_capacity: int):
@@ -78,7 +79,7 @@ class ContactTransport:
         if self._flat_f.size != self.nworld*self.source_capacity*65 or self._flat_i.size != self.nworld*self.source_capacity*5:
             raise ValueError('C public contact layout does not match 65/5 AoS')
         self.inputs = {name: wp.zeros(self.nworld*self.capacity*width,
-            dtype=wp.int32 if name in ('dim','geom1','geom2','exclude') else wp.float64,
+            dtype=wp.int32 if name in ('dim','geom1','geom2','exclude') else scalar.wp_real,
             device=self.device) for name,width in self.WIDTHS.items()}
         self.active = wp.zeros(self.nworld, dtype=wp.int32, device=self.device)
         self.ncon = wp.zeros(self.nworld, dtype=wp.int32, device=self.device)

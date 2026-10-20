@@ -5,6 +5,7 @@ The second kernel reduces J-transpose in original row order, skipping exact
 zero force. Neither kernel allocates or transfers during production launch.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -12,25 +13,25 @@ import warp as wp
 wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False})
 
 @wp.func
-def _flip_sign(x:wp.float64)->wp.float64:
+def _flip_sign(x:scalar.wp_real)->scalar.wp_real:
     # Warp's unary neg lowers to +0-x, which loses the sign of a zero input.
     # Multiplication by exactly -1 flips the IEEE binary64 sign bit for every
     # finite x, including either zero and subnormal values.
-    return wp.float64(-1.0)*x
+    return scalar.wp_real(-1.0)*x
 
 @wp.func
-def _u(jar:wp.array(dtype=wp.float64),fr:wp.array(dtype=wp.float64),
-       rb:int,fb:int,j:int)->wp.float64:
+def _u(jar:wp.array(dtype=scalar.wp_real),fr:wp.array(dtype=scalar.wp_real),
+       rb:int,fb:int,j:int)->scalar.wp_real:
     return jar[rb+j]*fr[fb+j-1]
 
 @wp.func
-def _cone_t(jar:wp.array(dtype=wp.float64),fr:wp.array(dtype=wp.float64),
-            rb:int,fb:int,d:int)->wp.float64:
+def _cone_t(jar:wp.array(dtype=scalar.wp_real),fr:wp.array(dtype=scalar.wp_real),
+            rb:int,fb:int,d:int)->scalar.wp_real:
     # The source mju_dot grouping must be identical in the preflight and
     # the numeric update so that a near-boundary check cannot take another path.
-    dot=wp.float64(0.0)
+    dot=scalar.wp_real(0.0)
     if d==1:
-        dot=wp.float64(0.0)
+        dot=scalar.wp_real(0.0)
     elif d==3:
         u1=_u(jar,fr,rb,fb,1);u2=_u(jar,fr,rb,fb,2)
         dot=dot+(u1*u1+u2*u2)
@@ -48,14 +49,14 @@ def _cone_t(jar:wp.array(dtype=wp.float64),fr:wp.array(dtype=wp.float64),
 def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
             ne:wp.array(dtype=wp.int32),nf:wp.array(dtype=wp.int32),
             ncon:wp.array(dtype=wp.int32),flag:wp.array(dtype=wp.int32),
-            jar:wp.array(dtype=wp.float64),D:wp.array(dtype=wp.float64),
-            R:wp.array(dtype=wp.float64),loss:wp.array(dtype=wp.float64),
+            jar:wp.array(dtype=scalar.wp_real),D:wp.array(dtype=scalar.wp_real),
+            R:wp.array(dtype=scalar.wp_real),loss:wp.array(dtype=scalar.wp_real),
             typ:wp.array(dtype=wp.int32),cid:wp.array(dtype=wp.int32),
-            J:wp.array(dtype=wp.float64),
-            mu:wp.array(dtype=wp.float64),fr:wp.array(dtype=wp.float64),
-            dim:wp.array(dtype=wp.int32),force:wp.array(dtype=wp.float64),
-            state:wp.array(dtype=wp.int32),H:wp.array(dtype=wp.float64),
-            cost:wp.array(dtype=wp.float64),status:wp.array(dtype=wp.int32),
+            J:wp.array(dtype=scalar.wp_real),
+            mu:wp.array(dtype=scalar.wp_real),fr:wp.array(dtype=scalar.wp_real),
+            dim:wp.array(dtype=wp.int32),force:wp.array(dtype=scalar.wp_real),
+            state:wp.array(dtype=wp.int32),H:wp.array(dtype=scalar.wp_real),
+            cost:wp.array(dtype=scalar.wp_real),status:wp.array(dtype=wp.int32),
             rows:int,contacts:int,nv:int):
     w=wp.tid()
     status[w]=0
@@ -77,13 +78,13 @@ def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
             c=cid[rb+i]
             if c<0 or c>=nc:status[w]=3;return
             d=dim[cb+c]
-            if (d!=1 and d!=3 and d!=4 and d!=6) or i+d>n or mu[cb+c]<=wp.float64(0.0) or not wp.isfinite(mu[cb+c]):
+            if (d!=1 and d!=3 and d!=4 and d!=6) or i+d>n or mu[cb+c]<=scalar.wp_real(0.0) or not wp.isfinite(mu[cb+c]):
                 status[w]=4;return
             for j in range(d):
                 if typ[rb+i+j]!=7 or cid[rb+i+j]!=c:
                     status[w]=5;return
             for j in range(d-1):
-                if fr[(cb+c)*5+j]<=wp.float64(0.0) or not wp.isfinite(fr[(cb+c)*5+j]):
+                if fr[(cb+c)*5+j]<=scalar.wp_real(0.0) or not wp.isfinite(fr[(cb+c)*5+j]):
                     status[w]=6;return
             i+=d
         elif t==0 or t==1 or t==2 or t==3 or t==4 or t==5 or t==6:
@@ -102,8 +103,8 @@ def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
     # D enters force/cost/H linearly; only its positive support bound expands.
     # Other magnitudes, cone denominators, source grouping and precision remain
     # unchanged. The closed D upper endpoint is an exact binary64 integer.
-    cap=wp.float64(10000.0);d_cap=wp.float64(2.0e16)
-    small=wp.float64(0.0001);lower=_flip_sign(cap)
+    cap=scalar.wp_real(10000.0);d_cap=scalar.wp_real(2.0e16)
+    small=scalar.wp_real(0.0001);lower=_flip_sign(cap)
     for r in range(n):
         if (jar[rb+r]>cap or jar[rb+r]<lower or D[rb+r]>d_cap or D[rb+r]<lower or
             R[rb+r]>cap or R[rb+r]<lower or loss[rb+r]>cap or loss[rb+r]<lower):
@@ -120,56 +121,56 @@ def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
                 f=fr[fb+j]
                 if f<small or f>cap:status[w]=10;return
             T=_cone_t(jar,fr,rb+i,fb,d);N=jar[rb+i]*m
-            top=N>=m*T or (T<=wp.float64(0.0) and N>=wp.float64(0.0))
-            bottom=m*N+T<=wp.float64(0.0) or (T<=wp.float64(0.0) and N<wp.float64(0.0))
-            if not top and not bottom and T<wp.float64(1.0e-12):
+            top=N>=m*T or (T<=scalar.wp_real(0.0) and N>=scalar.wp_real(0.0))
+            bottom=m*N+T<=scalar.wp_real(0.0) or (T<=scalar.wp_real(0.0) and N<scalar.wp_real(0.0))
+            if not top and not bottom and T<scalar.wp_real(1.0e-12):
                 status[w]=10;return
             i+=d
         else:i+=1
 
-    s=wp.float64(0.0)
+    s=scalar.wp_real(0.0)
     if n==0:
         cost[w]=s
         return
     for r in range(n):force[rb+r]=_flip_sign(D[rb+r])*jar[rb+r]
     for r in range(eq):
-        s=s+wp.float64(0.5)*D[rb+r]*jar[rb+r]*jar[rb+r]
+        s=s+scalar.wp_real(0.5)*D[rb+r]*jar[rb+r]*jar[rb+r]
         state[rb+r]=1
     for r in range(eq,eq+fcount):
         v=jar[rb+r];vR=R[rb+r];fl=loss[rb+r]
         if v<=_flip_sign(vR)*fl:
-            s=s+(wp.float64(-0.5)*vR*fl*fl-fl*v)
+            s=s+(scalar.wp_real(-0.5)*vR*fl*fl-fl*v)
             force[rb+r]=fl;state[rb+r]=2
         elif v>=vR*fl:
-            s=s+(wp.float64(-0.5)*vR*fl*fl+fl*v)
+            s=s+(scalar.wp_real(-0.5)*vR*fl*fl+fl*v)
             force[rb+r]=_flip_sign(fl);state[rb+r]=3
         else:
-            s=s+wp.float64(0.5)*D[rb+r]*v*v
+            s=s+scalar.wp_real(0.5)*D[rb+r]*v*v
             state[rb+r]=1
     i=eq+fcount
     while i<n:
         if typ[rb+i]!=7:
-            if jar[rb+i]>=wp.float64(0.0):
-                force[rb+i]=wp.float64(0.0);state[rb+i]=0
+            if jar[rb+i]>=scalar.wp_real(0.0):
+                force[rb+i]=scalar.wp_real(0.0);state[rb+i]=0
             else:
-                s=s+wp.float64(0.5)*D[rb+i]*jar[rb+i]*jar[rb+i]
+                s=s+scalar.wp_real(0.5)*D[rb+i]*jar[rb+i]*jar[rb+i]
                 state[rb+i]=1
             i+=1
         else:
             c=cid[rb+i];d=dim[cb+c];m=mu[cb+c];fb=(cb+c)*5
             N=jar[rb+i]*m
             T=_cone_t(jar,fr,rb+i,fb,d)
-            if N>=m*T or (T<=wp.float64(0.0) and N>=wp.float64(0.0)):
-                for j in range(d):force[rb+i+j]=wp.float64(0.0)
+            if N>=m*T or (T<=scalar.wp_real(0.0) and N>=scalar.wp_real(0.0)):
+                for j in range(d):force[rb+i+j]=scalar.wp_real(0.0)
                 state[rb+i]=0
-            elif m*N+T<=wp.float64(0.0) or (T<=wp.float64(0.0) and N<wp.float64(0.0)):
+            elif m*N+T<=scalar.wp_real(0.0) or (T<=scalar.wp_real(0.0) and N<scalar.wp_real(0.0)):
                 for j in range(d):
-                    s=s+wp.float64(0.5)*D[rb+i+j]*jar[rb+i+j]*jar[rb+i+j]
+                    s=s+scalar.wp_real(0.5)*D[rb+i+j]*jar[rb+i+j]*jar[rb+i+j]
                 state[rb+i]=1
             else:
-                Dm=D[rb+i]/(m*m*(wp.float64(1.0)+m*m))
+                Dm=D[rb+i]/(m*m*(scalar.wp_real(1.0)+m*m))
                 NmT=N-m*T
-                s=s+wp.float64(0.5)*Dm*NmT*NmT
+                s=s+scalar.wp_real(0.5)*Dm*NmT*NmT
                 force[rb+i]=_flip_sign(Dm)*NmT*m
                 for j in range(1,d):
                     Uj=_u(jar,fr,rb+i,fb,j)
@@ -178,7 +179,7 @@ def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
                 if flag[w]!=0:
                     hb=(cb+c)*36
                     scl=_flip_sign(m)/T
-                    H[hb]=wp.float64(1.0)
+                    H[hb]=scalar.wp_real(1.0)
                     for j in range(1,d):H[hb+j]=scl*_u(jar,fr,rb+i,fb,j)
                     scl=m*N/(T*T*T)
                     for k in range(1,d):
@@ -199,15 +200,15 @@ def _update(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _transpose(active:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
-               J:wp.array(dtype=wp.float64),force:wp.array(dtype=wp.float64),
-               qfrc:wp.array(dtype=wp.float64),status:wp.array(dtype=wp.int32),
+               J:wp.array(dtype=scalar.wp_real),force:wp.array(dtype=scalar.wp_real),
+               qfrc:wp.array(dtype=scalar.wp_real),status:wp.array(dtype=wp.int32),
                rows:int,nv:int):
     tid=wp.tid();w=tid//nv;j=tid-w*nv
     if active[w]==0 or status[w]!=0:return
-    acc=wp.float64(0.0);n=count[w]
+    acc=scalar.wp_real(0.0);n=count[w]
     for r in range(n):
         f=force[w*rows+r]
-        if f!=wp.float64(0.0):acc=acc+J[(w*rows+r)*nv+j]*f
+        if f!=scalar.wp_real(0.0):acc=acc+J[(w*rows+r)*nv+j]*f
     qfrc[tid]=acc
 
 class ConstraintUpdateWorkspace:
@@ -221,14 +222,14 @@ class ConstraintUpdateWorkspace:
         self.nworld=nworld;self.rows=rows;self.contacts=contacts;self.nv=nv;self.device=device
         specs={'active':(nworld,wp.int32),'count':(nworld,wp.int32),'ne':(nworld,wp.int32),
           'nf':(nworld,wp.int32),'ncon':(nworld,wp.int32),'flag':(nworld,wp.int32),
-          'jar':(nworld*rows,wp.float64),'D':(nworld*rows,wp.float64),
-          'R':(nworld*rows,wp.float64),'loss':(nworld*rows,wp.float64),
+          'jar':(nworld*rows,scalar.wp_real),'D':(nworld*rows,scalar.wp_real),
+          'R':(nworld*rows,scalar.wp_real),'loss':(nworld*rows,scalar.wp_real),
           'type':(nworld*rows,wp.int32),'id':(nworld*rows,wp.int32),
-          'J':(nworld*rows*nv,wp.float64),'mu':(nworld*contacts,wp.float64),
-          'friction':(nworld*contacts*5,wp.float64),'dim':(nworld*contacts,wp.int32),
-          'force':(nworld*rows,wp.float64),'state':(nworld*rows,wp.int32),
-          'H':(nworld*contacts*36,wp.float64),'qfrc':(nworld*nv,wp.float64),
-          'cost':(nworld,wp.float64),'status':(nworld,wp.int32)}
+          'J':(nworld*rows*nv,scalar.wp_real),'mu':(nworld*contacts,scalar.wp_real),
+          'friction':(nworld*contacts*5,scalar.wp_real),'dim':(nworld*contacts,wp.int32),
+          'force':(nworld*rows,scalar.wp_real),'state':(nworld*rows,wp.int32),
+          'H':(nworld*contacts*36,scalar.wp_real),'qfrc':(nworld*nv,scalar.wp_real),
+          'cost':(nworld,scalar.wp_real),'status':(nworld,wp.int32)}
         self.shapes={key:(nworld,) for key in ('active','count','ne','nf','ncon','flag','cost','status')}
         self.shapes.update({key:(nworld,rows) for key in ('jar','D','R','loss','type','id','force','state')})
         self.shapes.update(J=(nworld,rows,nv),mu=(nworld,contacts),friction=(nworld,contacts,5),

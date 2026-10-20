@@ -3,6 +3,7 @@
 The old generic workspace is borrowed only here, at preparation. Numerical
 kernels never consume its generated parameter layout.
 """
+import libero.gpu.precision as scalar
 import ctypes as ct
 import numpy as np
 import warp as wp
@@ -10,7 +11,9 @@ import warp as wp
 # Mirrors newton_coefficient_layout.cuh; checked with the compiled C++ layout.
 COEFFICIENT_ROWS = 30053
 COEFFICIENT_ALIGNMENT = 128
-COEFFICIENT_ROW_BYTES = ((COEFFICIENT_ROWS * 8 + COEFFICIENT_ALIGNMENT - 1)
+# Mirrors NewtonJacobianLayout; the compiled workspace byte count is checked.
+JACOBIAN_PRODUCT_SLOTS = 256 if scalar.bits == 32 else 128
+COEFFICIENT_ROW_BYTES = ((COEFFICIENT_ROWS * scalar.itemsize + COEFFICIENT_ALIGNMENT - 1)
                          // COEFFICIENT_ALIGNMENT * COEFFICIENT_ALIGNMENT)
 COEFFICIENT_SQRT_D = COEFFICIENT_ALIGNMENT
 COEFFICIENT_FRICTION_LIMIT = COEFFICIENT_SQRT_D + COEFFICIENT_ROW_BYTES
@@ -20,16 +23,16 @@ COEFFICIENT_BYTES = COEFFICIENT_CONE_DM + COEFFICIENT_ROW_BYTES
 
 def device_workspace_bytes(nv, rows):
     """Coefficients, aliased reductions, and a bounded global Jacobian cache."""
-    row_bytes = (rows * 8 + COEFFICIENT_ALIGNMENT - 1) // COEFFICIENT_ALIGNMENT * COEFFICIENT_ALIGNMENT
-    end = COEFFICIENT_ALIGNMENT + 3 * row_bytes + nv * (nv + 1) // 2 * 8
+    row_bytes = (rows * scalar.itemsize + COEFFICIENT_ALIGNMENT - 1) // COEFFICIENT_ALIGNMENT * COEFFICIENT_ALIGNMENT
+    end = COEFFICIENT_ALIGNMENT + 3 * row_bytes + nv * (nv + 1) // 2 * scalar.itemsize
     reduction_bytes = (end + 127) // 128 * 128
     entries = (rows + 1) // 2 * nv * 2 if (rows + 1) // 2 < 65536 // (2 * nv) else 65536
     row_records = (128 + (3 * nv + 1) * 4 + 127) // 128 * 128
     values = (row_records + rows * 8 + 127) // 128 * 128
-    product_counts = (values + entries * 28 + 127) // 128 * 128
+    product_counts = (values + entries * (2 * scalar.itemsize + 12) + 127) // 128 * 128
     cells = nv * (nv + 1) // 2
     product_values = (product_counts + cells * 4 + 127) // 128 * 128
-    cache_bytes = (product_values + cells * 128 * 12 + 127) // 128 * 128
+    cache_bytes = (product_values + cells * JACOBIAN_PRODUCT_SLOTS * (scalar.itemsize + 4) + 127) // 128 * 128
     return reduction_bytes + cache_bytes
 
 class NewtonModelData(ct.Structure):

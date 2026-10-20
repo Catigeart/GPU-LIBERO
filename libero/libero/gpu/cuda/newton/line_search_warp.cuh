@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #include "io_policy.cuh"
 #pragma once
 // Project-written collective evaluation of the retained MuJoCo S07 equations.
@@ -6,9 +7,9 @@
 static_assert(DX_THREADS>=32&&DX_THREADS<=1024&&DX_THREADS%32==0,
               "S07 collectives require complete warps");
 __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
-    int ne,int nf,double alpha,int tag,int* niter,const int* group_head,
-    const int* compact_heads=nullptr,int head_count=0,const double* head_mu=nullptr) {
-    __shared__ double partial[6][(DX_THREADS+31)/32];
+    int ne,int nf,real_t alpha,int tag,int* niter,const int* group_head,
+    const int* compact_heads=nullptr,int head_count=0,const real_t* head_mu=nullptr) {
+    __shared__ real_t partial[6][(DX_THREADS+31)/32];
     __shared__ P point;
     __shared__ int next_iter;
     if(!group_head&&!compact_heads) {
@@ -20,7 +21,7 @@ __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
         P result=point;*niter=next_iter;
         __syncthreads();return result;
     }
-    double t0=0,t1=0,t2=0,cost=0,d0=0,d1=0;
+    real_t t0=0,t1=0,t2=0,cost=0,d0=0,d1=0;
     const int base=w*rows,qbase=w*rows*3;
     // Immutable compact plan is produced once per invocation, not per alpha.
     const int groups=compact_heads?head_count:nefc;
@@ -30,37 +31,37 @@ __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
     for(int rank=threadIdx.x;rank<groups;rank+=blockDim.x) {
         const int i=compact_heads?compact_heads[rank]:rank;
         if(!compact_heads&&group_head[i]!=i)continue;
-        const double* q=a.quad+qbase+3*i;
+        const real_t* q=a.quad+qbase+3*i;
         bool add=false;
         if(i<ne) add=true;
         else if(i<ne+nf) {
-            const double start=a.Jaref[base+i],dir=a.Jv[base+i];
-            const double x=start+alpha*dir,f=a.loss[base+i],Rf=a.R[base+i]*f;
+            const real_t start=a.Jaref[base+i],dir=a.Jv[base+i];
+            const real_t x=start+alpha*dir,f=a.loss[base+i],Rf=a.R[base+i]*f;
             if(-Rf<x&&x<Rf)add=true;
-            else if(x<=-Rf){t0+=f*(-0.5*Rf-start);t1+=-f*dir;}
-            else{t0+=f*(-0.5*Rf+start);t1+=f*dir;}
+            else if(x<=-Rf){t0+=f*(-REAL_C(0.5)*Rf-start);t1+=-f*dir;}
+            else{t0+=f*(-REAL_C(0.5)*Rf+start);t1+=f*dir;}
         } else if(a.efc_type[base+i]==7) {
-            const double mu=head_mu&&compact_heads?head_mu[rank]:a.cone_mu[base+i];
+            const real_t mu=head_mu&&compact_heads?head_mu[rank]:a.cone_mu[base+i];
 #if LIBERO_NEWTON_SCALAR_IO
-            const double U0=q[3],V0=q[4],UU=q[5],UV=q[6],VV=q[7],Dm=q[8];
+            const real_t U0=q[3],V0=q[4],UU=q[5],UV=q[6],VV=q[7],Dm=q[8];
 #else
             // Cone heads own all three quad records (nine doubles). Guard
             // alignment on each actual pair; never read a follower as a head.
-            const double2 uv0=libero_vec::load_pair(q+3);
-            const double2 uuv=libero_vec::load_pair(q+5);
-            const double2 vdm=libero_vec::load_pair(q+7);
-            const double U0=uv0.x,V0=uv0.y,UU=uuv.x,UV=uuv.y,VV=vdm.x,Dm=vdm.y;
+            const real2_t uv0=libero_vec::load_pair(q+3);
+            const real2_t uuv=libero_vec::load_pair(q+5);
+            const real2_t vdm=libero_vec::load_pair(q+7);
+            const real_t U0=uv0.x,V0=uv0.y,UU=uuv.x,UV=uuv.y,VV=vdm.x,Dm=vdm.y;
 #endif // LIBERO_NEWTON_SCALAR_IO
-            const double N=U0+alpha*V0,Tsqr=UU+alpha*(2.0*UV+alpha*VV);
+            const real_t N=U0+alpha*V0,Tsqr=UU+alpha*(REAL_C(2.0)*UV+alpha*VV);
             if(Tsqr<=0){if(N<0)add=true;}
             else {
-                const double T=__dsqrt_rn(Tsqr);
+                const real_t T=real_sqrt_rn(Tsqr);
                 if(N>=mu*T){}
                 else if(mu*N+T<=0)add=true;
                 else {
-                    const double N1=V0,T1=__ddiv_rn(UV+alpha*VV,T);
-                    const double T2=__ddiv_rn(VV,T)-__ddiv_rn((UV+alpha*VV)*T1,T*T);
-                    cost+=0.5*Dm*(N-mu*T)*(N-mu*T);
+                    const real_t N1=V0,T1=real_div_rn(UV+alpha*VV,T);
+                    const real_t T2=real_div_rn(VV,T)-real_div_rn((UV+alpha*VV)*T1,T*T);
+                    cost+=REAL_C(0.5)*Dm*(N-mu*T)*(N-mu*T);
                     d0+=Dm*(N-mu*T)*(N1-mu*T1);
                     d1+=Dm*((N1-mu*T1)*(N1-mu*T1)+(N-mu*T)*(-mu*T2));
                 }
@@ -71,24 +72,24 @@ __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
 #else
         if(add){
             // Load only an admitted record, preserving skipped-term behavior.
-            const double2 q01=libero_vec::load_pair(q);
+            const real2_t q01=libero_vec::load_pair(q);
             t0+=q01.x;t1+=q01.y;t2+=q[2];
         }
 #endif // LIBERO_NEWTON_SCALAR_IO
     }
-    double values[6]={t0,t1,t2,cost,d0,d1};
+    real_t values[6]={t0,t1,t2,cost,d0,d1};
     const int lane=libero_warp::lane(),warp=libero_warp::warp();
     #pragma unroll
     for(int k=0;k<6;++k){
-        const double value=libero_warp::sum_to_leader(values[k]);
+        const real_t value=libero_warp::sum_to_leader(values[k]);
         if(lane==0)partial[k][warp]=value;
     }
     __syncthreads();
     if(warp==0){
         #pragma unroll
         for(int k=0;k<6;++k){
-            const double value=libero_warp::sum_to_leader(
-                lane<(blockDim.x+31)/32?partial[k][lane]:0.0);
+            const real_t value=libero_warp::sum_to_leader(
+                lane<(blockDim.x+31)/32?partial[k][lane]:REAL_C(0.0));
             if(lane==0)values[k]=value;
         }
         if(lane==0){
@@ -96,8 +97,8 @@ __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
             t1=a.quadGauss[w*3+1]+values[1];
             t2=a.quadGauss[w*3+2]+values[2];
             cost=values[3]+(alpha*alpha*t2+alpha*t1+t0);
-            d0=values[4]+(2.0*alpha*t2+t1);d1=values[5]+2.0*t2;
-            if(d1<=0)d1=1e-15;
+            d0=values[4]+(REAL_C(2.0)*alpha*t2+t1);d1=values[5]+REAL_C(2.0)*t2;
+            if(d1<=0)d1=REAL_C(1e-15);
             if(!isfinite(alpha)||!isfinite(cost)||!isfinite(d0)||!isfinite(d1))a.status[w]=5;
             point={alpha,cost,d0,d1};
             const int idx=*niter;
@@ -115,7 +116,7 @@ __device__ P s07_eval_point_block(const S07Args& a,int w,int rows,int nefc,
 
 __device__ int s07_update_bracket_block(const S07Args& a,int w,int rows,int nefc,
     int ne,int nf,P* p,const P* candidates,P* next,int* niter,int tag,
-    const int* group_head,const int* compact_heads=nullptr,int head_count=0,const double* head_mu=nullptr) {
+    const int* group_head,const int* compact_heads=nullptr,int head_count=0,const real_t* head_mu=nullptr) {
     int flag=0;
     for(int i=0;i<3;++i){
         if(p->d0<0&&candidates[i].d0<0&&p->d0<candidates[i].d0){*p=candidates[i];flag=1;}
@@ -124,11 +125,11 @@ __device__ int s07_update_bracket_block(const S07Args& a,int w,int rows,int nefc
     // p and candidates are broadcasts of leader evaluations, so this branch is
     // uniform. Trace order and the 50-evaluation limit remain source-ordered.
     if(flag)*next=s07_eval_point_block(a,w,rows,nefc,ne,nf,
-        p->alpha-__ddiv_rn(p->d0,p->d1),tag,niter,group_head,compact_heads,head_count,head_mu);
+        p->alpha-real_div_rn(p->d0,p->d1),tag,niter,group_head,compact_heads,head_count,head_mu);
     return flag;
 }
 
-__device__ void s07_finish_block(const S07Args& a,int w,double alpha,int niter,
-    int result,double slope){
+__device__ void s07_finish_block(const S07Args& a,int w,real_t alpha,int niter,
+    int result,real_t slope){
     if(threadIdx.x==0)finish(a,w,alpha,niter,result,slope);
 }

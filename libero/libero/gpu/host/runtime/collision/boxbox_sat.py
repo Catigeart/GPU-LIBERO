@@ -11,25 +11,26 @@ gate at the chain level rather than a silent zero.
 Raw contact: [dist, pos(3), frame_normal(3), frame_tangent(3)] (10 float64).
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
 
-MINVAL = wp.float64(1.0e-15)
+MINVAL = scalar.wp_real(1.0e-15)
 
 
 @wp.func
-def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                s10: wp.float64, s11: wp.float64, s12: wp.float64,
-                p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                s20: wp.float64, s21: wp.float64, s22: wp.float64,
-                margin: wp.float64,
-                scratch: wp.array(dtype=wp.float64), sc: wp.int32) -> wp.int32:
+def _boxbox_sat(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                s10: scalar.wp_real, s11: scalar.wp_real, s12: scalar.wp_real,
+                p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                s20: scalar.wp_real, s21: scalar.wp_real, s22: scalar.wp_real,
+                margin: scalar.wp_real,
+                scratch: wp.array(dtype=scalar.wp_real), sc: wp.int32) -> wp.int32:
     """BoxBox SAT: face contacts + simplified edge contacts.
 
     Returns contact count (0..4+) or -10 for unhandled deep configurations.
@@ -78,7 +79,7 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
 
     # find minimum penetration axis
     # for each axis: project both boxes, compute overlap
-    best_dist = wp.float64(1.0e10)
+    best_dist = scalar.wp_real(1.0e10)
     best_axis = wp.int32(0)
     for a in range(15):
         idx = sc + a * 3
@@ -105,7 +106,7 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
               + wp.abs(scratch[sc + 12] * ax + scratch[sc + 13] * ay + scratch[sc + 14] * az) * s21
               + wp.abs(scratch[sc + 15] * ax + scratch[sc + 16] * ay + scratch[sc + 17] * az) * s22)
         overlap = r1 + r2 - wp.abs(dp1)
-        if overlap <= wp.float64(0.0):
+        if overlap <= scalar.wp_real(0.0):
             return wp.int32(0)  # separated on this axis
         if overlap < best_dist:
             best_dist = overlap
@@ -124,7 +125,7 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
     ay /= an
     az /= an
     dp1 = (p1x - p2x) * ax + (p1y - p2y) * ay + (p1z - p2z) * az
-    if dp1 > wp.float64(0.0):
+    if dp1 > scalar.wp_real(0.0):
         # original convention: normal points from geom1 toward geom2
         ax = -ax
         ay = -ay
@@ -136,7 +137,7 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
     # original convention: dist is penetration at the contact point.
     # For face contacts, the contact sits at the midpoint of the overlap
     # region, so dist = margin - overlap/2 (matches original mjc_BoxBox).
-    dist = margin - best_dist * wp.float64(0.5)
+    dist = margin - best_dist * scalar.wp_real(0.5)
     # for each of the 4 "corners" of the overlap rectangle in the two
     # non-axis directions, emit a contact
     # the axis is a face normal (best_axis < 6) or edge cross (>= 6)
@@ -158,9 +159,9 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
         ty /= tn
         tz /= tn
     else:
-        tx = wp.float64(0.0)
-        ty = wp.float64(0.0)
-        tz = wp.float64(0.0)
+        tx = scalar.wp_real(0.0)
+        ty = scalar.wp_real(0.0)
+        tz = scalar.wp_real(0.0)
     # second tangent = normal x tangent
     bx = ay * tz - az * ty
     by = az * tx - ax * tz
@@ -185,33 +186,33 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
     dp_b = (p1x - p2x) * bx + (p1y - p2y) * by + (p1z - p2z) * bz
     overlap_t = rt1 + rt2 - wp.abs(dp_t)
     overlap_b = rb1 + rb2 - wp.abs(dp_b)
-    if overlap_t < wp.float64(0.0):
-        overlap_t = wp.float64(0.0)
-    if overlap_b < wp.float64(0.0):
-        overlap_b = wp.float64(0.0)
-    center_t = dp_t / wp.float64(2.0)
-    center_b = dp_b / wp.float64(2.0)
+    if overlap_t < scalar.wp_real(0.0):
+        overlap_t = scalar.wp_real(0.0)
+    if overlap_b < scalar.wp_real(0.0):
+        overlap_b = scalar.wp_real(0.0)
+    center_t = dp_t / scalar.wp_real(2.0)
+    center_b = dp_b / scalar.wp_real(2.0)
 
     # base contact position
-    cx = p2x + ax * (dp1 / wp.float64(2.0)) + tx * center_t + bx * center_b
-    cy = p2y + ay * (dp1 / wp.float64(2.0)) + ty * center_t + by * center_b
-    cz = p2z + az * (dp1 / wp.float64(2.0)) + tz * center_t + bz * center_b
+    cx = p2x + ax * (dp1 / scalar.wp_real(2.0)) + tx * center_t + bx * center_b
+    cy = p2y + ay * (dp1 / scalar.wp_real(2.0)) + ty * center_t + by * center_b
+    cz = p2z + az * (dp1 / scalar.wp_real(2.0)) + tz * center_t + bz * center_b
 
     # emit 4 contacts at corners of the overlap rectangle
     # order matches original mjc_BoxBox face contact order
     cnt = wp.int32(0)
     for k in range(4):
-        st = wp.float64(1.0)
-        sb = wp.float64(1.0)
+        st = scalar.wp_real(1.0)
+        sb = scalar.wp_real(1.0)
         if k == 1:
-            sb = wp.float64(-1.0)
+            sb = scalar.wp_real(-1.0)
         elif k == 2:
-            st = wp.float64(-1.0)
+            st = scalar.wp_real(-1.0)
         elif k == 3:
-            st = wp.float64(-1.0)
-            sb = wp.float64(-1.0)
-        ot = st * overlap_t / wp.float64(2.0)
-        ob = sb * overlap_b / wp.float64(2.0)
+            st = scalar.wp_real(-1.0)
+            sb = scalar.wp_real(-1.0)
+        ot = st * overlap_t / scalar.wp_real(2.0)
+        ob = sb * overlap_b / scalar.wp_real(2.0)
         px = cx + tx * ot + bx * ob
         py = cy + ty * ot + by * ob
         pz = cz + tz * ot + bz * ob
@@ -222,9 +223,9 @@ def _boxbox_sat(raw: wp.array(dtype=wp.float64), base: wp.int32,
         raw[base + cnt * 10 + 4] = ax
         raw[base + cnt * 10 + 5] = ay
         raw[base + cnt * 10 + 6] = az
-        raw[base + cnt * 10 + 7] = wp.float64(0.0)
-        raw[base + cnt * 10 + 8] = wp.float64(0.0)
-        raw[base + cnt * 10 + 9] = wp.float64(0.0)
+        raw[base + cnt * 10 + 7] = scalar.wp_real(0.0)
+        raw[base + cnt * 10 + 8] = scalar.wp_real(0.0)
+        raw[base + cnt * 10 + 9] = scalar.wp_real(0.0)
         cnt += wp.int32(1)
 
     return cnt

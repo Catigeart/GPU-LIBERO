@@ -1,4 +1,5 @@
 """Explicit N1 native fixed-buffer reset inventory; no arena tail memset."""
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 from libero.gpu.host.runtime.dynamics.recovery import ResetBinding
@@ -24,7 +25,7 @@ def add_native_inventory(bindings,*,forward,post):
     def add(name,array,role="derived"):
         if not isinstance(array,wp.array) or not array.is_contiguous:
             raise TypeError("native fixed buffer needs retained contiguous array: "+name)
-        mapping={wp.float64:np.float64,wp.int32:np.int32,wp.int64:np.int64}
+        mapping={scalar.wp_real:np.dtype(scalar.name),wp.int32:np.int32,wp.int64:np.int64}
         if array.dtype not in mapping:raise TypeError("native fixed buffer dtype: "+name)
         span=(int(array.ptr),int(array.ptr)+array.size*np.dtype(mapping[array.dtype]).itemsize)
         for previous,binding in result.items():

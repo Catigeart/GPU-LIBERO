@@ -1,8 +1,9 @@
 """Device-only copies between runtime raw fields and packed observation sources."""
+import libero.gpu.precision as scalar
 import warp as wp
 
 @wp.kernel
-def _copy_field(source: wp.array(dtype=wp.float64), target: wp.array(dtype=wp.float64),
+def _copy_field(source: wp.array(dtype=scalar.wp_real), target: wp.array(dtype=scalar.wp_real),
                 source_stride: int, target_stride: int, offset: int, length: int):
     world,j=wp.tid()
     target[world*target_stride+offset+j]=source[world*source_stride+j]
@@ -23,12 +24,12 @@ class DeviceFieldPacker:
             region=set(range(offset,offset+length))
             if occupied.intersection(region):raise ValueError(f"overlapping source layout: {name}")
             occupied.update(region)
-        self.buffer=wp.zeros(nworld*self.stride,dtype=wp.float64,device=device)
+        self.buffer=wp.zeros(nworld*self.stride,dtype=scalar.wp_real,device=device)
 
     def validate(self,fields):
         for name,(offset,length) in self.layout.items():
             source=fields[name]
-            if source.dtype!=wp.float64 or source.size!=self.nworld*length:
+            if source.dtype!=scalar.wp_real or source.size!=self.nworld*length:
                 raise ValueError(f"field shape/type mismatch: {name}")
             if source.device!=self.buffer.device:raise ValueError(f"field device mismatch: {name}")
             if source.ndim!=1:raise ValueError(f"flatten device field before packing: {name}")

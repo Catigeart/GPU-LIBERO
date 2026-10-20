@@ -3,6 +3,7 @@
 No forward is implicit. Query outputs are private and never publish or alter
 physics state. Python performs cold integer topology assembly and host packaging.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 from threading import RLock
 import numpy as np
@@ -81,7 +82,7 @@ class PublicSpatialQueries:
         widths={'cdof':6*self.nv,'com':3*self.nb,'body_pos':3*self.nb,
             'geom_pos':3*self.ng,'site_pos':3*self.ns,'qvel':self.nv}
         for name,array in self.roots.items():
-            if array.device!=self.device or array.dtype!=wp.float64 or not array.is_contiguous or array.size!=self.nworld*widths[name]:
+            if array.device!=self.device or array.dtype!=scalar.wp_real or not array.is_contiguous or array.size!=self.nworld*widths[name]:
                 raise ValueError('actual public spatial root differs: '+name)
         self._tokens={name:_token(array) for name,array in self.roots.items()}
         self.topology=native_ancestor_topology(model)
@@ -114,10 +115,10 @@ class PublicSpatialQueries:
             self.kind=wp.zeros(self.nworld,dtype=wp.int32,device=self.device)
             self.index=wp.zeros(self.nworld,dtype=wp.int32,device=self.device)
             self.status=wp.zeros(self.nworld,dtype=wp.int32,device=self.device)
-            self.jp=wp.zeros((self.nworld,3,self.nv),dtype=wp.float64,device=self.device)
-            self.jr=wp.zeros((self.nworld,3,self.nv),dtype=wp.float64,device=self.device)
-            self.vp=wp.zeros((self.nworld,3),dtype=wp.float64,device=self.device)
-            self.vr=wp.zeros((self.nworld,3),dtype=wp.float64,device=self.device)
+            self.jp=wp.zeros((self.nworld,3,self.nv),dtype=scalar.wp_real,device=self.device)
+            self.jr=wp.zeros((self.nworld,3,self.nv),dtype=scalar.wp_real,device=self.device)
+            self.vp=wp.zeros((self.nworld,3),dtype=scalar.wp_real,device=self.device)
+            self.vr=wp.zeros((self.nworld,3),dtype=scalar.wp_real,device=self.device)
         args=[self.active,self.kind,self.index,self.status,self.static['body_rootid'],self.static['ancestor'],
             self.static['geom_bodyid'],self.static['site_bodyid'],self.roots['cdof'],self.roots['com'],
             self.roots['body_pos'],self.roots['geom_pos'],self.roots['site_pos'],self.jp,self.jr,self.nb,self.ng,self.ns]

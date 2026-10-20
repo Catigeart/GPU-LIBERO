@@ -3,6 +3,7 @@
 The only boundary inputs are Cartesian arrays, active, count, and RHS. No
 numeric intermediate is uploaded or read on the launch path.
 """
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -87,7 +88,7 @@ def _check_array(name, array, shape, dtype, device):
         raise ValueError(f"{name}: device schema mismatch {shape}/{dtype}")
     if not array.device.is_cuda or array.device != wp.get_device(device):
         raise ValueError(f"{name}: device mismatch")
-    itemsize = 8 if dtype == wp.float64 else 4
+    itemsize = scalar.itemsize if dtype == scalar.wp_real else 4
     expected = []
     step = itemsize
     for size in reversed(shape):
@@ -124,17 +125,17 @@ class MassChainWorkspace:
         nb, _, nv, _, _ = dims
         nj = int(model.njnt)
         self.input_active = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.xipos = wp.zeros((capacity, nb * 3), dtype=wp.float64, device=device)
-        self.ximat = wp.zeros((capacity, nb * 9), dtype=wp.float64, device=device)
-        self.xanchor = wp.zeros((capacity, nj * 3), dtype=wp.float64, device=device)
-        self.xmat = wp.zeros((capacity, nb * 9), dtype=wp.float64, device=device)
-        self.xaxis = wp.zeros((capacity, nj * 3), dtype=wp.float64, device=device)
-        self.subtree_com = wp.zeros((capacity, nb * 3), dtype=wp.float64, device=device)
-        self.cinert = wp.zeros((capacity, nb * 10), dtype=wp.float64, device=device)
-        self.cdof = wp.zeros((capacity, nv * 6), dtype=wp.float64, device=device)
+        self.xipos = wp.zeros((capacity, nb * 3), dtype=scalar.wp_real, device=device)
+        self.ximat = wp.zeros((capacity, nb * 9), dtype=scalar.wp_real, device=device)
+        self.xanchor = wp.zeros((capacity, nj * 3), dtype=scalar.wp_real, device=device)
+        self.xmat = wp.zeros((capacity, nb * 9), dtype=scalar.wp_real, device=device)
+        self.xaxis = wp.zeros((capacity, nj * 3), dtype=scalar.wp_real, device=device)
+        self.subtree_com = wp.zeros((capacity, nb * 3), dtype=scalar.wp_real, device=device)
+        self.cinert = wp.zeros((capacity, nb * 10), dtype=scalar.wp_real, device=device)
+        self.cdof = wp.zeros((capacity, nv * 6), dtype=scalar.wp_real, device=device)
         self.compos_status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.crb_active = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.crb = wp.zeros((capacity, nb * 10), dtype=wp.float64, device=device)
+        self.crb = wp.zeros((capacity, nb * 10), dtype=scalar.wp_real, device=device)
         self.crb_status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.first_stage = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.first_code = wp.zeros(capacity, dtype=wp.int32, device=device)
@@ -147,29 +148,29 @@ class MassChainWorkspace:
         nj = self.compos.njnt
         schema = {
             "input_active": ((n,), wp.int32),
-            "xipos": ((n, nb * 3), wp.float64),
-            "ximat": ((n, nb * 9), wp.float64),
-            "xanchor": ((n, nj * 3), wp.float64),
-            "xmat": ((n, nb * 9), wp.float64),
-            "xaxis": ((n, nj * 3), wp.float64),
-            "subtree_com": ((n, nb * 3), wp.float64),
-            "cinert": ((n, nb * 10), wp.float64),
-            "cdof": ((n, nv * 6), wp.float64),
+            "xipos": ((n, nb * 3), scalar.wp_real),
+            "ximat": ((n, nb * 9), scalar.wp_real),
+            "xanchor": ((n, nj * 3), scalar.wp_real),
+            "xmat": ((n, nb * 9), scalar.wp_real),
+            "xaxis": ((n, nj * 3), scalar.wp_real),
+            "subtree_com": ((n, nb * 3), scalar.wp_real),
+            "cinert": ((n, nb * 10), scalar.wp_real),
+            "cdof": ((n, nv * 6), scalar.wp_real),
             "compos_status": ((n,), wp.int32),
             "crb_active": ((n,), wp.int32),
-            "crb": ((n, nb * 10), wp.float64),
+            "crb": ((n, nb * 10), scalar.wp_real),
             "crb_status": ((n,), wp.int32),
             "first_stage": ((n,), wp.int32),
             "first_code": ((n,), wp.int32),
             "result_kind": ((n,), wp.int32),
-            "mass.qm": ((n, nm), wp.float64),
-            "mass.rhs": ((n, 4, nv), wp.float64),
+            "mass.qm": ((n, nm), scalar.wp_real),
+            "mass.rhs": ((n, 4, nv), scalar.wp_real),
             "mass.count": ((n,), wp.int32),
             "mass.active": ((n,), wp.int32),
-            "mass.ld": ((n, nm), wp.float64),
-            "mass.inv": ((n, nv), wp.float64),
-            "mass.sqrt_inv": ((n, nv), wp.float64),
-            "mass.solution": ((n, 4, nv), wp.float64),
+            "mass.ld": ((n, nm), scalar.wp_real),
+            "mass.inv": ((n, nv), scalar.wp_real),
+            "mass.sqrt_inv": ((n, nv), scalar.wp_real),
+            "mass.solution": ((n, 4, nv), scalar.wp_real),
             "mass.pivot": ((n, nv), wp.int32),
             "mass.status": ((n,), wp.int32),
             "mass.warning_count": ((n,), wp.int32),

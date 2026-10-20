@@ -1,5 +1,6 @@
 """Given OBB pairs, reproduce mj_collideOBB(product=NULL), not BVH traversal."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 
@@ -7,12 +8,12 @@ wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False}
 
 
 @wp.func
-def _dot(a0:wp.float64,a1:wp.float64,a2:wp.float64,b0:wp.float64,b1:wp.float64,b2:wp.float64)->wp.float64:
+def _dot(a0:scalar.wp_real,a1:scalar.wp_real,a2:scalar.wp_real,b0:scalar.wp_real,b1:scalar.wp_real,b2:scalar.wp_real)->scalar.wp_real:
     return a0*b0+a1*b1+a2*b2
 
 
 @wp.kernel(enable_backward=False)
-def _obb(aabb:wp.array(dtype=wp.float64),pos:wp.array(dtype=wp.float64),mat:wp.array(dtype=wp.float64),
+def _obb(aabb:wp.array(dtype=scalar.wp_real),pos:wp.array(dtype=scalar.wp_real),mat:wp.array(dtype=scalar.wp_real),
          active:wp.array(dtype=wp.int32),counts:wp.array(dtype=wp.int32),
          out:wp.array(dtype=wp.int32),axis:wp.array(dtype=wp.int32),status:wp.array(dtype=wp.int32),slots:int):
     tid=wp.tid();w=tid//slots;q=tid-w*slots
@@ -22,14 +23,14 @@ def _obb(aabb:wp.array(dtype=wp.float64),pos:wp.array(dtype=wp.float64),mat:wp.a
         status[tid]=1;return
     if q>=counts[w]:return
     b=tid*12;p=tid*6;m=tid*18
-    inf10=aabb[b+3]>=wp.float64(1.0e10);inf11=aabb[b+4]>=wp.float64(1.0e10);inf12=aabb[b+5]>=wp.float64(1.0e10)
-    inf20=aabb[b+9]>=wp.float64(1.0e10);inf21=aabb[b+10]>=wp.float64(1.0e10);inf22=aabb[b+11]>=wp.float64(1.0e10)
+    inf10=aabb[b+3]>=scalar.wp_real(1.0e10);inf11=aabb[b+4]>=scalar.wp_real(1.0e10);inf12=aabb[b+5]>=scalar.wp_real(1.0e10)
+    inf20=aabb[b+9]>=scalar.wp_real(1.0e10);inf21=aabb[b+10]>=scalar.wp_real(1.0e10);inf22=aabb[b+11]>=scalar.wp_real(1.0e10)
     if (inf10 and inf11 and inf12) or (inf20 and inf21 and inf22):
         out[tid]=1;return
-    c0=wp.vec3d();c1=wp.vec3d()
+    c0=scalar.vec3_real();c1=scalar.vec3_real()
     for i in range(2):
         bb=b+6*i;mm=m+9*i;pp=p+3*i
-        center=wp.vec3d(
+        center=scalar.vec3_real(
             _dot(aabb[bb],aabb[bb+1],aabb[bb+2],mat[mm],mat[mm+1],mat[mm+2])+pos[pp],
             _dot(aabb[bb],aabb[bb+1],aabb[bb+2],mat[mm+3],mat[mm+4],mat[mm+5])+pos[pp+1],
             _dot(aabb[bb],aabb[bb+1],aabb[bb+2],mat[mm+6],mat[mm+7],mat[mm+8])+pos[pp+2])
@@ -43,7 +44,7 @@ def _obb(aabb:wp.array(dtype=wp.float64),pos:wp.array(dtype=wp.float64),mat:wp.a
             n0=mat[jm+k];n1=mat[jm+3+k];n2=mat[jm+6+k]
             proj0=_dot(c0[0],c0[1],c0[2],n0,n1,n2)
             proj1=_dot(c1[0],c1[1],c1[2],n0,n1,n2)
-            r0=wp.float64(0.0);r1=wp.float64(0.0)
+            r0=scalar.wp_real(0.0);r1=scalar.wp_real(0.0)
             for i in range(2):
                 bb=b+6*i;mm=m+9*i
                 d0=_dot(mat[mm],mat[mm+3],mat[mm+6],n0,n1,n2)
@@ -61,9 +62,9 @@ class OBBWorkspace:
     def __init__(self,nworld,slots,device='cuda:0'):
         if nworld<1 or slots<1:raise ValueError('positive dimensions required')
         self.nworld=nworld;self.slots=slots;self.device=device
-        self.aabb=wp.zeros(nworld*slots*12,dtype=wp.float64,device=device)
-        self.pos=wp.zeros(nworld*slots*6,dtype=wp.float64,device=device)
-        self.mat=wp.zeros(nworld*slots*18,dtype=wp.float64,device=device)
+        self.aabb=wp.zeros(nworld*slots*12,dtype=scalar.wp_real,device=device)
+        self.pos=wp.zeros(nworld*slots*6,dtype=scalar.wp_real,device=device)
+        self.mat=wp.zeros(nworld*slots*18,dtype=scalar.wp_real,device=device)
         self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.counts=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.out=wp.zeros(nworld*slots,dtype=wp.int32,device=device)

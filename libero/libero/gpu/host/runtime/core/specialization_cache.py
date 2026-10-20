@@ -20,10 +20,26 @@ def index_packages(root, packages=None):
         generated = package / 'SOURCE_GENERATION.json'
         if not model.is_file() or not generated.is_file():
             continue
+        report = json.loads(generated.read_text())
+        # A historical package can share the same model manifest while its
+        # template version is obsolete. Never let scan order replace a current
+        # entry with that package. Runtime intake still validates every pin.
+        pins = [pin for group in ('template_pins', 'generated_pins')
+                for pin in report.get(group, {}).values()]
+        current = bool(pins) and all(Path(pin['path']).is_file() and
+            hashlib.sha256(Path(pin['path']).read_bytes()).hexdigest() == pin['sha256'] for pin in pins)
+        if not current:
+            if packages is not None:
+                raise ValueError('explicit specialization has stale source pins: ' + str(package))
+            continue
         manifest = json.loads(model.read_text())
-        entries[_manifest_key(manifest)] = dict(package=package.name,
+        key = _manifest_key(manifest)
+        entry = dict(package=package.name,
             files={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in package.iterdir() if p.is_file()})
+        if key in entries and entries[key]['package'] != entry['package']:
+            raise ValueError('multiple current specializations for one manifest: ' + key)
+        entries[key] = entry
     (root / 'INSTANCES.json').write_text(json.dumps(entries, indent=2, sort_keys=True)+'\n')
     return entries
 

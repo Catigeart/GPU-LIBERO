@@ -4,6 +4,7 @@ Retained stage metadata supplies the call order and actual buffer bindings.
 No Warp ModuleBuilder, generated arithmetic, array descriptors or Warp C++
 headers are used. The old lowered core remains an independent reference.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path, serialized_build
 import ctypes as ct
@@ -75,6 +76,8 @@ def _project_header_source(paths, project_root):
         try:
             def include(match):
                 child=path.parent/match.group(1)
+                if match.group(1) == 'precision.cuh':
+                    child=GPU_ROOT/'cuda/common/precision.cuh'
                 return expand(child)
             body=quoted.sub(include,once.sub('',text))
         finally:
@@ -229,7 +232,7 @@ class HandwrittenCudaCore(PersistentCudaCore):
         cone_threshold=self.hessian_algorithm_configuration['cone_batch_threshold']
         rebuild_threshold=self.hessian_algorithm_configuration['rank_rebuild_threshold']
         effective_cone_strategy=self.hessian_algorithm_configuration['cone_strategy']
-        budget=newton_shared_budget(nv,cholesky_backend=cholesky_backend,blas_backend=blas_backend,
+        budget=newton_shared_budget(nv,cholesky_backend=cholesky_backend,blas_backend=blas_backend,scalar_bytes=scalar.itemsize,
             prefix_static_bytes=int((external_prefix or {}).get('static_shared_bytes',0))+
                 (4 if head_metadata is not None else 0)+
                 (phase_profile.STATIC_SHARED_BYTES if self.phase_profiling else 0),
@@ -240,8 +243,8 @@ class HandwrittenCudaCore(PersistentCudaCore):
         if not budget['admitted_by_formula']:
             raise ValueError('cuSOLVERDx matrix exceeds this single-block shared capacity')
         tail_elements=int((external_tail or {}).get('workspace_elements',0))
-        if tail_elements>dx_bytes//8:
-            raise ValueError(('external tail workspace exceeds lifetime-reused Dx storage',tail_elements,dx_bytes//8))
+        if tail_elements>dx_bytes//scalar.itemsize:
+            raise ValueError(('external tail workspace exceeds lifetime-reused Dx storage',tail_elements,dx_bytes//scalar.itemsize))
         self.root=Path(build_root).resolve();self.root.mkdir(parents=True,exist_ok=True)
         fields=[];values=[];arrays={};names=set();owners=[]
         # Row topology is regenerated whenever invariant_valid is reset at entry.
@@ -278,7 +281,7 @@ class HandwrittenCudaCore(PersistentCudaCore):
                             raise ValueError(('conflicting local world stride',entry['name'],entry['stride'],stride))
                         entry['view_required']=True;entry['stride']=stride
                     return entry['name']
-                ctype={wp.float64:'double',wp.int32:'int32_t',wp.int64:'int64_t'}.get(value.dtype)
+                ctype={scalar.wp_real:'real_t',wp.int32:'int32_t',wp.int64:'int64_t'}.get(value.dtype)
                 if ctype is None:raise TypeError(('core dtype',value.dtype))
                 name=named.get(token,suggested)
                 name=''.join(c if c.isalnum() or c=='_' else '_' for c in name)
@@ -288,7 +291,7 @@ class HandwrittenCudaCore(PersistentCudaCore):
                 arrays[token]=dict(name=name,stride=stride,ctype=ctype,array=value,shared=False,view_required=not owner_only)
                 return name
             if isinstance(value,(float,np.floating)):
-                fields.append((f'scalar_{len(fields)}',ct.c_double,'double'));values.append(ct.c_double(value))
+                fields.append((f'scalar_{len(fields)}',scalar.ct_real,'real_t'));values.append(scalar.ct_real(value))
             else:
                 fields.append((f'scalar_{len(fields)}',ct.c_int32,'int32_t'));values.append(ct.c_int32(value))
             return 'p->'+fields[-1][0]
@@ -297,12 +300,12 @@ class HandwrittenCudaCore(PersistentCudaCore):
             self.hessian_algorithm_diagnostic=wp.zeros((ws.nworld,8),dtype=wp.int32,device=ws.device)
             algorithm_argument=bind(self.hessian_algorithm_diagnostic,'hessian_algorithm_diagnostic')
             if rebuild_threshold:
-                self.hessian_upper_backup=wp.empty((ws.nworld,nv*nv),dtype=wp.float64,device=ws.device)
+                self.hessian_upper_backup=wp.empty((ws.nworld,nv*nv),dtype=scalar.wp_real,device=ws.device)
                 upper_argument=bind(self.hessian_upper_backup,'hessian_upper_backup')
         if use_blas and effective_cone_strategy!='rank':
             # Lifetime overlaps local POTRF/L^T J scratch. Keep a separate owner
             # instead of aliasing vendor workspace or pending contact operands.
-            self.cone_pending_rows=wp.empty((ws.nworld,hessian_k*nv),dtype=wp.float64,device=ws.device)
+            self.cone_pending_rows=wp.empty((ws.nworld,hessian_k*nv),dtype=scalar.wp_real,device=ws.device)
             pending_argument=bind(self.cone_pending_rows,'cone_pending_rows')
         if newton_islands=='exact':
             self.islands_diagnostic=wp.zeros((ws.nworld,8),dtype=wp.int32,device=ws.device)
@@ -547,11 +550,11 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         for key in hot:
             a=getattr(ws,key);entry=arrays.get((a.ptr,a.dtype))
             if not shared_state or entry is None or not entry['view_required'] or entry['shared']:continue
-            size=entry['stride']*8
+            size=entry['stride']*scalar.itemsize
             offset=align_bytes(shared_bytes)
             end=offset+size
             if not size or align_bytes(end,16)+dx_bytes+static_reserve>48*1024:continue
-            entry['shared']=True;entry['offset']=offset//8
+            entry['shared']=True;entry['offset']=offset//scalar.itemsize
             shared_bytes=end;selected.append(entry)
         if self.phase_profiling:
             self.phase_profile_values=wp.zeros((ws.nworld,len(phase_profile.PHASES),2),dtype=wp.int64,device=ws.device)
@@ -601,10 +604,8 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             for name in ('include/cusolverdx.hpp','lib/libcusolverdx.a','external/cutlass/include/cutlass/cutlass.h'):
                 if not (dependency/name).is_file():raise FileNotFoundError(dependency/name)
             if use_blas and not (dependency/'include/cublasdx.hpp').is_file():raise FileNotFoundError(dependency/'include/cublasdx.hpp')
-        native_path=(GPU_ROOT / 'reference/newton/newton_linesearch/kernel.cu')
-        native=native_path.read_text().split('extern "C" int s07_launch')[0]
-        native=native.replace('__global__ void search_kernel(S07Args a,','__device__ void search_kernel(int w, S07Args a,')
-        native=native.replace('  int w = blockIdx.x*blockDim.x+threadIdx.x;','')
+        native_path=(GPU_ROOT / 'cuda/newton/linesearch_scalar.cuh')
+        native=native_path.read_text()
         factor_shared=[arrays.get((a.ptr,a.dtype),{}).get('shared',False) for a in (ws.H,ws.Hcone)]
         source=f'#define LIBERO_NEWTON_SCALAR_IO {int(self.scalar_io)}\n#define NEWTON_BLOCK_THREADS {block_size}\n#define NV {nv}\n#define NM {nm}\n#define ROWS {ws.rows}\n#define DATAFLOW_FAST_PROFILE {int(diagnostic_profile=="fast")}\n#define DIRECTION_BASE_SHARED {int(factor_shared[0])}\n#define DIRECTION_CONE_SHARED {int(factor_shared[1])}\n'+native
         if use_dx:
@@ -629,11 +630,14 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             adapter_commit=[phase_profile.wrap_stage('\n'.join(adapter_commit),'public_commit','tail')] if adapter_commit else []
         profile_external_code=[phase_profile.wrap_stage('\n'.join(external_code),'external_prefix','prefix')] if self.phase_profiling and external_code else external_code
         profile_external_tail_code=[phase_profile.wrap_stage('\n'.join(external_tail_code),'external_tail','tail')] if self.phase_profiling and external_tail_code else external_tail_code
-        source+='extern __shared__ __align__(32) double shared[];\n__shared__ int invariant_valid,changed_count;\nif(threadIdx.x==0){invariant_valid=0;changed_count=0;}\n'+head_source['shared']+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
+        source+="""extern __shared__ __align__(32) real_t shared[];
+__shared__ int invariant_valid,changed_count;
+if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
+"""+head_source['shared']+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
         if use_dx:
             # Align the device-library matrix workspace independently of views.
             shared_bytes=((shared_bytes+15)//16)*16
-            source+=f'double* dx_matrix=shared+{shared_bytes//8};\n'
+            source+=f'real_t* dx_matrix=shared+{shared_bytes//scalar.itemsize};\n'
             shared_bytes+=dx_bytes
         if mass_guard:
             source+='__shared__ int mass_plan_valid;\nif(threadIdx.x==0)mass_plan_valid=1;\n__syncthreads();\n'
@@ -669,13 +673,13 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         # Bind the byte hashes as well as expanded text: editing a dependency's
         # pragma/comment/line endings must never silently reuse an old build.
         source_closure=json.dumps(stage_sources,sort_keys=True,separators=(',',':'))
-        digest=hashlib.sha256((source+bridge_source+source_closure+(dependency_sha or '')+'|fma=true|prec-div=true|prec-sqrt=true').encode()).hexdigest();source_path=self.root/(digest+'.cu');target=self.root/(digest+'.so')
+        digest=hashlib.sha256((source+bridge_source+source_closure+(dependency_sha or '')+'|fma=true|prec-div=true|prec-sqrt=true|real='+str(scalar.bits)).encode()).hexdigest();source_path=self.root/(digest+'.cu');target=self.root/(digest+'.so')
         source_path.write_text(source)
         product_authority=current_product_authority()
         if product_authority is not None:
             target=self.root/(digest+'_'+uuid.uuid4().hex+'.so')
         compiler=nvcc_path()
-        command=[compiler,'-shared','-Xcompiler','-fPIC','-O3','--fmad=true','--prec-div=true','--prec-sqrt=true',
+        command=[compiler,*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-shared','-Xcompiler','-fPIC','-O3','--fmad=true','--prec-div=true','--prec-sqrt=true',
                  '-arch=sm_%d'%wp.get_device(ws.device).arch,str(source_path),'-o',str(target)]
         commands=[command]
         if use_dx:
@@ -685,7 +689,7 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
             if use_blas: paths.append((GPU_ROOT / 'cuda/newton/direction_blas_dx_bridge.cu'))
             if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands_dx_bridge.cu')
             architecture='-arch=sm_%d'%wp.get_device(ws.device).arch
-            common=[compiler,'-Xcompiler','-fPIC','-O3','-std=c++17','--expt-relaxed-constexpr',architecture]
+            common=[compiler,*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-Xcompiler','-fPIC','-O3','-std=c++17','--expt-relaxed-constexpr',architecture]
             main_object=self.root/(digest+'_main.o');bridge_object=self.root/(digest+'_bridge.o')
             commands=[common+['-dc','--fmad=true','--prec-div=true','--prec-sqrt=true',str(source_path),'-o',str(main_object)],
                       common+['-dc','-dlto','--fmad=true','-I'+str(dependency/'include'),
@@ -782,7 +786,7 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
         self.owners=tuple(owners);self.tokens=tuple((a.ptr,a.shape,a.dtype) for a in self.owners)
         self.layout_tokens=tuple((a.ptr,tuple(a.shape),tuple(a.strides),a.dtype) for a in self.owners)
         self.layout_descriptors=tuple(array_layout(e['array'],world_stride_elements=e['stride'],owner_name=e['name'],
-            shared_offset_bytes=e['offset']*8 if e['shared'] else None) for e in arrays.values())
+            shared_offset_bytes=e['offset']*scalar.itemsize if e['shared'] else None) for e in arrays.values())
         self.bindings=tuple((owner,key,value) for owner in (solver,ws,self) for key,value in vars(owner).items() if isinstance(value,wp.array))
         self.capacity=(ws.nworld,ws.rows,ws.contacts,ws.maxiter,ws.warmstart_enabled)
         self.manifest=dict(floating_policy={'fma':True,'fast_math':False,'prec_div':True,'prec_sqrt':True},source=str(source_path),sha256=digest,command=command,nv=nv,nM=nm,rows=ws.rows,contacts=ws.contacts,

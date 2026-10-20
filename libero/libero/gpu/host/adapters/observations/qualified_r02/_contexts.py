@@ -1,4 +1,5 @@
 """Native context methods copied from independently qualified source."""
+import libero.gpu.precision as scalar
 import ctypes as ct
 import numpy as np
 
@@ -46,9 +47,9 @@ class SamplerContext:
         self.owner = owner;self.lib = owner.library;self.layout = layout;self.pointer = ct.c_void_p()
         self.lib.create.argtypes = [ct.POINTER(ct.c_void_p), ct.c_void_p, ct.c_void_p]
         self.lib.upload.argtypes = [ct.c_void_p] * 4;self.lib.mutate.argtypes = [ct.c_void_p] * 2
-        self.lib.step.argtypes = [ct.c_void_p, ct.c_int, ct.c_double]
+        self.lib.step.argtypes = [ct.c_void_p, ct.c_int, scalar.ct_real]
         self.lib.read.argtypes = [ct.c_void_p] * 4
-        self.lib.capture.argtypes = [ct.c_void_p, ct.c_int, ct.c_int, ct.c_double]
+        self.lib.capture.argtypes = [ct.c_void_p, ct.c_int, ct.c_int, scalar.ct_real]
         self.lib.measure.argtypes = [ct.c_void_p, ct.POINTER(ct.c_float)];self.lib.destroy.argtypes = [ct.c_void_p]
         try:self.check(self.lib.create(ct.byref(self.pointer), layout["integers"].ctypes.data, layout["periods"].ctypes.data))
         except BaseException:

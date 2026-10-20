@@ -4,6 +4,7 @@ The original chain module is not mutated. A source-derived subclass substitutes
 one launch expression with begin/copy/commit launches on the original stream.
 This changes scheduling only; the original full-capacity write set is retained.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ast
 import hashlib
@@ -50,12 +51,12 @@ def _rows(c_g1: wp.array(dtype=wp.int32), c_g2: wp.array(dtype=wp.int32),
           c_t1: wp.array(dtype=wp.int32), c_t2: wp.array(dtype=wp.int32),
           c_ipair: wp.array(dtype=wp.int32), c_user: wp.array(dtype=wp.int32),
           c_segment: wp.array(dtype=wp.int32), c_sort: wp.array(dtype=wp.int32),
-          c_margin: wp.array(dtype=wp.float64),
-          det_raw: wp.array(dtype=wp.float64), det_raw_count: wp.array(dtype=wp.int32),
-          f_raw: wp.array(dtype=wp.float64), f_raw_count: wp.array(dtype=wp.int32),
+          c_margin: wp.array(dtype=scalar.wp_real),
+          det_raw: wp.array(dtype=scalar.wp_real), det_raw_count: wp.array(dtype=wp.int32),
+          f_raw: wp.array(dtype=scalar.wp_real), f_raw_count: wp.array(dtype=wp.int32),
           f_types: wp.array(dtype=wp.int32), f_segment: wp.array(dtype=wp.int32),
           f_sort: wp.array(dtype=wp.int32),
-          p_route: wp.array(dtype=wp.int32), p_usermargin: wp.array(dtype=wp.float64),
+          p_route: wp.array(dtype=wp.int32), p_usermargin: wp.array(dtype=scalar.wp_real),
           p_counts: wp.array(dtype=wp.int32), f_status: wp.array(dtype=wp.int32),
           f_active: wp.array(dtype=wp.int32), pairs: int, max_raw: int, raw_f: int):
     row = wp.tid()

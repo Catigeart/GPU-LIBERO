@@ -1,10 +1,11 @@
+#include "precision.cuh"
 // Standard dense J*qvel: cuBLASDx device GEMM with N=1 (GEMV).
 // Tiling bounds shared memory independently of row capacity. Tail A rows are
 // zero padded; only the admitted valid prefix is written to private scratch.
 #pragma once
 #include <cublasdx.hpp>
 namespace cf_s {
-using ReferenceGemm=decltype(cublasdx::Size<32,1,NV>()+cublasdx::Precision<double>()+
+using ReferenceGemm=decltype(cublasdx::Size<32,1,NV>()+cublasdx::Precision<real_t>()+
   cublasdx::Type<cublasdx::type::real>()+
   cublasdx::Arrangement<cublasdx::row_major,cublasdx::col_major,cublasdx::col_major>()+
   cublasdx::Function<cublasdx::function::MM>()+cublasdx::SM<CF_S_DX_SM>()+
@@ -27,19 +28,19 @@ __device__ void CF_S_reference {
     for(int z=2*threadIdx.x;z<tile*NV;z+=2*blockDim.x){
       const int r=z/NV,k=z%NV,next=z+1,r1=next/NV,k1=next%NV;
       if(next<tile*NV&&base+r1<total){
-        const double2 v=libero_vec::load_pair(efc_J+(w*rows+base)*NV+z);
+        const real2_t v=libero_vec::load_pair(efc_J+(w*rows+base)*NV+z);
         A(r,k)=v.x;A(r1,k1)=v.y;
       }else{
-        A(r,k)=base+r<total?efc_J[(w*rows+base)*NV+z]:0.;
-        if(next<tile*NV)A(r1,k1)=base+r1<total?efc_J[(w*rows+base)*NV+next]:0.;
+        A(r,k)=base+r<total?efc_J[(w*rows+base)*NV+z]:REAL_C(0.);
+        if(next<tile*NV)A(r1,k1)=base+r1<total?efc_J[(w*rows+base)*NV+next]:REAL_C(0.);
       }
     }
-    for(int r=threadIdx.x;r<tile;r+=blockDim.x)C(r,0)=0.;
+    for(int r=threadIdx.x;r<tile;r+=blockDim.x)C(r,0)=REAL_C(0.);
     __syncthreads();
-    ReferenceGemm().execute(1.,A,B,0.,C);
+    ReferenceGemm().execute(REAL_C(1.),A,B,REAL_C(0.),C);
     __syncthreads();
     for(int r=threadIdx.x;r<tile&&base+r<total;r+=blockDim.x){
-      int g=w*rows+base+r;double acc=C(r,0);
+      int g=w*rows+base+r;real_t acc=C(r,0);
       vel[g]=acc;aref[g]=-kbip[g*4+1]*acc-kbip[g*4]*kbip[g*4+2]*(efc_pos[g]-efc_margin[g]);
     }
     __syncthreads();

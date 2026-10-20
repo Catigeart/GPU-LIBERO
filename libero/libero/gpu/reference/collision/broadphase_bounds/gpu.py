@@ -4,6 +4,7 @@ All numpy use is preparation/diagnostic only.  `run` and `graph` call only a
 precompiled CUDA launch; their device inputs and outputs are already resident.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 import ctypes as ct
@@ -17,12 +18,12 @@ import numpy as np
 class Output(ct.Structure):
     _fields_ = [('status', ct.c_int), ('entered', ct.c_int), ('count', ct.c_int),
                 ('iter', ct.c_int), ('reason', ct.c_int),
-                ('cen', ct.c_double * 3), ('cov', ct.c_double * 9),
-                ('eigval', ct.c_double * 3), ('frame', ct.c_double * 9),
-                ('quat', ct.c_double * 4), ('aabb', ct.c_double * (6*38)),
+                ('cen', scalar.ct_real * 3), ('cov', scalar.ct_real * 9),
+                ('eigval', scalar.ct_real * 3), ('frame', scalar.ct_real * 9),
+                ('quat', scalar.ct_real * 4), ('aabb', scalar.ct_real * (6*38)),
                 ('valid', ct.c_int * 38), ('axis', ct.c_int * 500),
-                ('stop', ct.c_int * 500), ('offdiag', ct.c_double * 500),
-                ('cosine', ct.c_double * 500)]
+                ('stop', ct.c_int * 500), ('offdiag', scalar.ct_real * 500),
+                ('cosine', scalar.ct_real * 500)]
 
 
 def build_library(cache: Path) -> Path:
@@ -89,12 +90,12 @@ class Workspace:
         if l.c02_output_size()!=ct.sizeof(Output):
             raise AssertionError('host/device Output ABI mismatch')
         l.c02_create.argtypes=[ct.c_int,ct.c_int,ct.c_int,ct.POINTER(ct.c_int),ct.POINTER(ct.c_int),
-            ct.POINTER(ct.c_int),ct.POINTER(ct.c_double),ct.POINTER(ct.c_double),
+            ct.POINTER(ct.c_int),ct.POINTER(scalar.ct_real),ct.POINTER(scalar.ct_real),
             ct.POINTER(ct.c_int),ct.POINTER(ct.c_int)]
         l.c02_create.restype=ct.c_void_p
-        l.c02_upload.argtypes=[ct.c_void_p,ct.POINTER(ct.c_double),ct.POINTER(ct.c_int)]
+        l.c02_upload.argtypes=[ct.c_void_p,ct.POINTER(scalar.ct_real),ct.POINTER(ct.c_int)]
         l.c02_seed.argtypes=[ct.c_void_p,ct.POINTER(Output)]
-        l.c02_upload_cov.argtypes=[ct.c_void_p,ct.POINTER(ct.c_double),ct.POINTER(ct.c_int)]
+        l.c02_upload_cov.argtypes=[ct.c_void_p,ct.POINTER(scalar.ct_real),ct.POINTER(ct.c_int)]
         l.c02_run_eig.argtypes=[ct.c_void_p]
         l.c02_run.argtypes=[ct.c_void_p]
         l.c02_capture_graph.argtypes=[ct.c_void_p]
@@ -105,7 +106,7 @@ class Workspace:
         self.static=static
         self.handle=l.c02_create(n,self.g,self.b,*[_ptr(static[k], ct.c_int) for k in
             ('geom_bodyid','body_geomadr','body_geomnum')],
-            *[_ptr(static[k], ct.c_double) for k in ('geom_rbound','geom_margin')],
+            *[_ptr(static[k], scalar.ct_real) for k in ('geom_rbound','geom_margin')],
             *[_ptr(static[k], ct.c_int) for k in ('geom_contype','geom_conaffinity')])
         if not self.handle:
             raise RuntimeError('cuda workspace allocation or static upload failed')
@@ -120,7 +121,7 @@ class Workspace:
         if np.any((active!=0)&(active!=1)):
             raise ValueError('active must contain only 0/1')
         self._held=[xpos,active]
-        if self.lib.c02_upload(self.handle,_ptr(xpos,ct.c_double),_ptr(active,ct.c_int)):
+        if self.lib.c02_upload(self.handle,_ptr(xpos,scalar.ct_real),_ptr(active,ct.c_int)):
             raise RuntimeError('CUDA upload failed')
 
     def seed(self, byte: int=0x55) -> None:
@@ -136,7 +137,7 @@ class Workspace:
         if not isinstance(active,np.ndarray) or active.dtype!=np.int32 or active.shape!=(self.n,) or not active.flags.c_contiguous or np.any((active!=0)&(active!=1)):
             raise ValueError('local active must be int32 0/1 [N]')
         self._held=[cov,active]
-        if self.lib.c02_upload_cov(self.handle,_ptr(cov,ct.c_double),_ptr(active,ct.c_int)):
+        if self.lib.c02_upload_cov(self.handle,_ptr(cov,scalar.ct_real),_ptr(active,ct.c_int)):
             raise RuntimeError('CUDA local covariance upload failed')
 
     def run_eig(self) -> None:

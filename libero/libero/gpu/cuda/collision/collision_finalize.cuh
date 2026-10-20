@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include "collision_dedup.cuh"
 #include <math.h>
@@ -5,9 +6,9 @@ namespace collision_cuda {
 // A complete block owns a world; fixed-capacity rows retain source order.
 template<bool Diagnostics>
 __device__ void cf_calls_finalize_impl(int w,int* g1,int* g2,int* t1,int* t2,int* ipair,int* user,
-        int* segment,int* sort,int* call_count,double* margin,double* raw,int* raw_count,int* det_status,
-        double* fraw,int* fcount,int* fcall,int* factive,int* ftypes,int* fsegment,int* fsort,
-        int* route,double* usermargin,int* counts,int* status,int* active,
+        int* segment,int* sort,int* call_count,real_t* margin,real_t* raw,int* raw_count,int* det_status,
+        real_t* fraw,int* fcount,int* fcall,int* factive,int* ftypes,int* fsegment,int* fsort,
+        int* route,real_t* usermargin,int* counts,int* status,int* active,
         int worlds,int pairs,int max_raw,int raw_f){
     // Each warp votes over its strided detector calls. No detector status has
     // a distinct public error code, so an unordered boolean vote preserves
@@ -70,8 +71,8 @@ template<class... Args>
 __device__ __forceinline__ void cf_calls_finalize(Args... args){cf_calls_finalize_impl<true>(args...);}
 template<class... Args>
 __device__ __forceinline__ void cf_calls_finalize_live(Args... args){cf_calls_finalize_impl<false>(args...);}
-__device__ void cf_dedup(int w,double* raw,int* raw_count,int* call_count,int* active,int* types,
-        int* route,int* geom_type,int ngeom,double* compact,int* compact_count,int* keep_index,
+__device__ void cf_dedup(int w,real_t* raw,int* raw_count,int* call_count,int* active,int* types,
+        int* route,int* geom_type,int ngeom,real_t* compact,int* compact_count,int* keep_index,
         int* status,int pairs){
     for(int local=threadIdx.x;local<pairs;local+=blockDim.x){
         int call=w*pairs+local;compact_count[call]=status[call]=0;
@@ -101,8 +102,8 @@ __device__ bool cf_contact_lt(int ga,int ha,int gb,int hb,int* type){
     return a<c || (a==c && b<d);
 }
 template<int Fields=65>
-__device__ void cf_contact_copy(int dst,int src,double* sf,int* si,double* df,int* di){
-    for(int k=0;k+1<Fields;k+=2){const double2 v=libero_vec::load_pair(sf+src*Fields+k);
+__device__ void cf_contact_copy(int dst,int src,real_t* sf,int* si,real_t* df,int* di){
+    for(int k=0;k+1<Fields;k+=2){const real2_t v=libero_vec::load_pair(sf+src*Fields+k);
         libero_vec::store_pair(df+dst*Fields+k,v.x,v.y);}
     if(Fields&1)df[dst*Fields+Fields-1]=sf[src*Fields+Fields-1];
     const int* s=si+src*5;int* d=di+dst*5;
@@ -115,7 +116,7 @@ __device__ void cf_contact_copy(int dst,int src,double* sf,int* si,double* df,in
 }
 template<int Fields=65>
 __device__ void cf_contact_sort(int w,int start,int length,int capacity,int* type,
-        double* cf,int* ci,double* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
+        real_t* cf,int* ci,real_t* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
     if(order&&order_scratch){
         const int base=w*capacity+start;
         for(int j=0;j<length;++j)order[base+j]=base+j;
@@ -156,10 +157,10 @@ __device__ void cf_contact_sort(int w,int start,int length,int capacity,int* typ
 // Units never cross record boundaries; source/destination alignment may differ.
 template<int Fields=65>
 __device__ void cf_contact_gather_block(int base,int length,const int* permutation,
-        const double* cf,const int* ci,double* sf,int* si){
+        const real_t* cf,const int* ci,real_t* sf,int* si){
     for(int unit=threadIdx.x;unit<length*((Fields+1)/2);unit+=blockDim.x){
         const int row=unit/((Fields+1)/2),k=(unit%((Fields+1)/2))*2,src=permutation[row];
-        if(k+1<Fields){const double2 v=libero_vec::load_pair(cf+src*Fields+k);
+        if(k+1<Fields){const real2_t v=libero_vec::load_pair(cf+src*Fields+k);
             libero_vec::store_pair(sf+(base+row)*Fields+k,v.x,v.y);}
         else sf[(base+row)*Fields+Fields-1]=cf[src*Fields+Fields-1];
     }
@@ -174,7 +175,7 @@ __device__ void cf_contact_gather_block(int base,int length,const int* permutati
 }
 template<int Fields=65>
 __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,int* type,
-        double* cf,int* ci,double* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
+        real_t* cf,int* ci,real_t* sf,int* si,int* order=nullptr,int* order_scratch=nullptr){
     if(length<=0)return;
     if(length==1){
         // The indexed scalar path initializes order and its record scratch,
@@ -267,10 +268,10 @@ __device__ void cf_contact_sort_block(int w,int start,int length,int capacity,in
     libero_vec::copy_block(si+base*5,ci+base*5,size_t(length)*5);
     __syncthreads();
 }
-__device__ double cf_norm3(double a,double b,double c){return sqrt((a*a+b*b)+c*c);}
+__device__ real_t cf_norm3(real_t a,real_t b,real_t c){return sqrt((a*a+b*b)+c*c);}
 __device__ void cf_assemble(int w,int* compact_count,int* keep_index,int* call_count,int* active,
-        int* segment,int* sort_enabled,int* geom_type,double* params_f,int* params_i,int* dedup_status,
-        double* contact_f,int* contact_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
+        int* segment,int* sort_enabled,int* geom_type,real_t* params_f,int* params_i,int* dedup_status,
+        real_t* contact_f,int* contact_i,real_t* scratch_f,int* scratch_i,int* ncon,int* attempts,
         int* appended,int* warnings,int* status,int pairs,int capacity,
         int* order=nullptr,int* order_scratch=nullptr){
     ncon[w]=warnings[w]=status[w]=0;
@@ -290,16 +291,16 @@ __device__ void cf_assemble(int w,int* compact_count,int* keep_index,int* call_c
         for(int r=0;r<compact_count[q];++r){
             int slot=q*50+r,pf=slot*26;
             if(params_i[slot*5+4]){if(!status[w])status[w]=20+params_i[slot*5+4];return;}
-            double x0=params_f[pf+4],x1=params_f[pf+5],x2=params_f[pf+6];
-            double nx=cf_norm3(x0,x1,x2);
-            if(nx<0.5){if(!status[w])status[w]=30;return;}
-            if(nx<1e-15){x0=1;x1=x2=0;}else{double inv=1/nx;x0*=inv;x1*=inv;x2*=inv;}
-            double y0=params_f[pf+7],y1=params_f[pf+8],y2=params_f[pf+9];
-            if(cf_norm3(y0,y1,y2)<0.5){y0=y1=y2=0;if(x1<0.5&&x1>-0.5)y1=1;else y2=1;}
-            double dot=(x0*y0+x1*y1)+x2*y2;y0-=x0*dot;y1-=x1*dot;y2-=x2*dot;
-            double ny=cf_norm3(y0,y1,y2);
-            if(ny<1e-15){y0=1;y1=y2=0;}else{double inv=1/ny;y0*=inv;y1*=inv;y2*=inv;}
-            double z0=x1*y2-x2*y1,z1=x2*y0-x0*y2,z2=x0*y1-x1*y0;
+            real_t x0=params_f[pf+4],x1=params_f[pf+5],x2=params_f[pf+6];
+            real_t nx=cf_norm3(x0,x1,x2);
+            if(nx<REAL_C(0.5)){if(!status[w])status[w]=30;return;}
+            if(nx<REAL_C(1e-15)){x0=1;x1=x2=0;}else{real_t inv=1/nx;x0*=inv;x1*=inv;x2*=inv;}
+            real_t y0=params_f[pf+7],y1=params_f[pf+8],y2=params_f[pf+9];
+            if(cf_norm3(y0,y1,y2)<REAL_C(0.5)){y0=y1=y2=0;if(x1<REAL_C(0.5)&&x1>-REAL_C(0.5))y1=1;else y2=1;}
+            real_t dot=(x0*y0+x1*y1)+x2*y2;y0-=x0*dot;y1-=x1*dot;y2-=x2*dot;
+            real_t ny=cf_norm3(y0,y1,y2);
+            if(ny<REAL_C(1e-15)){y0=1;y1=y2=0;}else{real_t inv=1/ny;y0*=inv;y1*=inv;y2*=inv;}
+            real_t z0=x1*y2-x2*y1,z1=x2*y0-x0*y2,z2=x0*y1-x1*y0;
             ++attempts[q];if(ncon[w]>=capacity){++warnings[w];break;}
             int out=w*capacity+ncon[w],cf=out*65,ci=out*5;
             for(int k=0;k<4;++k)contact_f[cf+k]=params_f[pf+k];

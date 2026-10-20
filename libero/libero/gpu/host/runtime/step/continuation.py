@@ -1,11 +1,12 @@
 """Synchronized boundary transport for cold arena replacement, never CPU physics."""
+import libero.gpu.precision as scalar
 import hashlib
 import numpy as np
 import warp as wp
 
 
 def _scalar_layout(array):
-    dtype={wp.float64:np.dtype(np.float64),wp.float32:np.dtype(np.float32),
+    dtype={scalar.wp_real:np.dtype(np.float64),wp.float32:np.dtype(np.float32),
            wp.int32:np.dtype(np.int32),wp.int64:np.dtype(np.int64)}.get(array.dtype)
     return (array.shape,dtype) if dtype is not None else None
 

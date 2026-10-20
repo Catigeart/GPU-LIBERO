@@ -8,6 +8,7 @@ the accepted source's per-field write/hold semantics;
 byte (notably constraint tails and solver statistics) was overwritten.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import warp as wp
 from libero.gpu.host.runtime.dynamics.rules import FixedModelRules
@@ -21,8 +22,8 @@ def _fill_int(a: wp.array(dtype=wp.int32), value: int):
 
 
 @wp.kernel(enable_backward=False)
-def _scalars(model: wp.array(dtype=wp.float64), tolerance: wp.array(dtype=wp.float64),
-             meaninertia: wp.array(dtype=wp.float64)):
+def _scalars(model: wp.array(dtype=scalar.wp_real), tolerance: wp.array(dtype=scalar.wp_real),
+             meaninertia: wp.array(dtype=scalar.wp_real)):
     w = wp.tid()
     tolerance[w] = model[0]
     meaninertia[w] = model[1]
@@ -97,8 +98,8 @@ INPUT_FIELDS = (
 OUTPUT_FIELDS = ('qacc', 'qacc_warmstart', 'qfrc_constraint', 'force', 'state')
 
 @wp.kernel(enable_backward=False)
-def _commit_f64(valid: wp.array(dtype=wp.int32), src: wp.array(dtype=wp.float64),
-                dst: wp.array(dtype=wp.float64), stride: int):
+def _commit_f64(valid: wp.array(dtype=wp.int32), src: wp.array(dtype=scalar.wp_real),
+                dst: wp.array(dtype=scalar.wp_real), stride: int):
     i = wp.tid()
     if valid[i // stride] != 0:
         dst[i] = src[i]
@@ -210,7 +211,7 @@ class _NewtonRuntimeAdapter:
     def _prepare_public(self):
         w = self.ws
         def bounds(arr):
-            return arr.ptr, arr.ptr + arr.size * (8 if arr.dtype == wp.float64 else 4)
+            return arr.ptr, arr.ptr + arr.size * (scalar.itemsize if arr.dtype == scalar.wp_real else 4)
         work_bounds = [bounds(getattr(w, name)) for name in PUBLIC_FIELDS]
         public_bounds = []
         for name in PUBLIC_FIELDS:
@@ -314,7 +315,7 @@ class _NewtonRuntimeAdapter:
                       device=w.device, stream=self.stream)
             for name in PUBLIC_FIELDS:
                 src, dst = self._commit_aliases[name]
-                kernel = _commit_f64 if src.dtype == wp.float64 else _commit_i32
+                kernel = _commit_f64 if src.dtype == scalar.wp_real else _commit_i32
                 wp.launch(kernel, src.size,
                           inputs=[self.valid, src, dst, src.size // w.nworld],
                           device=w.device, stream=self.stream)

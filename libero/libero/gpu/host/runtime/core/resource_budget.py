@@ -10,10 +10,12 @@ def newton_shared_budget(nv, *, cholesky_backend='cusolverdx',
                          blas_backend='cublasdx',
                          shared_limit_bytes=PORTABLE_SHARED_LIMIT_BYTES,
                          prefix_static_bytes=0, tail_static_bytes=0,
-                         newton_islands='off'):
+                         newton_islands='off', scalar_bytes=8):
     nv = int(nv)
     if nv < 1:
         raise ValueError('positive NV required')
+    if scalar_bytes not in (4, 8):
+        raise ValueError('physical scalar must occupy 4 or 8 bytes')
     if cholesky_backend not in ('source', 'cusolverdx') or blas_backend not in ('source', 'cublasdx'):
         raise ValueError('unknown device math backend')
     if blas_backend == 'cublasdx' and cholesky_backend != 'cusolverdx':
@@ -28,10 +30,10 @@ def newton_shared_budget(nv, *, cholesky_backend='cusolverdx',
     dx, blas = cholesky_backend == 'cusolverdx', blas_backend == 'cublasdx'
     tile_k = 16 if nv <= 43 else 8
     aligned = lambda size: (size + 15) // 16 * 16
-    matrix = aligned(max(nv, 6)**2 * 8) if dx else 0
-    assembly = aligned((nv*nv + 2*nv*tile_k)*8) if blas else 0
+    matrix = aligned(max(nv, 6)**2 * scalar_bytes) if dx else 0
+    assembly = aligned((nv*nv + 2*nv*tile_k)*scalar_bytes) if blas else 0
     elements = max(nv*nv+2*nv*tile_k, 17*nv+16, 12*nv+36, (nv*nv+1)//2*2+nv)
-    blas_workspace = aligned(elements*8) if blas else 0
+    blas_workspace = aligned(elements*scalar_bytes) if blas else 0
     workspace = max(matrix, blas_workspace)
     islands_requirements=None
     if newton_islands=='exact':
@@ -45,7 +47,7 @@ def newton_shared_budget(nv, *, cholesky_backend='cusolverdx',
     reserve += prefix + tail
     if islands_requirements is not None:
         reserve+=islands_requirements['static_reserve_extra_bytes']
-    return dict(shared_limit_bytes=limit, potrf_matrix_bytes=matrix,
+    return dict(shared_limit_bytes=limit, scalar_bytes=scalar_bytes, potrf_matrix_bytes=matrix,
                 hessian_tile_k=tile_k if blas else None,
                 hessian_workspace_bytes=assembly, blas_workspace_bytes=blas_workspace,
                 dx_workspace_bytes=workspace, static_reserve_bytes=reserve,

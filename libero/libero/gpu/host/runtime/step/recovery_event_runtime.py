@@ -1,12 +1,13 @@
 """Sparse actual BADQACC event evidence, no physics/source error mutation."""
+import libero.gpu.precision as scalar
 import warp as wp
 from .recovery_runtime_r02 import CurrentWrittenRecoveringRuntime
 from .shape_runtime import _token
 wp.set_module_options({"enable_backward":False,"fuse_fp":True,"fast_math":False})
 
 @wp.kernel(enable_backward=False)
-def _select(active:wp.array(dtype=wp.int32),qa:wp.array(dtype=wp.float64,ndim=2),
-        candidate:wp.array(dtype=wp.float64,ndim=2), candidate_attempt:wp.array(dtype=wp.int64),completed:wp.array(dtype=wp.int32),
+def _select(active:wp.array(dtype=wp.int32),qa:wp.array(dtype=scalar.wp_real,ndim=2),
+        candidate:wp.array(dtype=scalar.wp_real,ndim=2), candidate_attempt:wp.array(dtype=wp.int64),completed:wp.array(dtype=wp.int32),
         origin:wp.array(dtype=wp.int32),stage:wp.array(dtype=wp.int32),
         attempt:wp.array(dtype=wp.int64),written:wp.array(dtype=wp.int64),
         expected:wp.array(dtype=wp.int64),state:wp.array(dtype=wp.int64),
@@ -21,7 +22,7 @@ def _select(active:wp.array(dtype=wp.int32),qa:wp.array(dtype=wp.float64,ndim=2)
     for j in range(nv):
         value=qa[w,j]
         if value!=candidate[w,j]:same=0
-        if bad<0 and (wp.isnan(value) or value>wp.float64(1e10) or value<wp.float64(-1e10)):bad=j
+        if bad<0 and (wp.isnan(value) or value>scalar.wp_real(1e10) or value<scalar.wp_real(-1e10)):bad=j
     if bad<0:return
     if completed[w]!=1 or origin[w]!=1 or candidate_attempt[w]!=attempt[w]:return
     row=count[w]
@@ -41,8 +42,8 @@ def _select(active:wp.array(dtype=wp.int32),qa:wp.array(dtype=wp.float64,ndim=2)
     metadata[w*capacity+row,8]=wp.int64(same)
 
 @wp.kernel(enable_backward=False)
-def _copy_f64(source:wp.array(dtype=wp.float64),slot:wp.array(dtype=wp.int32),
-        target:wp.array(dtype=wp.float64,ndim=2),width:int,capacity:int):
+def _copy_f64(source:wp.array(dtype=scalar.wp_real),slot:wp.array(dtype=wp.int32),
+        target:wp.array(dtype=scalar.wp_real,ndim=2),width:int,capacity:int):
     w,j=wp.tid()
     row=slot[w]
     if row>=0:target[w*capacity+row,j]=source[w*width+j]
@@ -73,16 +74,16 @@ class EventRecoveringRuntime(CurrentWrittenRecoveringRuntime):
         self.event_sources["N_candidate"]=n.final_event.candidate.reshape((-1,))
         if self.controller is not None:
             for name,array in self.controller.public_arrays().items():
-                if array.dtype==wp.float64:
+                if array.dtype==scalar.wp_real:
                     self.event_sources["controller."+name]=array.reshape((-1,))
             for name in ("q0","action"):
                 array=getattr(self.controller.controller,name)
                 self.event_sources["controller."+name]=array.reshape((-1,))
-        self.event_before={name:wp.zeros((W*8,array.size//W),dtype=wp.float64,device=self.stream.device)
+        self.event_before={name:wp.zeros((W*8,array.size//W),dtype=scalar.wp_real,device=self.stream.device)
             for name,array in self.event_sources.items()}
-        self.event_after={name:wp.zeros((W*8,array.size//W),dtype=wp.float64,device=self.stream.device)
+        self.event_after={name:wp.zeros((W*8,array.size//W),dtype=scalar.wp_real,device=self.stream.device)
             for name,array in self.event_sources.items()}
-        self.event_after_euler={name:wp.zeros((W*8,self.event_sources[name].size//W),dtype=wp.float64,device=self.stream.device)
+        self.event_after_euler={name:wp.zeros((W*8,self.event_sources[name].size//W),dtype=scalar.wp_real,device=self.stream.device)
             for name in ("qpos","qvel","time")}
         self.event_warnings=wp.zeros((W*8,8),dtype=wp.int32,device=self.stream.device)
         self.event_lastinfo=wp.zeros((W*8,8),dtype=wp.int32,device=self.stream.device)

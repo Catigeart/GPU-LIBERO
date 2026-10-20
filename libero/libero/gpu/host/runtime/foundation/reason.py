@@ -7,6 +7,7 @@ Composite result_kind and complete caller-origin witnesses remain explicit
 unfinished work; this module does not claim full Phase06 source forest coverage.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import ast
 import hashlib
 import inspect
@@ -65,8 +66,8 @@ def _post(local:wp.array(dtype=wp.int32),pre_code:wp.array(dtype=wp.int32),
 @wp.kernel(enable_backward=False)
 def _hessian_lost_reason(local:wp.array(dtype=wp.int32),pre_code:wp.array(dtype=wp.int32),
         kind:wp.array(dtype=wp.int32),count:wp.array(dtype=wp.int32),
-        state:wp.array(dtype=wp.int32),qm:wp.array(dtype=wp.float64),
-        D:wp.array(dtype=wp.float64),J:wp.array(dtype=wp.float64),
+        state:wp.array(dtype=wp.int32),qm:wp.array(dtype=scalar.wp_real),
+        D:wp.array(dtype=scalar.wp_real),J:wp.array(dtype=scalar.wp_real),
         output_kind:wp.array(dtype=wp.int32),armed:wp.array(dtype=wp.int32),rows:int):
     # Original factor_update local4 after a successful original validate can
     # arise only from its lost-rank fallback. Infer reachability from that actual
@@ -77,9 +78,9 @@ def _hessian_lost_reason(local:wp.array(dtype=wp.int32),pre_code:wp.array(dtype=
         if not wp.isfinite(qm[w*153+z]):output_kind[w]=5;return
     for r in range(count[w]):
         if state[w*rows+r]==1:
-            if D[w*rows+r]<wp.float64(0.0):output_kind[w]=6;return
+            if D[w*rows+r]<scalar.wp_real(0.0):output_kind[w]=6;return
             if not wp.isfinite(D[w*rows+r]):output_kind[w]=5;return
-            if D[w*rows+r]!=wp.float64(0.0):
+            if D[w*rows+r]!=scalar.wp_real(0.0):
                 for k in range(43):
                     if not wp.isfinite(J[(w*rows+r)*43+k]):output_kind[w]=5;return
     output_kind[w]=8

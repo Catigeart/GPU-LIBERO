@@ -6,6 +6,7 @@ engine_support.c:1084-1107. Apache-2.0. N and capacities are launch constants;
 all per-world operands and scratch are preallocated on CUDA.
 """
 from __future__ import annotations
+import libero.gpu.precision as _precision
 
 import warp as wp
 
@@ -17,12 +18,12 @@ MINVAL = 1.0e-15
 
 
 @wp.func
-def _dot(a: wp.array(dtype=wp.float64), p: int, q: int, n: int) -> wp.float64:
+def _dot(a: wp.array(dtype=_precision.wp_real), p: int, q: int, n: int) -> _precision.wp_real:
     # mju_dot: four AVX lanes, pairwise reduction, then its scalar tail.
-    s0 = wp.float64(0.0)
-    s1 = wp.float64(0.0)
-    s2 = wp.float64(0.0)
-    s3 = wp.float64(0.0)
+    s0 = _precision.wp_real(0.0)
+    s1 = _precision.wp_real(0.0)
+    s2 = _precision.wp_real(0.0)
+    s3 = _precision.wp_real(0.0)
     k = int(0)
     if n >= 4:
         s0 = a[p]*a[q]
@@ -67,22 +68,22 @@ def _mass_index(i: int, j: int,
 @wp.func
 def _assembly_cell(w: int, i: int, j: int, rows: int,
                    count: wp.array(dtype=wp.int32),
-                   J: wp.array(dtype=wp.float64),
-                   D: wp.array(dtype=wp.float64),
+                   J: wp.array(dtype=_precision.wp_real),
+                   D: wp.array(dtype=_precision.wp_real),
                    state: wp.array(dtype=wp.int32),
-                   qm: wp.array(dtype=wp.float64),
+                   qm: wp.array(dtype=_precision.wp_real),
                    madr: wp.array(dtype=wp.int32),
                    parent: wp.array(dtype=wp.int32),
-                   simple: wp.array(dtype=wp.int32)) -> wp.float64:
+                   simple: wp.array(dtype=wp.int32)) -> _precision.wp_real:
     # mju_sqrMatTD: each lower cell receives the same sequence of addToScl
     # additions; symmetry copy and mj_addMDense follow afterward.
-    result = wp.float64(0.0)
+    result = _precision.wp_real(0.0)
     for r in range(count[w]):
         if state[w*rows+r] == 1:
             diag = D[w*rows+r]
-            if diag != wp.float64(0.0):
+            if diag != _precision.wp_real(0.0):
                 tmp = J[(w*rows+r)*NV+i]
-                if tmp != wp.float64(0.0):
+                if tmp != _precision.wp_real(0.0):
                     result = result + J[(w*rows+r)*NV+j]*(tmp*diag)
     adr = _mass_index(i, j, madr, parent, simple)
     if adr >= 0:
@@ -91,17 +92,17 @@ def _assembly_cell(w: int, i: int, j: int, rows: int,
 
 
 @wp.func
-def _factor(data: wp.array(dtype=wp.float64), base: int, n: int, stride: int) -> int:
+def _factor(data: wp.array(dtype=_precision.wp_real), base: int, n: int, stride: int) -> int:
     rank = int(n)
     for j in range(n):
         diag = data[base+j*stride+j]
         if j > 0:
             diag = diag - _dot(data, base+j*stride, base+j*stride, j)
-        if diag < wp.float64(MINVAL):
-            diag = wp.float64(MINVAL)
+        if diag < _precision.wp_real(MINVAL):
+            diag = _precision.wp_real(MINVAL)
             rank -= 1
         data[base+j*stride+j] = wp.sqrt(diag)
-        inv = wp.float64(1.0)/data[base+j*stride+j]
+        inv = _precision.wp_real(1.0)/data[base+j*stride+j]
         for i in range(j+1, n):
             data[base+i*stride+j] = (data[base+i*stride+j]
                                       - _dot(data, base+i*stride, base+j*stride, j))*inv
@@ -109,24 +110,24 @@ def _factor(data: wp.array(dtype=wp.float64), base: int, n: int, stride: int) ->
 
 
 @wp.func
-def _update(data: wp.array(dtype=wp.float64), base: int,
-            vec: wp.array(dtype=wp.float64), vecbase: int, plus: int) -> int:
+def _update(data: wp.array(dtype=_precision.wp_real), base: int,
+            vec: wp.array(dtype=_precision.wp_real), vecbase: int, plus: int) -> int:
     rank = int(NV)
     for k in range(NV):
         x = vec[vecbase+k]
-        if x != wp.float64(0.0):
+        if x != _precision.wp_real(0.0):
             Lkk = data[base+k*NV+k]
             tmp = Lkk*Lkk
             if plus != 0:
                 tmp = tmp + x*x
             else:
                 tmp = tmp - x*x
-            if tmp < wp.float64(MINVAL):
-                tmp = wp.float64(MINVAL)
+            if tmp < _precision.wp_real(MINVAL):
+                tmp = _precision.wp_real(MINVAL)
                 rank -= 1
             r = wp.sqrt(tmp)
             c = r/Lkk
-            cinv = wp.float64(1.0)/c
+            cinv = _precision.wp_real(1.0)/c
             s = x/Lkk
             data[base+k*NV+k] = r
             for i in range(k+1, NV):
@@ -145,13 +146,13 @@ def _cone(w: int, rows: int, contacts: int,
           state: wp.array(dtype=wp.int32),
           efc_id: wp.array(dtype=wp.int32),
           contact_dim: wp.array(dtype=wp.int32),
-          contact_H: wp.array(dtype=wp.float64),
-          J: wp.array(dtype=wp.float64),
-          H: wp.array(dtype=wp.float64),
-          Hcone: wp.array(dtype=wp.float64),
-          local: wp.array(dtype=wp.float64),
-          ltj: wp.array(dtype=wp.float64),
-          vec: wp.array(dtype=wp.float64),
+          contact_H: wp.array(dtype=_precision.wp_real),
+          J: wp.array(dtype=_precision.wp_real),
+          H: wp.array(dtype=_precision.wp_real),
+          Hcone: wp.array(dtype=_precision.wp_real),
+          local: wp.array(dtype=_precision.wp_real),
+          ltj: wp.array(dtype=_precision.wp_real),
+          vec: wp.array(dtype=_precision.wp_real),
           nupdate: wp.array(dtype=wp.int32)):
     hb = w*NV*NV
     lb = w*36
@@ -169,7 +170,7 @@ def _cone(w: int, rows: int, contacts: int,
             # Dense local cholFactor return rank is deliberately ignored.
             _factor(local, lb, dim, dim)
             for z in range(dim*NV):
-                ltj[tb+z] = wp.float64(0.0)
+                ltj[tb+z] = _precision.wp_real(0.0)
             for r in range(dim):
                 for c in range(r+1):
                     scalar = local[lb+r*dim+c]
@@ -192,13 +193,13 @@ def validate(count: wp.array(dtype=wp.int32),
              kind: wp.array(dtype=wp.int32),
              state: wp.array(dtype=wp.int32),
              oldstate: wp.array(dtype=wp.int32),
-             D: wp.array(dtype=wp.float64),
-             J: wp.array(dtype=wp.float64),
-             qm: wp.array(dtype=wp.float64),
-             H: wp.array(dtype=wp.float64),
+             D: wp.array(dtype=_precision.wp_real),
+             J: wp.array(dtype=_precision.wp_real),
+             qm: wp.array(dtype=_precision.wp_real),
+             H: wp.array(dtype=_precision.wp_real),
              efc_id: wp.array(dtype=wp.int32),
              contact_dim: wp.array(dtype=wp.int32),
-             contact_H: wp.array(dtype=wp.float64),
+             contact_H: wp.array(dtype=_precision.wp_real),
              ncone: wp.array(dtype=wp.int32),
              nnz: wp.array(dtype=wp.int32),
              status: wp.array(dtype=wp.int32),
@@ -240,11 +241,11 @@ def validate(count: wp.array(dtype=wp.int32),
         reads_d = s == 1 and kind[w] == 1
         if kind[w] == 3 and ((oldstate[w*rows+r] == 1) != (s == 1)):
             reads_d = True
-        if reads_d and (D[w*rows+r] < wp.float64(0.0) or not wp.isfinite(D[w*rows+r])):
+        if reads_d and (D[w*rows+r] < _precision.wp_real(0.0) or not wp.isfinite(D[w*rows+r])):
             status[w] = 4
             return
         reads_j = s == 4
-        if kind[w] == 1 and s == 1 and D[w*rows+r] != wp.float64(0.0):
+        if kind[w] == 1 and s == 1 and D[w*rows+r] != _precision.wp_real(0.0):
             reads_j = True
         if kind[w] == 3 and ((oldstate[w*rows+r] == 1) != (s == 1)):
             reads_j = True
@@ -289,14 +290,14 @@ def validate(count: wp.array(dtype=wp.int32),
 def assemble(count: wp.array(dtype=wp.int32),
              active: wp.array(dtype=wp.int32),
              kind: wp.array(dtype=wp.int32),
-             J: wp.array(dtype=wp.float64),
-             D: wp.array(dtype=wp.float64),
+             J: wp.array(dtype=_precision.wp_real),
+             D: wp.array(dtype=_precision.wp_real),
              state: wp.array(dtype=wp.int32),
-             qm: wp.array(dtype=wp.float64),
+             qm: wp.array(dtype=_precision.wp_real),
              madr: wp.array(dtype=wp.int32),
              parent: wp.array(dtype=wp.int32),
              simple: wp.array(dtype=wp.int32),
-             H: wp.array(dtype=wp.float64),
+             H: wp.array(dtype=_precision.wp_real),
              status: wp.array(dtype=wp.int32), rows: int):
     tid = wp.tid()
     w = tid // (NV*NV)
@@ -315,25 +316,25 @@ def factor_update(count: wp.array(dtype=wp.int32),
                   ncon: wp.array(dtype=wp.int32),
                   active: wp.array(dtype=wp.int32),
                   kind: wp.array(dtype=wp.int32),
-                  J: wp.array(dtype=wp.float64),
-                  D: wp.array(dtype=wp.float64),
+                  J: wp.array(dtype=_precision.wp_real),
+                  D: wp.array(dtype=_precision.wp_real),
                   state: wp.array(dtype=wp.int32),
                   oldstate: wp.array(dtype=wp.int32),
-                  qm: wp.array(dtype=wp.float64),
+                  qm: wp.array(dtype=_precision.wp_real),
                   madr: wp.array(dtype=wp.int32),
                   parent: wp.array(dtype=wp.int32),
                   simple: wp.array(dtype=wp.int32),
                   efc_id: wp.array(dtype=wp.int32),
                   contact_dim: wp.array(dtype=wp.int32),
-                  contact_H: wp.array(dtype=wp.float64),
+                  contact_H: wp.array(dtype=_precision.wp_real),
                   ncone: wp.array(dtype=wp.int32),
-                  H: wp.array(dtype=wp.float64),
-                  Hcone: wp.array(dtype=wp.float64),
+                  H: wp.array(dtype=_precision.wp_real),
+                  Hcone: wp.array(dtype=_precision.wp_real),
                   nnz: wp.array(dtype=wp.int32),
                   nupdate: wp.array(dtype=wp.int32),
-                  local: wp.array(dtype=wp.float64),
-                  ltj: wp.array(dtype=wp.float64),
-                  vec: wp.array(dtype=wp.float64),
+                  local: wp.array(dtype=_precision.wp_real),
+                  ltj: wp.array(dtype=_precision.wp_real),
+                  vec: wp.array(dtype=_precision.wp_real),
                   status: wp.array(dtype=wp.int32),
                   route: wp.array(dtype=wp.int32),
                   rows: int, contacts: int):
@@ -384,10 +385,10 @@ def factor_update(count: wp.array(dtype=wp.int32),
                     return
             for r in range(count[w]):
                 if state[w*rows+r] == 1:
-                    if D[w*rows+r] < wp.float64(0.0) or not wp.isfinite(D[w*rows+r]):
+                    if D[w*rows+r] < _precision.wp_real(0.0) or not wp.isfinite(D[w*rows+r]):
                         status[w] = 4
                         return
-                    if D[w*rows+r] != wp.float64(0.0):
+                    if D[w*rows+r] != _precision.wp_real(0.0):
                         for k in range(NV):
                             if not wp.isfinite(J[(w*rows+r)*NV+k]):
                                 status[w] = 4

@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #include "io_policy.cuh"
 #pragma once
 #ifndef DATAFLOW_FAST_PROFILE
@@ -13,9 +14,9 @@ struct S07PreparedDx {
     const int* tile_head_offsets;
     int head_count;
     const int* head_dim;
-    const double* head_mu;
-    const double* head_friction;
-    double gtol,slopescl;
+    const real_t* head_mu;
+    const real_t* head_friction;
+    real_t gtol,slopescl;
 };
 
 __device__ void s07_prepare_scalar_dx(S07Args a,int w,int nv,int nM,int rows,
@@ -37,17 +38,17 @@ __device__ void s07_prepare_scalar_dx(S07Args a,int w,int nv,int nM,int rows,
             i+=dim-1;
         }
     }
-    const double* v=a.search+w*nv;
-    double snorm=__dsqrt_rn(dot_strided(v,1,v,1,nv));
+    const real_t* v=a.search+w*nv;
+    real_t snorm=real_sqrt_rn(dot_strided(v,1,v,1,nv));
     if(!isfinite(snorm)) {a.status[w]=5;return;}
     a.quadGauss[w*3]=a.quad0[w];
-    if(snorm<1e-15) {finish(a,w,0.0,0,1,1.0);return;}
-    double mean=a.model_scalars[1];
-    double gtol=a.model_scalars[0]*0.01*snorm*mean*(nv>1?nv:1);
-    double slopescl=__ddiv_rn(1.0,snorm*mean*(nv>1?nv:1));
+    if(snorm<REAL_C(1e-15)) {finish(a,w,REAL_C(0.0),0,1,REAL_C(1.0));return;}
+    real_t mean=a.model_scalars[1];
+    real_t gtol=a.model_scalars[0]*REAL_C(0.01)*snorm*mean*(nv>1?nv:1);
+    real_t slopescl=real_div_rn(REAL_C(1.0),snorm*mean*(nv>1?nv:1));
     if(!isfinite(gtol)||!isfinite(slopescl)) {a.status[w]=5;return;}
-    double* Mv=a.Mv+w*nv;
-    const double* M=a.qM+w*nM;
+    real_t* Mv=a.Mv+w*nv;
+    const real_t* M=a.qM+w*nM;
     for(int i=0;i<nv;++i) Mv[i]=0;
     for(int i=0;i<nv;++i) {
         int adr=a.madr[i];
@@ -70,8 +71,8 @@ __device__ void s07_prepare_scalar_dx(S07Args a,int w,int nv,int nM,int rows,
 __device__ void s07_prepare_dx(S07Args a,int w,int nv,int nM,int rows,
     int tracecap,S07PreparedDx* prepared,const int* group_head=nullptr,
     const int* compact_heads=nullptr,const int* compact_count=nullptr,
-    const int* tile_head_offsets=nullptr,const int* head_dim=nullptr,const double* head_mu=nullptr,
-    const double* head_friction=nullptr) {
+    const int* tile_head_offsets=nullptr,const int* head_dim=nullptr,const real_t* head_mu=nullptr,
+    const real_t* head_friction=nullptr) {
     if(threadIdx.x==0){
         prepared->group_head=group_head;
         prepared->head_dim=head_dim;
@@ -88,39 +89,39 @@ __device__ void s07_prepare_dx(S07Args a,int w,int nv,int nM,int rows,
     __syncthreads();
 }
 
-__device__ double s07_tile_jv(int row,int begin,const double* tile,const double* Jv){
+__device__ real_t s07_tile_jv(int row,int begin,const real_t* tile,const real_t* Jv){
     return row>=begin&&row<begin+16?tile[row-begin]:Jv[row];
 }
 
 // Consume the just-produced Dx output while it still resides in shared memory.
 // A cone crossing a tile boundary waits until its last row is available; only
 // its earlier (at most five) rows then need the global Jv mirror.
-__device__ bool s07_quad_group_values_dx(S07Args a,int w,int i,int rows,int begin,const double* tile,double* q,int rank=-1,
-    const int* head_dim=nullptr,const double* head_mu=nullptr,
-    const double* head_friction=nullptr){
-    int base=w*rows;const double* Jv=a.Jv+base;
-    double v=s07_tile_jv(i,begin,tile,Jv),j=a.Jaref[base+i],D=a.D[base+i];
-    double DJ0=D*j;
+__device__ bool s07_quad_group_values_dx(S07Args a,int w,int i,int rows,int begin,const real_t* tile,real_t* q,int rank=-1,
+    const int* head_dim=nullptr,const real_t* head_mu=nullptr,
+    const real_t* head_friction=nullptr){
+    int base=w*rows;const real_t* Jv=a.Jv+base;
+    real_t v=s07_tile_jv(i,begin,tile,Jv),j=a.Jaref[base+i],D=a.D[base+i];
+    real_t DJ0=D*j;
     q[0]=j*DJ0;q[1]=v*DJ0;q[2]=v*D*v;
     bool elliptic=a.efc_type[base+i]==7;
     if(elliptic){int dim=head_dim&&rank>=0?head_dim[rank]:a.cone_dim[base+i];
-      double mu=head_mu&&rank>=0?head_mu[rank]:a.cone_mu[base+i];
-      for(int k=1;k<dim;++k){double jk=a.Jaref[base+i+k],vk=s07_tile_jv(i+k,begin,tile,Jv),Dk=a.D[base+i+k];
-        double DJk=Dk*jk;q[0]+=jk*DJk;q[1]+=vk*DJk;q[2]+=vk*Dk*vk;}
-      double U0=j*mu,V0=v*mu,UU=0,UV=0,VV=0;
-      for(int k=1;k<dim;++k){double f=head_friction&&rank>=0?head_friction[(k-1)*rows+rank]:a.cone_friction[(base+i)*5+k-1];
-        double U=a.Jaref[base+i+k]*f,V=s07_tile_jv(i+k,begin,tile,Jv)*f;
+      real_t mu=head_mu&&rank>=0?head_mu[rank]:a.cone_mu[base+i];
+      for(int k=1;k<dim;++k){real_t jk=a.Jaref[base+i+k],vk=s07_tile_jv(i+k,begin,tile,Jv),Dk=a.D[base+i+k];
+        real_t DJk=Dk*jk;q[0]+=jk*DJk;q[1]+=vk*DJk;q[2]+=vk*Dk*vk;}
+      real_t U0=j*mu,V0=v*mu,UU=0,UV=0,VV=0;
+      for(int k=1;k<dim;++k){real_t f=head_friction&&rank>=0?head_friction[(k-1)*rows+rank]:a.cone_friction[(base+i)*5+k-1];
+        real_t U=a.Jaref[base+i+k]*f,V=s07_tile_jv(i+k,begin,tile,Jv)*f;
         UU+=U*U;UV+=U*V;VV+=V*V;}
       q[3]=U0;q[4]=V0;q[5]=UU;q[6]=UV;q[7]=VV;
-      q[8]=__ddiv_rn(D,mu*mu*(1+mu*mu));
+      q[8]=real_div_rn(D,mu*mu*(1+mu*mu));
     }
-    q[0]*=0.5;q[2]*=0.5;
+    q[0]*=REAL_C(0.5);q[2]*=REAL_C(0.5);
     #pragma unroll
     for(int k=0;k<9;++k)if(k<(elliptic?9:3)&&!isfinite(q[k]))return false;
     return true;
 }
 
-__device__ bool s07_quad_group_dx(S07Args a,int w,int i,int rows,int begin,const double* tile){
+__device__ bool s07_quad_group_dx(S07Args a,int w,int i,int rows,int begin,const real_t* tile){
     return s07_quad_group_values_dx(a,w,i,rows,begin,tile,a.quad+w*rows*3+3*i);
 }
 
@@ -128,10 +129,10 @@ __device__ bool s07_quad_group_dx(S07Args a,int w,int i,int rows,int begin,const
 // Validate before ordered-prefix commit, preserving the original failed group's
 // full private quad write while keeping all later groups held.
 __device__ void s07_quad_tile_block(S07Args a,int w,int rows,int begin,int produced,
-    const double* tile,const int* group_head,
+    const real_t* tile,const int* group_head,
     const int* compact_heads=nullptr,const int* tile_head_offsets=nullptr,
     const int* head_dim=nullptr,
-    const double* head_mu=nullptr,const double* head_friction=nullptr) {
+    const real_t* head_mu=nullptr,const real_t* head_friction=nullptr) {
     __shared__ int first_bad;
     // Offsets assign each group to the tile containing its final row.
     // Every head appears once; cross-tile cones retain their earlier Jv mirror.
@@ -141,7 +142,7 @@ __device__ void s07_quad_tile_block(S07Args a,int w,int rows,int begin,int produ
     const int end=planned?tile_head_offsets[tile_index+1]:0;
     const int rank=first+threadIdx.x;
     const int i=planned?(rank<end?compact_heads[rank]:-1):rank;
-    double q[9];int width=0;bool owned=false,valid=true;
+    real_t q[9];int width=0;bool owned=false,valid=true;
     if(i>=0&&i<produced&&(planned||group_head[i]==i)){
         const int dim=a.efc_type[w*rows+i]==7?a.cone_dim[w*rows+i]:1;
         if(i+dim>begin&&i+dim<=produced){
@@ -179,14 +180,14 @@ __device__ void s07_quad_tile_block(S07Args a,int w,int rows,int begin,int produ
 }
 
 __device__ void s07_jv_blas_dx(S07Args a,int w,int nefc,int rows,
-    double* workspace,int* diagnostic,bool prepare_quad=false,const int* group_head=nullptr,
+    real_t* workspace,int* diagnostic,bool prepare_quad=false,const int* group_head=nullptr,
     const int* compact_heads=nullptr,const int* tile_head_offsets=nullptr,
     const int* head_dim=nullptr,
-    const double* head_mu=nullptr,const double* head_friction=nullptr) {
-    double* A=workspace;double* B=A+16*NV;double* C=B+NV;
-    const double* v=a.search+w*NV;
-    const double* J=a.J+w*rows*NV;
-    double* Jv=a.Jv+w*rows;
+    const real_t* head_mu=nullptr,const real_t* head_friction=nullptr) {
+    real_t* A=workspace;real_t* B=A+16*NV;real_t* C=B+NV;
+    const real_t* v=a.search+w*NV;
+    const real_t* J=a.J+w*rows*NV;
+    real_t* Jv=a.Jv+w*rows;
     __shared__ int next_group;
     if(threadIdx.x==0)next_group=0;
 #if LIBERO_NEWTON_SCALAR_IO
@@ -205,7 +206,7 @@ __device__ void s07_jv_blas_dx(S07Args a,int w,int nefc,int rows,
         for(int z=threadIdx.x;z<16*row_pairs;z+=blockDim.x) {
             const int k=z/row_pairs,i=2*(z%row_pairs),r=begin+k;
             if(i+1<NV) {
-                const double2 pair=r<nefc?libero_vec::load_pair(J+r*NV+i):make_double2(0,0);
+                const real2_t pair=r<nefc?libero_vec::load_pair(J+r*NV+i):make_real2(0,0);
                 libero_vec::store_pair(A+k*NV+i,pair.x,pair.y);
             } else A[k*NV+i]=r<nefc?J[r*NV+i]:0;
 #endif // LIBERO_NEWTON_SCALAR_IO
@@ -213,7 +214,7 @@ __device__ void s07_jv_blas_dx(S07Args a,int w,int nefc,int rows,
 #if LIBERO_NEWTON_SCALAR_IO
         for(int r=threadIdx.x;r<16;r+=blockDim.x) C[r]=0;
 #else
-        libero_newton_io::fill_block(C,16,0.0);
+        libero_newton_io::fill_block(C,16,REAL_C(0.0));
 #endif // LIBERO_NEWTON_SCALAR_IO
         __syncthreads();dx_newton_jv(A,B,C);
 #if LIBERO_NEWTON_SCALAR_IO
@@ -255,30 +256,30 @@ __device__ void s07_jv_blas_dx(S07Args a,int w,int nefc,int rows,
     __syncthreads();
 }
 
-__device__ void s07_quad_scalar_dx(S07Args a,int w,int nefc,int rows,int base,const double* Jv){
-    double* qbase=a.quad+w*rows*3;
+__device__ void s07_quad_scalar_dx(S07Args a,int w,int nefc,int rows,int base,const real_t* Jv){
+    real_t* qbase=a.quad+w*rows*3;
     for(int i=0;i<nefc;++i) {
-        double* q=qbase+3*i;
+        real_t* q=qbase+3*i;
         bool elliptic=a.efc_type[base+i]==7;
-        double DJ0=a.D[base+i]*a.Jaref[base+i];
+        real_t DJ0=a.D[base+i]*a.Jaref[base+i];
         q[0]=a.Jaref[base+i]*DJ0;q[1]=Jv[i]*DJ0;q[2]=Jv[i]*a.D[base+i]*Jv[i];
         if(elliptic) {
-            int dim=a.cone_dim[base+i];double mu=a.cone_mu[base+i];
+            int dim=a.cone_dim[base+i];real_t mu=a.cone_mu[base+i];
             for(int j=1;j<dim;++j) {
-                double DJj=a.D[base+i+j]*a.Jaref[base+i+j];
+                real_t DJj=a.D[base+i+j]*a.Jaref[base+i+j];
                 q[0]+=a.Jaref[base+i+j]*DJj;q[1]+=Jv[i+j]*DJj;
                 q[2]+=Jv[i+j]*a.D[base+i+j]*Jv[i+j];
             }
-            double U0=a.Jaref[base+i]*mu,V0=Jv[i]*mu,UU=0,UV=0,VV=0;
+            real_t U0=a.Jaref[base+i]*mu,V0=Jv[i]*mu,UU=0,UV=0,VV=0;
             for(int j=1;j<dim;++j) {
-                double U=a.Jaref[base+i+j]*a.cone_friction[(base+i)*5+j-1];
-                double V=Jv[i+j]*a.cone_friction[(base+i)*5+j-1];
+                real_t U=a.Jaref[base+i+j]*a.cone_friction[(base+i)*5+j-1];
+                real_t V=Jv[i+j]*a.cone_friction[(base+i)*5+j-1];
                 UU+=U*U;UV+=U*V;VV+=V*V;
             }
             q[3]=U0;q[4]=V0;q[5]=UU;q[6]=UV;q[7]=VV;
-            q[8]=__ddiv_rn(a.D[base+i],mu*mu*(1+mu*mu));i+=dim-1;
+            q[8]=real_div_rn(a.D[base+i],mu*mu*(1+mu*mu));i+=dim-1;
         }
-        q[0]*=0.5;q[2]*=0.5;
+        q[0]*=REAL_C(0.5);q[2]*=REAL_C(0.5);
         for(int k=0;k<3;++k) if(!isfinite(q[k])) {a.status[w]=5;return;}
         if(elliptic) for(int k=3;k<9;++k) if(!isfinite(q[k])) {a.status[w]=5;return;}
     }
@@ -287,10 +288,10 @@ __device__ void s07_quad_scalar_dx(S07Args a,int w,int nefc,int rows,int base,co
 __device__ void s07_continue_dx(S07Args a,int w,int nv,int rows,
     const S07PreparedDx* prepared,bool quad_ready=false) {
     int nefc=prepared->nefc,ne=prepared->ne,nf=prepared->nf,base=prepared->base;
-    double gtol=prepared->gtol,slopescl=prepared->slopescl;
-    const double* v=a.search+w*nv;
-    const double* Mv=a.Mv+w*nv;
-    const double* Jv=a.Jv+base;
+    real_t gtol=prepared->gtol,slopescl=prepared->slopescl;
+    const real_t* v=a.search+w*nv;
+    const real_t* Mv=a.Mv+w*nv;
+    const real_t* Jv=a.Jv+base;
     // The fast tile consumer already checked each produced C cell. Avoid a
     // second global Jv scan; compatible retains its original validation order.
     __shared__ int gate_bad,jv_bad[(DX_THREADS+31)/32];
@@ -305,9 +306,9 @@ __device__ void s07_continue_dx(S07Args a,int w,int nv,int rows,
         gate_bad=0;
         if(!quad_ready)for(int i=0;i<(blockDim.x+31)/32;++i)if(jv_bad[i])gate_bad=1;
         if(!gate_bad){
-            double* qG=a.quadGauss+w*3;
+            real_t* qG=a.quadGauss+w*3;
             qG[1]=dot_strided(v,1,a.Ma+w*nv,1,nv)-dot_strided(v,1,a.smooth+w*nv,1,nv);
-            qG[2]=0.5*dot_strided(v,1,Mv,1,nv);
+            qG[2]=REAL_C(0.5)*dot_strided(v,1,Mv,1,nv);
             if(!isfinite(qG[1])||!isfinite(qG[2]))gate_bad=1;
         }
         if(gate_bad)a.status[w]=5;
@@ -325,8 +326,8 @@ __device__ void s07_continue_dx(S07Args a,int w,int nv,int rows,
         __syncthreads();if(a.status[w])return;
     }
     int niter=0;
-    P p0=s07_eval_point_block(a,w,rows,nefc,ne,nf,0.0,1,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
-    P p1=s07_eval_point_block(a,w,rows,nefc,ne,nf,p0.alpha-__ddiv_rn(p0.d0,p0.d1),2,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
+    P p0=s07_eval_point_block(a,w,rows,nefc,ne,nf,REAL_C(0.0),1,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
+    P p1=s07_eval_point_block(a,w,rows,nefc,ne,nf,p0.alpha-real_div_rn(p0.d0,p0.d1),2,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
     if(p0.cost<p1.cost) p1=p0;
     if(fabs(p1.d0)<gtol) {
         s07_finish_block(a,w,p1.alpha,niter,p1.alpha==0?2:0,fabs(p1.d0)*slopescl);return;
@@ -334,16 +335,16 @@ __device__ void s07_continue_dx(S07Args a,int w,int nv,int rows,
     int dir=p1.d0<0?1:-1,p2update=0;P p2={};
     while(p1.d0*dir<=-gtol&&niter<50) {
         p2=p1;p2update=1;
-        p1=s07_eval_point_block(a,w,rows,nefc,ne,nf,p1.alpha-__ddiv_rn(p1.d0,p1.d1),3,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
+        p1=s07_eval_point_block(a,w,rows,nefc,ne,nf,p1.alpha-real_div_rn(p1.d0,p1.d1),3,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
         if(fabs(p1.d0)<gtol) {s07_finish_block(a,w,p1.alpha,niter,0,fabs(p1.d0)*slopescl);return;}
     }
     if(niter>=50) {s07_finish_block(a,w,p1.alpha,niter,3,fabs(p1.d0)*slopescl);return;}
     if(!p2update) {s07_finish_block(a,w,p1.alpha,niter,6,fabs(p1.d0)*slopescl);return;}
     P p2next=p1;
-    P p1next=s07_eval_point_block(a,w,rows,nefc,ne,nf,p1.alpha-__ddiv_rn(p1.d0,p1.d1),4,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
+    P p1next=s07_eval_point_block(a,w,rows,nefc,ne,nf,p1.alpha-real_div_rn(p1.d0,p1.d1),4,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
     while(niter<50) {
-        P pmid=s07_eval_point_block(a,w,rows,nefc,ne,nf,0.5*(p1.alpha+p2.alpha),5,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
-        P candidates[3]={p1next,p2next,pmid};double bestcost=0;int bestind=-1;
+        P pmid=s07_eval_point_block(a,w,rows,nefc,ne,nf,REAL_C(0.5)*(p1.alpha+p2.alpha),5,&niter,prepared->group_head,prepared->compact_heads,prepared->head_count,prepared->head_mu);
+        P candidates[3]={p1next,p2next,pmid};real_t bestcost=0;int bestind=-1;
         for(int i=0;i<3;++i)
             if(fabs(candidates[i].d0)<gtol&&(bestind==-1||candidates[i].cost<bestcost)) {
                 bestcost=candidates[i].cost;bestind=i;
@@ -359,14 +360,14 @@ __device__ void s07_continue_dx(S07Args a,int w,int nv,int rows,
     }
     if(p1.cost<=p2.cost&&p1.cost<p0.cost) s07_finish_block(a,w,p1.alpha,niter,4,fabs(p1.d0)*slopescl);
     else if(p2.cost<=p1.cost&&p2.cost<p0.cost) s07_finish_block(a,w,p2.alpha,niter,4,fabs(p2.d0)*slopescl);
-    else s07_finish_block(a,w,0.0,niter,5,1.0);
+    else s07_finish_block(a,w,REAL_C(0.0),niter,5,REAL_C(1.0));
 }
 
 __device__ void search_kernel_blas_dx(int w,S07Args a,int nworld,int nv,int nM,
-    int rows,int tracecap,double* workspace,int* diagnostic,const int* group_head=nullptr,
+    int rows,int tracecap,real_t* workspace,int* diagnostic,const int* group_head=nullptr,
     const int* compact_heads=nullptr,const int* compact_count=nullptr,
-    const int* tile_head_offsets=nullptr,const int* head_dim=nullptr,const double* head_mu=nullptr,
-    const double* head_friction=nullptr) {
+    const int* tile_head_offsets=nullptr,const int* head_dim=nullptr,const real_t* head_mu=nullptr,
+    const real_t* head_friction=nullptr) {
     if(w>=nworld) return;
     __shared__ S07PreparedDx prepared;
     s07_prepare_dx(a,w,nv,nM,rows,tracecap,&prepared,group_head,compact_heads,compact_count,tile_head_offsets,head_dim,head_mu,head_friction);

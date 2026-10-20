@@ -6,6 +6,7 @@ MuJoCo is Apache-2.0; source c9246e1f5006379d599e0bcddf159a8616d31441.
 No body recurrence or forward dynamics is part of this module.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import hashlib
 import json
@@ -41,8 +42,8 @@ def _tail_static_sha256(fields):
 
 
 @wp.func
-def _position(body_xpos: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=wp.float64),
-              local_pos: wp.array(dtype=wp.float64), out: wp.array(dtype=wp.float64),
+def _position(body_xpos: wp.array(dtype=scalar.wp_real), body_xmat: wp.array(dtype=scalar.wp_real),
+              local_pos: wp.array(dtype=scalar.wp_real), out: wp.array(dtype=scalar.wp_real),
               body_offset: int, local_offset: int, out_offset: int):
     for row in range(3):
         mat = 9 * body_offset + 3 * row
@@ -54,8 +55,8 @@ def _position(body_xpos: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=w
 
 
 @wp.func
-def _matrix(body_xquat: wp.array(dtype=wp.float64), local_quat: wp.array(dtype=wp.float64),
-            out: wp.array(dtype=wp.float64), tmpquat: wp.array(dtype=wp.float64),
+def _matrix(body_xquat: wp.array(dtype=scalar.wp_real), local_quat: wp.array(dtype=scalar.wp_real),
+            out: wp.array(dtype=scalar.wp_real), tmpquat: wp.array(dtype=scalar.wp_real),
             body_offset: int, local_offset: int,
             out_offset: int):
     a = 4 * body_offset
@@ -82,16 +83,16 @@ def _matrix(body_xquat: wp.array(dtype=wp.float64), local_quat: wp.array(dtype=w
     tmpquat[4 * out_offset + 2] = q2
     tmpquat[4 * out_offset + 3] = q3
     m = 9 * out_offset
-    if q0 == wp.float64(1.0) and q1 == wp.float64(0.0) and q2 == wp.float64(0.0) and q3 == wp.float64(0.0):
-        out[m] = wp.float64(1.0)
-        out[m + 1] = wp.float64(0.0)
-        out[m + 2] = wp.float64(0.0)
-        out[m + 3] = wp.float64(0.0)
-        out[m + 4] = wp.float64(1.0)
-        out[m + 5] = wp.float64(0.0)
-        out[m + 6] = wp.float64(0.0)
-        out[m + 7] = wp.float64(0.0)
-        out[m + 8] = wp.float64(1.0)
+    if q0 == scalar.wp_real(1.0) and q1 == scalar.wp_real(0.0) and q2 == scalar.wp_real(0.0) and q3 == scalar.wp_real(0.0):
+        out[m] = scalar.wp_real(1.0)
+        out[m + 1] = scalar.wp_real(0.0)
+        out[m + 2] = scalar.wp_real(0.0)
+        out[m + 3] = scalar.wp_real(0.0)
+        out[m + 4] = scalar.wp_real(1.0)
+        out[m + 5] = scalar.wp_real(0.0)
+        out[m + 6] = scalar.wp_real(0.0)
+        out[m + 7] = scalar.wp_real(0.0)
+        out[m + 8] = scalar.wp_real(1.0)
     else:
         q00 = q0 * q0
         q01 = q0 * q1
@@ -106,40 +107,40 @@ def _matrix(body_xquat: wp.array(dtype=wp.float64), local_quat: wp.array(dtype=w
         out[m] = ((q00 + q11) - q22) - q33
         out[m + 4] = ((q00 - q11) + q22) - q33
         out[m + 8] = ((q00 - q11) - q22) + q33
-        out[m + 1] = wp.float64(2.0) * (q12 - q03)
-        out[m + 2] = wp.float64(2.0) * (q13 + q02)
-        out[m + 3] = wp.float64(2.0) * (q12 + q03)
-        out[m + 5] = wp.float64(2.0) * (q23 - q01)
-        out[m + 6] = wp.float64(2.0) * (q13 - q02)
-        out[m + 7] = wp.float64(2.0) * (q23 + q01)
+        out[m + 1] = scalar.wp_real(2.0) * (q12 - q03)
+        out[m + 2] = scalar.wp_real(2.0) * (q13 + q02)
+        out[m + 3] = scalar.wp_real(2.0) * (q12 + q03)
+        out[m + 5] = scalar.wp_real(2.0) * (q23 - q01)
+        out[m + 6] = scalar.wp_real(2.0) * (q13 - q02)
+        out[m + 7] = scalar.wp_real(2.0) * (q23 + q01)
 
 
 @wp.func
-def _copy_position(source: wp.array(dtype=wp.float64), output: wp.array(dtype=wp.float64),
+def _copy_position(source: wp.array(dtype=scalar.wp_real), output: wp.array(dtype=scalar.wp_real),
                    src: int, dst: int):
     for j in range(3):
         output[3 * dst + j] = source[3 * src + j]
 
 
 @wp.func
-def _copy_matrix(source: wp.array(dtype=wp.float64), output: wp.array(dtype=wp.float64),
+def _copy_matrix(source: wp.array(dtype=scalar.wp_real), output: wp.array(dtype=scalar.wp_real),
                  src: int, dst: int):
     for j in range(9):
         output[9 * dst + j] = source[9 * src + j]
 
 
 @wp.func
-def _zero_frame(pos: wp.array(dtype=wp.float64), mat: wp.array(dtype=wp.float64), dst: int):
+def _zero_frame(pos: wp.array(dtype=scalar.wp_real), mat: wp.array(dtype=scalar.wp_real), dst: int):
     for j in range(3):
-        pos[3 * dst + j] = wp.float64(0.0)
+        pos[3 * dst + j] = scalar.wp_real(0.0)
     for j in range(9):
-        mat[9 * dst + j] = wp.float64(0.0)
+        mat[9 * dst + j] = scalar.wp_real(0.0)
 
 
 @wp.func
-def _zero_tmp(tmpquat: wp.array(dtype=wp.float64), dst: int):
+def _zero_tmp(tmpquat: wp.array(dtype=scalar.wp_real), dst: int):
     for j in range(4):
-        tmpquat[4 * dst + j] = wp.float64(0.0)
+        tmpquat[4 * dst + j] = scalar.wp_real(0.0)
 
 
 @wp.kernel
@@ -149,11 +150,11 @@ def _status(active: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32)):
 
 
 @wp.kernel
-def _body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64),
-          body_xquat: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=wp.float64),
-          body_ipos: wp.array(dtype=wp.float64), body_iquat: wp.array(dtype=wp.float64),
-          body_sameframe: wp.array(dtype=wp.int32), xipos: wp.array(dtype=wp.float64),
-          ximat: wp.array(dtype=wp.float64), body_tmpquat: wp.array(dtype=wp.float64), nbody: int):
+def _body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=scalar.wp_real),
+          body_xquat: wp.array(dtype=scalar.wp_real), body_xmat: wp.array(dtype=scalar.wp_real),
+          body_ipos: wp.array(dtype=scalar.wp_real), body_iquat: wp.array(dtype=scalar.wp_real),
+          body_sameframe: wp.array(dtype=wp.int32), xipos: wp.array(dtype=scalar.wp_real),
+          ximat: wp.array(dtype=scalar.wp_real), body_tmpquat: wp.array(dtype=scalar.wp_real), nbody: int):
     tid = wp.tid()
     w = tid // nbody
     i = tid - w * nbody
@@ -163,9 +164,9 @@ def _body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64
     elif i == 0:
         _zero_frame(xipos, ximat, tid)
         _zero_tmp(body_tmpquat, tid)
-        ximat[9 * tid] = wp.float64(1.0)
-        ximat[9 * tid + 4] = wp.float64(1.0)
-        ximat[9 * tid + 8] = wp.float64(1.0)
+        ximat[9 * tid] = scalar.wp_real(1.0)
+        ximat[9 * tid + 4] = scalar.wp_real(1.0)
+        ximat[9 * tid + 8] = scalar.wp_real(1.0)
     elif body_sameframe[i] == 1:
         _copy_position(body_xpos, xipos, tid, tid)
         _copy_matrix(body_xmat, ximat, tid, tid)
@@ -176,13 +177,13 @@ def _body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64
 
 
 @wp.kernel
-def _objects(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64),
-             body_xquat: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=wp.float64),
-             xipos: wp.array(dtype=wp.float64), ximat: wp.array(dtype=wp.float64),
-             bodyid: wp.array(dtype=wp.int32), local_pos: wp.array(dtype=wp.float64),
-             local_quat: wp.array(dtype=wp.float64), sameframe: wp.array(dtype=wp.int32),
-             out_pos: wp.array(dtype=wp.float64), out_mat: wp.array(dtype=wp.float64),
-             tmpquat: wp.array(dtype=wp.float64),
+def _objects(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=scalar.wp_real),
+             body_xquat: wp.array(dtype=scalar.wp_real), body_xmat: wp.array(dtype=scalar.wp_real),
+             xipos: wp.array(dtype=scalar.wp_real), ximat: wp.array(dtype=scalar.wp_real),
+             bodyid: wp.array(dtype=wp.int32), local_pos: wp.array(dtype=scalar.wp_real),
+             local_quat: wp.array(dtype=scalar.wp_real), sameframe: wp.array(dtype=wp.int32),
+             out_pos: wp.array(dtype=scalar.wp_real), out_mat: wp.array(dtype=scalar.wp_real),
+             tmpquat: wp.array(dtype=scalar.wp_real),
              nbody: int, nobject: int):
     tid = wp.tid()
     w = tid // nobject
@@ -258,21 +259,21 @@ class FrameWorkspace:
             raise ValueError("unsupported static frame-tail model fingerprint")
         self.device = wp.get_device(device)
         self.nworld, self.nbody, self.ngeom, self.nsite = nworld, b, g, s
-        self.static = {name: wp.array(a.reshape(-1), dtype=(wp.float64 if name in FLOAT_FIELDS else wp.int32), device=self.device)
+        self.static = {name: wp.array(a.reshape(-1), dtype=(scalar.wp_real if name in FLOAT_FIELDS else wp.int32), device=self.device)
                        for name, a in prepared.items()}
-        self.body_xpos = wp.empty(nworld * b * 3, dtype=wp.float64, device=self.device)
-        self.body_xquat = wp.empty(nworld * b * 4, dtype=wp.float64, device=self.device)
-        self.body_xmat = wp.empty(nworld * b * 9, dtype=wp.float64, device=self.device)
+        self.body_xpos = wp.empty(nworld * b * 3, dtype=scalar.wp_real, device=self.device)
+        self.body_xquat = wp.empty(nworld * b * 4, dtype=scalar.wp_real, device=self.device)
+        self.body_xmat = wp.empty(nworld * b * 9, dtype=scalar.wp_real, device=self.device)
         self.active_world = wp.empty(nworld, dtype=wp.int32, device=self.device)
-        self.xipos = wp.empty(nworld * b * 3, dtype=wp.float64, device=self.device)
-        self.ximat = wp.empty(nworld * b * 9, dtype=wp.float64, device=self.device)
-        self.geom_xpos = wp.empty(nworld * g * 3, dtype=wp.float64, device=self.device)
-        self.geom_xmat = wp.empty(nworld * g * 9, dtype=wp.float64, device=self.device)
-        self.site_xpos = wp.empty(nworld * s * 3, dtype=wp.float64, device=self.device)
-        self.site_xmat = wp.empty(nworld * s * 9, dtype=wp.float64, device=self.device)
-        self.body_tmpquat = wp.empty(nworld * b * 4, dtype=wp.float64, device=self.device)
-        self.geom_tmpquat = wp.empty(nworld * g * 4, dtype=wp.float64, device=self.device)
-        self.site_tmpquat = wp.empty(nworld * s * 4, dtype=wp.float64, device=self.device)
+        self.xipos = wp.empty(nworld * b * 3, dtype=scalar.wp_real, device=self.device)
+        self.ximat = wp.empty(nworld * b * 9, dtype=scalar.wp_real, device=self.device)
+        self.geom_xpos = wp.empty(nworld * g * 3, dtype=scalar.wp_real, device=self.device)
+        self.geom_xmat = wp.empty(nworld * g * 9, dtype=scalar.wp_real, device=self.device)
+        self.site_xpos = wp.empty(nworld * s * 3, dtype=scalar.wp_real, device=self.device)
+        self.site_xmat = wp.empty(nworld * s * 9, dtype=scalar.wp_real, device=self.device)
+        self.body_tmpquat = wp.empty(nworld * b * 4, dtype=scalar.wp_real, device=self.device)
+        self.geom_tmpquat = wp.empty(nworld * g * 4, dtype=scalar.wp_real, device=self.device)
+        self.site_tmpquat = wp.empty(nworld * s * 4, dtype=scalar.wp_real, device=self.device)
         self.status = wp.empty(nworld, dtype=wp.int32, device=self.device)
 
     def upload(self, body_xpos, body_xquat, body_xmat, active_world, *, stream=None):
@@ -291,7 +292,7 @@ class FrameWorkspace:
                 raise ValueError(f"{name}: require contiguous {dtype} {shape}")
             if dtype == np.float64 and not np.all(np.isfinite(arr[active == 1])):
                 raise ValueError(f"{name}: nonfinite active input")
-            wp.copy(getattr(self, name), wp.array(arr.reshape(-1), dtype=(wp.float64 if dtype == np.float64 else wp.int32), device=self.device), stream=stream)
+            wp.copy(getattr(self, name), wp.array(arr.reshape(-1), dtype=(scalar.wp_real if dtype == np.float64 else wp.int32), device=self.device), stream=stream)
 
     def launch(self, *, stream=None):
         wp.launch(_status, dim=self.nworld, inputs=[self.active_world, self.status], device=self.device, stream=stream)

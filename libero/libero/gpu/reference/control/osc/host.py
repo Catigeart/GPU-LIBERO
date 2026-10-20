@@ -5,6 +5,7 @@ the replay harness and timed upload/download measurements only.
 """
 
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 from collections.abc import Mapping, Sequence
 
@@ -52,7 +53,7 @@ def capture_native_manifest(workspace: PandaOSCWorkspace) -> dict[str, dict]:
         buffer = getattr(workspace, name)
         if not buffer.device.is_cuda:
             raise ValueError(f"{name} is not on CUDA")
-        expected = wp.int32 if name in INT32_FIELDS else wp.float32 if name in FP32_FIELDS else wp.float64
+        expected = wp.int32 if name in INT32_FIELDS else wp.float32 if name in FP32_FIELDS else scalar.wp_real
         if buffer.dtype != expected:
             raise ValueError(f"{name} has native dtype {buffer.dtype}, expected {expected}")
         manifest[name] = {

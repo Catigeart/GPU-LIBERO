@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include "collision_dedup.cuh"
 namespace collision_cuda {
@@ -5,23 +6,23 @@ namespace collision_cuda {
 // Local raw + pair parameters produce the final contact record. Returns the
 // same frame error as ordered assembly, before its capacity check.
 template<int Fields=65>
-__device__ inline bool cf_candidate_contact(const double* raw,const PairParams& p,double* f,int* flags){
-    double x0=raw[4],x1=raw[5],x2=raw[6];
-    const double nx=cf_norm3(x0,x1,x2);
-    if(nx<0.5)return false;
-    if(nx<1e-15){x0=1;x1=x2=0;}else{const double inv=1/nx;x0*=inv;x1*=inv;x2*=inv;}
-    double y0=raw[7],y1=raw[8],y2=raw[9];
-    if(cf_norm3(y0,y1,y2)<0.5){y0=y1=y2=0;if(x1<0.5&&x1>-0.5)y1=1;else y2=1;}
-    const double dot=(x0*y0+x1*y1)+x2*y2;y0-=x0*dot;y1-=x1*dot;y2-=x2*dot;
-    const double ny=cf_norm3(y0,y1,y2);
-    if(ny<1e-15){y0=1;y1=y2=0;}else{const double inv=1/ny;y0*=inv;y1*=inv;y2*=inv;}
-    const double z0=x1*y2-x2*y1,z1=x2*y0-x0*y2,z2=x0*y1-x1*y0;
+__device__ inline bool cf_candidate_contact(const real_t* raw,const PairParams& p,real_t* f,int* flags){
+    real_t x0=raw[4],x1=raw[5],x2=raw[6];
+    const real_t nx=cf_norm3(x0,x1,x2);
+    if(nx<REAL_C(0.5))return false;
+    if(nx<REAL_C(1e-15)){x0=1;x1=x2=0;}else{const real_t inv=1/nx;x0*=inv;x1*=inv;x2*=inv;}
+    real_t y0=raw[7],y1=raw[8],y2=raw[9];
+    if(cf_norm3(y0,y1,y2)<REAL_C(0.5)){y0=y1=y2=0;if(x1<REAL_C(0.5)&&x1>-REAL_C(0.5))y1=1;else y2=1;}
+    const real_t dot=(x0*y0+x1*y1)+x2*y2;y0-=x0*dot;y1-=x1*dot;y2-=x2*dot;
+    const real_t ny=cf_norm3(y0,y1,y2);
+    if(ny<REAL_C(1e-15)){y0=1;y1=y2=0;}else{const real_t inv=1/ny;y0*=inv;y1*=inv;y2*=inv;}
+    const real_t z0=x1*y2-x2*y1,z1=x2*y0-x0*y2,z2=x0*y1-x1*y0;
     if(!f)return true;
     libero_vec::copy_serial(raw,f,4);
     f[4]=x0;f[5]=x1;f[6]=x2;f[7]=y0;f[8]=y1;f[9]=y2;f[10]=z0;f[11]=z1;f[12]=z2;
     f[13]=p.f[11];
     libero_vec::copy_serial(p.f+12,f+14,14);
-    if(Fields>28)libero_vec::fill_serial(f+28,Fields-28,0.0);
+    if(Fields>28)libero_vec::fill_serial(f+28,Fields-28,REAL_C(0.0));
     for(int k=0;k<3;++k)flags[k]=p.flags[k];
     flags[3]=raw[0]<p.f[11]?0:1;flags[4]=-1;
     return true;
@@ -32,16 +33,16 @@ __device__ inline bool cf_candidate_contact(const double* raw,const PairParams& 
 // directly. A small deterministic prefix separates the two parallel passes.
 template<bool Diagnostics>
 __device__ void cf_dedup_params_impl(int w,
-    double* raw,int* raw_count,int* call_count,int* active,int* types,int* route,int* geom_type,int ngeom,
-    double* compact,int* compact_count,int* keep_index,int* status,int pairs,
-    double* usermargin,int* counts,const int* priority,const int* condim,
-    const double* geom_margin,const double* geom_gap,const double* geom_friction,const double* geom_solmix,
-    const double* geom_solref,const double* geom_solimp,const double* pair_margin,const double* pair_gap,
-    const int* pair_dim,const double* pair_friction,const double* pair_solref,const double* pair_solreffriction,
-    const double* pair_solimp,const double* o_margin,const double* o_solref,const double* o_solimp,
-    const int* override_enabled,double* out_f,int* out_i,int slots,int npair,
-    int* offsets,int* frame_error,double* candidate_f,int* candidate_i,int capacity,
-    const double* cached_f=nullptr,const int* cached_i=nullptr,int cached_geoms=0) {
+    real_t* raw,int* raw_count,int* call_count,int* active,int* types,int* route,int* geom_type,int ngeom,
+    real_t* compact,int* compact_count,int* keep_index,int* status,int pairs,
+    real_t* usermargin,int* counts,const int* priority,const int* condim,
+    const real_t* geom_margin,const real_t* geom_gap,const real_t* geom_friction,const real_t* geom_solmix,
+    const real_t* geom_solref,const real_t* geom_solimp,const real_t* pair_margin,const real_t* pair_gap,
+    const int* pair_dim,const real_t* pair_friction,const real_t* pair_solref,const real_t* pair_solreffriction,
+    const real_t* pair_solimp,const real_t* o_margin,const real_t* o_solref,const real_t* o_solimp,
+    const int* override_enabled,real_t* out_f,int* out_i,int slots,int npair,
+    int* offsets,int* frame_error,real_t* candidate_f,int* candidate_i,int capacity,
+    const real_t* cached_f=nullptr,const int* cached_i=nullptr,int cached_geoms=0) {
     // Capacity diagnostics retain their exact tails, but tail initialization
     // no longer runs one 50-record serial copy loop per unused call.
     const int active_value=active[w],declared_calls=call_count[w];
@@ -56,7 +57,7 @@ __device__ void cf_dedup_params_impl(int w,
     }
     if(Diagnostics){
         libero_vec::fill_block(keep_index+w*pairs*50,size_t(pairs)*50,-1);
-        libero_vec::fill_block(compact+w*pairs*500,size_t(pairs)*500,0.0);
+        libero_vec::fill_block(compact+w*pairs*500,size_t(pairs)*500,REAL_C(0.0));
     }
     __syncthreads(); // initialization must finish before live rows overwrite it
     for(int local=threadIdx.x;local<effective_calls;local+=blockDim.x){
@@ -147,7 +148,7 @@ __device__ void cf_dedup_params_impl(int w,
                         if(cached_geoms==ngeom&&rr[0]>=0&&rr[0]<ngeom&&rr[1]>=0&&rr[1]<ngeom&&
                                 rr[2]==-1&&rr[3]==0){
                             const int entry=rr[0]*ngeom+rr[1];
-                            libero_vec::fill_serial(pp.f,10,0.0);
+                            libero_vec::fill_serial(pp.f,10,REAL_C(0.0));
                             libero_vec::copy_serial(cached_f+entry*16,pp.f+10,16);
                             pp.flags[0]=cached_i[entry*2];pp.flags[1]=rr[0];pp.flags[2]=rr[1];
                             pp.flags[3]=-1;pp.flags[4]=cached_i[entry*2+1];pp.route_valid=true;
@@ -181,9 +182,9 @@ __device__ void cf_dedup_params_impl(int w,
                     if(live_prefix[mid+1]<=row)lo=mid+1;else hi=mid;}
                 const int call=w*pairs+tile+lo,r=row-live_prefix[lo];
                 const int kept=keep_index[call*50+r],base=offsets[call];
-                double contact[10];
+                real_t contact[10];
                 if(kept>=0)libero_vec::copy_serial(raw+(call*50+kept)*10,contact,10);
-                else libero_vec::fill_serial(contact,10,0.0);
+                else libero_vec::fill_serial(contact,10,REAL_C(0.0));
                 const int target=w*capacity+base+r;
                 const bool fits=base+r<capacity;
                 if(!cf_candidate_contact<28>(contact,live_params[lo],
@@ -229,9 +230,9 @@ __device__ void cf_dedup_params_impl(int w,
             for(int r=row_lane;r<live_rows;r+=8){
                 const int row=call*50+r,q=local*50+r,kept=keep_index[row];
                 if(q<counts[w]&&r<nr&&!pp.flags[4]&&r<=capacity-base){
-                    double contact[10];
+                    real_t contact[10];
                     if(kept>=0)libero_vec::copy_serial(raw+(call*50+kept)*10,contact,10);
-                    else libero_vec::fill_serial(contact,10,0.0);
+                    else libero_vec::fill_serial(contact,10,REAL_C(0.0));
                     const int target=w*capacity+base+r;
                     const bool fits=base+r<capacity;
                     if(!cf_candidate_contact(contact,pp,fits?candidate_f+target*65:nullptr,
@@ -241,14 +242,14 @@ __device__ void cf_dedup_params_impl(int w,
         }
         if(Diagnostics)for(int r=row_lane;r<50;r+=8){
             const int row=call*50+r,q=local*50+r;
-            double* dst=out_f+row*26;
+            real_t* dst=out_f+row*26;
             if(active[w]&&counts[w]>=0&&counts[w]<=slots&&q<counts[w]){
                 const int kept=keep_index[row];
                 if(pp.route_valid&&kept>=0)
                     libero_vec::copy_serial(raw+(call*50+kept)*10,dst,10);
-                else libero_vec::fill_serial(dst,10,0.0);
+                else libero_vec::fill_serial(dst,10,REAL_C(0.0));
                 libero_vec::copy_serial(pp.f+10,dst+10,16);
-            }else libero_vec::fill_serial(dst,26,0.0);
+            }else libero_vec::fill_serial(dst,26,REAL_C(0.0));
         }
         for(int field=row_lane;field<(Diagnostics?50:nr)*5;field+=8){
             const int r=field/5,k=field%5,row=call*50+r,q=local*50+r;
@@ -259,7 +260,7 @@ __device__ void cf_dedup_params_impl(int w,
                     value=pp.flags[k];
                     if(k==3&&!pp.flags[4]){
                         const int kept=keep_index[row];
-                        const double distance=kept>=0?raw[(call*50+kept)*10]:0.0;
+                        const real_t distance=kept>=0?raw[(call*50+kept)*10]:REAL_C(0.0);
                         value=distance<pp.f[11]?0:1;
                     }
                 }
@@ -295,7 +296,7 @@ __device__ __forceinline__ void cf_dedup_params_live(Args... args){
 template<int Fields=65>
 __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
-    double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
+    real_t* candidate_f,int* candidate_i,real_t* scratch_f,int* scratch_i,int* ncon,int* attempts,
     int* appended,int* warnings,int* status,int pairs,int capacity,int* order,int* order_scratch){
     ncon[w]=warnings[w]=status[w]=0;
     for(int p=0;p<pairs;++p)attempts[w*pairs+p]=appended[w*pairs+p]=0;
@@ -332,7 +333,7 @@ __device__ void cf_assemble_candidates(int w,int* compact_count,int* call_count,
 template<int Fields=65>
 __device__ void cf_assemble_candidates_block_legacy(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
-    double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
+    real_t* candidate_f,int* candidate_i,real_t* scratch_f,int* scratch_i,int* ncon,int* attempts,
     int* appended,int* warnings,int* status,int pairs,int capacity,int* order,int* order_scratch){
     __shared__ int replay_n,replay_done,replay_start,replay_segment,replay_sort,replay_cursor;
     __shared__ int replay_sort_start,replay_sort_length,replay_do_sort;
@@ -406,7 +407,7 @@ __device__ void cf_assemble_candidates_block_legacy(int w,int* compact_count,int
 template<int Fields=65>
 __device__ void cf_assemble_candidates_block(int w,int* compact_count,int* call_count,int* active,
     int* segment,int* sort_enabled,int* geom_type,int* params_i,int* dedup_status,int* frame_error,
-    double* candidate_f,int* candidate_i,double* scratch_f,int* scratch_i,int* ncon,int* attempts,
+    real_t* candidate_f,int* candidate_i,real_t* scratch_f,int* scratch_i,int* ncon,int* attempts,
     int* appended,int* warnings,int* status,int pairs,int capacity,int* order,int* order_scratch){
     const int n=call_count[w];
     if(LIBERO_CF_REPLAY_AGGREGATE_MIN_CALLS<=0||n<LIBERO_CF_REPLAY_AGGREGATE_MIN_CALLS||

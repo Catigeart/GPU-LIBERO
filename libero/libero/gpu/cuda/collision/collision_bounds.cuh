@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -8,70 +9,88 @@
 namespace collision_cuda {
 // The original routines retain the owner-lane ABI. The *_block bounds
 // entry points below require all threads of a >=32-thread block per world.
-__device__ inline void cf_quat_matrix(double* r, const double* q) {
-    const double w=q[0], x=q[1], y=q[2], z=q[3];
-    if(w==1.0 && x==0.0 && y==0.0 && z==0.0) {
-        for(int k=0;k<9;++k) r[k]=(k%4==0)?1.0:0.0;
+__device__ inline void cf_quat_matrix(real_t* r, const real_t* q) {
+    const real_t w=q[0], x=q[1], y=q[2], z=q[3];
+    if(w==REAL_C(1.0) && x==REAL_C(0.0) && y==REAL_C(0.0) && z==REAL_C(0.0)) {
+        for(int k=0;k<9;++k) r[k]=(k%4==0)?REAL_C(1.0):REAL_C(0.0);
         return;
     }
-    const double ww=w*w, wx=w*x, wy=w*y, wz=w*z;
-    const double xx=x*x, xy=x*y, xz=x*z, yy=y*y, yz=y*z, zz=z*z;
+    const real_t ww=w*w, wx=w*x, wy=w*y, wz=w*z;
+    const real_t xx=x*x, xy=x*y, xz=x*z, yy=y*y, yz=y*z, zz=z*z;
     r[0]=ww+xx-yy-zz; r[4]=ww-xx+yy-zz; r[8]=ww-xx-yy+zz;
-    r[1]=2.0*(xy-wz); r[2]=2.0*(xz+wy); r[3]=2.0*(xy+wz);
-    r[5]=2.0*(yz-wx); r[6]=2.0*(xz-wy); r[7]=2.0*(yz+wx);
+    r[1]=REAL_C(2.0)*(xy-wz); r[2]=REAL_C(2.0)*(xz+wy); r[3]=REAL_C(2.0)*(xy+wz);
+    r[5]=REAL_C(2.0)*(yz-wx); r[6]=REAL_C(2.0)*(xz-wy); r[7]=REAL_C(2.0)*(yz+wx);
 }
-__device__ inline void cf_quat_mul(const double* a,const double* b,double* r) {
+__device__ inline void cf_quat_mul(const real_t* a,const real_t* b,real_t* r) {
     // Snapshot permits any of the three arrays to alias.
-    const double aw=a[0],ax=a[1],ay=a[2],az=a[3];
-    const double bw=b[0],bx=b[1],by=b[2],bz=b[3];
+    const real_t aw=a[0],ax=a[1],ay=a[2],az=a[3];
+    const real_t bw=b[0],bx=b[1],by=b[2],bz=b[3];
     r[0]=aw*bw-ax*bx-ay*by-az*bz;
     r[1]=aw*bx+ax*bw+ay*bz-az*by;
     r[2]=aw*by-ax*bz+ay*bw+az*bx;
     r[3]=aw*bz+ax*by-ay*bx+az*bw;
 }
-__device__ inline bool cf_quat_normalize(double* q) {
-    const double n=sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
-    if(!(n==n) || n>1e300) return false;
-    if(n<1e-15) {q[0]=1.0;q[1]=q[2]=q[3]=0.0;}
-    else {const double s=1.0/n;for(int k=0;k<4;++k)q[k]*=s;}
+__device__ inline bool cf_quat_normalize(real_t* q) {
+    const real_t n=sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+    if(!(n==n) || n>REAL_NORM_LIMIT) return false;
+    if(n<REAL_C(1e-15)) {q[0]=REAL_C(1.0);q[1]=q[2]=q[3]=REAL_C(0.0);}
+    else {const real_t s=REAL_C(1.0)/n;for(int k=0;k<4;++k)q[k]*=s;}
     return true;
 }
 // Quaternion Jacobi preserves MuJoCo's pivot ties, stopping criterion and
 // eigenvector orientation; a generic eigensolver has a different frame ABI.
-__device__ inline int cf_eig3(const double* cov,double* eig,double* frame,
-                              double* quat,double* tmp,double* work) {
-    quat[0]=1.0;quat[1]=quat[2]=quat[3]=0.0;
+__device__ inline int cf_eig3(const real_t* cov,real_t* eig,real_t* frame,
+                              real_t* quat,real_t* tmp,real_t* work) {
+    quat[0]=REAL_C(1.0);quat[1]=quat[2]=quat[3]=REAL_C(0.0);
+    real_t off_tolerance=REAL_C(1e-12);
+#if FLASH_REAL_BITS == 32
+    real_t norm=REAL_C(0.0);
+    for(int row=0;row<3;++row) {
+        real_t sum=REAL_C(0.0);
+        for(int col=0;col<3;++col)sum+=fabs(cov[3*row+col]);
+        norm=fmax(norm,sum);
+    }
+    off_tolerance=fmax(off_tolerance,REAL_C(8.0)*REAL_EPSILON*norm);
+#endif
     int iters=0;bool converged=false;
     for(int it=0;it<500;++it) {
         iters=it;cf_quat_matrix(frame,quat);
         for(int i=0;i<3;++i)for(int j=0;j<3;++j) {
-            double sum=0.0;
+            real_t sum=REAL_C(0.0);
             for(int k=0;k<3;++k)sum+=frame[3*k+i]*cov[3*k+j];
             work[3*i+j]=sum;
         }
         for(int i=0;i<3;++i)for(int j=0;j<3;++j) {
-            double sum=0.0;
+            real_t sum=REAL_C(0.0);
             for(int k=0;k<3;++k)sum+=work[3*i+k]*frame[3*k+j];
             tmp[3*i+j]=sum;
         }
         eig[0]=tmp[0];eig[1]=tmp[4];eig[2]=tmp[8];
-        const double d01=fabs(tmp[1]),d02=fabs(tmp[2]),d12=fabs(tmp[5]);
+        const real_t d01=fabs(tmp[1]),d02=fabs(tmp[2]),d12=fabs(tmp[5]);
         int rk,ck,rotk;
         if(d01>d02 && d01>d12){rk=0;ck=1;rotk=2;}
         else if(d02>d12){rk=0;ck=2;rotk=1;}
         else {rk=1;ck=2;rotk=0;}
-        const double off=tmp[3*rk+ck];
-        if(fabs(off)<1e-12){converged=true;break;}
-        const double tau=(tmp[4*ck]-tmp[4*rk])/(2.0*off);
-        const double t=tau>=0.0 ? 1.0/(tau+sqrt(1.0+tau*tau))
-                                         : -1.0/(-tau+sqrt(1.0+tau*tau));
-        const double c=1.0/sqrt(1.0+t*t);
-        if(c>1.0-1e-12){converged=true;break;}
-        tmp[0]=tmp[1]=tmp[2]=tmp[3]=0.0;
-        double s=sqrt(0.5-0.5*c);
-        if(tau>=0.0)s=-s;
+        const real_t off=tmp[3*rk+ck];
+        if(fabs(off)<off_tolerance){converged=true;break;}
+        const real_t tau=(tmp[4*ck]-tmp[4*rk])/(REAL_C(2.0)*off);
+        const real_t t=tau>=REAL_C(0.0) ? REAL_C(1.0)/(tau+sqrt(REAL_C(1.0)+tau*tau))
+                                         : -REAL_C(1.0)/(-tau+sqrt(REAL_C(1.0)+tau*tau));
+        const real_t c=REAL_C(1.0)/sqrt(REAL_C(1.0)+t*t);
+#if FLASH_REAL_BITS == 64
+        if(c>REAL_C(1.0)-REAL_C(1e-12)){converged=true;break;}
+#endif
+        tmp[0]=tmp[1]=tmp[2]=tmp[3]=REAL_C(0.0);
+#if FLASH_REAL_BITS == 32
+        // sin(theta/2) = sin(theta)/sqrt(2*(1+cos(theta))). The original
+        // subtraction loses the rotation when FP32 rounds c to exactly one.
+        real_t s=fabs(t)*c/sqrt(REAL_C(2.0)*(REAL_C(1.0)+c));
+#else
+        real_t s=sqrt(REAL_C(0.5)-REAL_C(0.5)*c);
+#endif
+        if(tau>=REAL_C(0.0))s=-s;
         if(rotk==1)s=-s;
-        tmp[rotk+1]=s;tmp[0]=sqrt(1.0-s*s);
+        tmp[rotk+1]=s;tmp[0]=sqrt(REAL_C(1.0)-s*s);
         if(!cf_quat_normalize(tmp))return -1;
         cf_quat_mul(quat,tmp,work);
         for(int k=0;k<4;++k)quat[k]=work[k];
@@ -80,8 +99,8 @@ __device__ inline int cf_eig3(const double* cov,double* eig,double* frame,
     for(int j=0;j<3;++j) {
         const int k=j%2;
         if(eig[k]<eig[k+1]) {
-            const double v=eig[k];eig[k]=eig[k+1];eig[k+1]=v;
-            tmp[0]=0.707106781186548;tmp[1]=tmp[2]=tmp[3]=0.0;
+            const real_t v=eig[k];eig[k]=eig[k+1];eig[k+1]=v;
+            tmp[0]=REAL_C(0.707106781186548);tmp[1]=tmp[2]=tmp[3]=REAL_C(0.0);
             tmp[(k+2)%3+1]=tmp[0];
             cf_quat_mul(quat,tmp,work);
             for(int l=0;l<4;++l)quat[l]=work[l];
@@ -94,55 +113,55 @@ __device__ inline int cf_eig3(const double* cov,double* eig,double* frame,
 
 // Explicit world-local position view. Public/global positions retain their
 // AoS ABI; F may replace its existing shared 3*ngeom tile with axis planes.
-__device__ __forceinline__ double cf_geom_pos(const double* pos,int g,int axis,
+__device__ __forceinline__ real_t cf_geom_pos(const real_t* pos,int g,int axis,
         int ngeom,bool planes){return pos[planes?axis*ngeom+g:3*g+axis];}
 __device__ inline void cf_bounds(int w,
-    const double* xpos,const int* active,const int* gates,const int* collision_mode,
-    const double* geom_rbound,const double* geom_margin,const int* body_geomadr,
-    const int* body_geomnum,const int* geom_bodyid,double* aabb,double* frame,
-    int* entered,int* count,int* status,double* scratch,int ngeom,int nbody,
-    const double* world_geom_pos=nullptr,bool world_geom_pos_planes=false) {
+    const real_t* xpos,const int* active,const int* gates,const int* collision_mode,
+    const real_t* geom_rbound,const real_t* geom_margin,const int* body_geomadr,
+    const int* body_geomnum,const int* geom_bodyid,real_t* aabb,real_t* frame,
+    int* entered,int* count,int* status,real_t* scratch,int ngeom,int nbody,
+    const real_t* world_geom_pos=nullptr,bool world_geom_pos_planes=false) {
     status[w]=0;entered[w]=0;count[w]=0;
     if(active[w]==0){status[w]=1;return;}
     if(active[w]!=1){status[w]=2;return;}
     if(gates[0]!=0 || gates[1]!=0 || gates[2]==0 || nbody<2 || collision_mode[0]==1)return;
-    const double* pos=world_geom_pos?world_geom_pos:xpos+w*ngeom*3;
+    const real_t* pos=world_geom_pos?world_geom_pos:xpos+w*ngeom*3;
     const bool planes=world_geom_pos && world_geom_pos_planes;
-    double center[3]={0.0,0.0,0.0};int cnt=0;
+    real_t center[3]={REAL_C(0.0),REAL_C(0.0),REAL_C(0.0)};int cnt=0;
     for(int g=0;g<ngeom;++g)if(geom_bodyid[g]!=0) {
-        const double x=cf_geom_pos(pos,g,0,ngeom,planes),y=cf_geom_pos(pos,g,1,ngeom,planes),z=cf_geom_pos(pos,g,2,ngeom,planes);
+        const real_t x=cf_geom_pos(pos,g,0,ngeom,planes),y=cf_geom_pos(pos,g,1,ngeom,planes),z=cf_geom_pos(pos,g,2,ngeom,planes);
         if(!(x==x && y==y && z==z)){status[w]=3;return;}
         center[0]+=x;center[1]+=y;center[2]+=z;++cnt;
     }
     if(cnt==0)return;
-    for(int j=0;j<3;++j)center[j]/=double(cnt);
+    for(int j=0;j<3;++j)center[j]/=real_t(cnt);
     // Jacobi's 34-double work state and 9-double frame are one producer /
     // consumer chain. Retain the public diagnostic state only at its exits.
-    double local_s[34],local_f[9];
+    real_t local_s[34],local_f[9];
     for(int k=0;k<34;++k)local_s[k]=scratch[w*34+k];
     for(int k=0;k<9;++k)local_f[k]=frame[w*9+k];
-    double* s=local_s;double* f=local_f;
-    for(int k=0;k<9;++k)s[k]=0.0;
+    real_t* s=local_s;real_t* f=local_f;
+    for(int k=0;k<9;++k)s[k]=REAL_C(0.0);
     for(int g=0;g<ngeom;++g)if(geom_bodyid[g]!=0) {
-        const double dx=cf_geom_pos(pos,g,0,ngeom,planes)-center[0],dy=cf_geom_pos(pos,g,1,ngeom,planes)-center[1],dz=cf_geom_pos(pos,g,2,ngeom,planes)-center[2];
+        const real_t dx=cf_geom_pos(pos,g,0,ngeom,planes)-center[0],dy=cf_geom_pos(pos,g,1,ngeom,planes)-center[1],dz=cf_geom_pos(pos,g,2,ngeom,planes)-center[2];
         s[0]+=dx*dx;s[1]+=dx*dy;s[2]+=dx*dz;s[3]+=dx*dy;s[4]+=dy*dy;
         s[5]+=dy*dz;s[6]+=dx*dz;s[7]+=dy*dz;s[8]+=dz*dz;
     }
-    for(int k=0;k<9;++k)s[k]/=double(cnt);
+    for(int k=0;k<9;++k)s[k]/=real_t(cnt);
     const int eigen_status=cf_eig3(s,s+27,f,s+30,s+9,s+18);
     for(int k=0;k<34;++k)scratch[w*34+k]=s[k];
     for(int k=0;k<9;++k)frame[w*9+k]=f[k];
     if(eigen_status<0){status[w]=5;return;}
     entered[w]=1;count[w]=cnt;
-    double* bounds=aabb+w*nbody*6;
+    real_t* bounds=aabb+w*nbody*6;
     for(int b=0;b<nbody;++b) {
-        if(b==0 || body_geomnum[b]==0){for(int k=0;k<6;++k)bounds[6*b+k]=0.0;continue;}
+        if(b==0 || body_geomnum[b]==0){for(int k=0;k<6;++k)bounds[6*b+k]=REAL_C(0.0);continue;}
         for(int i=0;i<body_geomnum[b];++i) {
             const int g=body_geomadr[b]+i;
             for(int j=0;j<3;++j) {
-                const double c=cf_geom_pos(pos,g,0,ngeom,planes)*f[3*j]+cf_geom_pos(pos,g,1,ngeom,planes)*f[3*j+1]+cf_geom_pos(pos,g,2,ngeom,planes)*f[3*j+2];
-                const double lo=c-geom_rbound[g]-geom_margin[g],hi=c+geom_rbound[g]+geom_margin[g];
-                double* dst=bounds+6*b+2*j;
+                const real_t c=cf_geom_pos(pos,g,0,ngeom,planes)*f[3*j]+cf_geom_pos(pos,g,1,ngeom,planes)*f[3*j+1]+cf_geom_pos(pos,g,2,ngeom,planes)*f[3*j+2];
+                const real_t lo=c-geom_rbound[g]-geom_margin[g],hi=c+geom_rbound[g]+geom_margin[g];
+                real_t* dst=bounds+6*b+2*j;
                 if(i==0){dst[0]=lo;dst[1]=hi;}
                 else {if(dst[0]>lo)dst[0]=lo;if(dst[1]<hi)dst[1]=hi;}
             }
@@ -153,12 +172,12 @@ __device__ inline void cf_bounds(int w,
 // F calls this after its own successful position publication. The geom
 // pointer is world-local shared storage; all other arenas use world strides.
 // Seeding preserves the original bounds function's untouched branches.
-__device__ inline void cf_bounds_prepare_cached(int w,const double* world_geom_pos,
+__device__ inline void cf_bounds_prepare_cached(int w,const real_t* world_geom_pos,
     const int* position_valid,const int64_t* position_written,const int64_t* forward_epoch,const int* first_error,
-    const int* gates,const int* collision_mode,const double* geom_rbound,const double* geom_margin,
+    const int* gates,const int* collision_mode,const real_t* geom_rbound,const real_t* geom_margin,
     const int* body_geomadr,const int* body_geomnum,const int* geom_bodyid,
-    const double* public_aabb,const double* public_frame,const double* public_scratch,
-    double* cache_aabb,double* cache_frame,double* cache_scratch,
+    const real_t* public_aabb,const real_t* public_frame,const real_t* public_scratch,
+    real_t* cache_aabb,real_t* cache_frame,real_t* cache_scratch,
     int* cache_entered,int* cache_count,int* cache_status,int64_t* cache_epoch,int* cache_options,
     int64_t* prepare_count,
     int ngeom,int nbody,bool world_geom_pos_planes=false){
@@ -175,10 +194,10 @@ __device__ inline void cf_bounds_prepare_cached(int w,const double* world_geom_p
 }
 
 __device__ inline void cf_bounds_cached(int w,
-    const double* xpos,const int* active,const int* gates,const int* collision_mode,
-    const double* geom_rbound,const double* geom_margin,const int* body_geomadr,const int* body_geomnum,
-    const int* geom_bodyid,double* aabb,double* frame,int* entered,int* count,int* status,double* scratch,
-    int ngeom,int nbody,const double* cache_aabb,const double* cache_frame,const double* cache_scratch,
+    const real_t* xpos,const int* active,const int* gates,const int* collision_mode,
+    const real_t* geom_rbound,const real_t* geom_margin,const int* body_geomadr,const int* body_geomnum,
+    const int* geom_bodyid,real_t* aabb,real_t* frame,int* entered,int* count,int* status,real_t* scratch,
+    int ngeom,int nbody,const real_t* cache_aabb,const real_t* cache_frame,const real_t* cache_scratch,
     const int* cache_entered,const int* cache_count,const int* cache_status,const int64_t* cache_epoch,
     const int* cache_options,const int* position_valid,const int64_t* position_written,
     const int64_t* forward_epoch,const int* first_error,int64_t* hit_count,int64_t* fallback_count){
@@ -202,25 +221,25 @@ __device__ inline void cf_bounds_cached(int w,
 // dependency chain remains on its leader and body bounds are independent.
 // The enclosing launch must assign one whole block to the same world.
 __device__ inline void cf_bounds_block(int w,
-    const double* xpos,const int* active,const int* gates,const int* collision_mode,
-    const double* geom_rbound,const double* geom_margin,const int* body_geomadr,
-    const int* body_geomnum,const int* geom_bodyid,double* aabb,double* frame,
-    int* entered,int* count,int* status,double* scratch,int ngeom,int nbody,
-    const double* world_geom_pos=nullptr,bool world_geom_pos_planes=false) {
+    const real_t* xpos,const int* active,const int* gates,const int* collision_mode,
+    const real_t* geom_rbound,const real_t* geom_margin,const int* body_geomadr,
+    const int* body_geomnum,const int* geom_bodyid,real_t* aabb,real_t* frame,
+    int* entered,int* count,int* status,real_t* scratch,int ngeom,int nbody,
+    const real_t* world_geom_pos=nullptr,bool world_geom_pos_planes=false) {
     if(threadIdx.x==0){status[w]=0;entered[w]=0;count[w]=0;}
     __syncthreads();
     if(active[w]==0){if(threadIdx.x==0)status[w]=1;return;}
     if(active[w]!=1){if(threadIdx.x==0)status[w]=2;return;}
     if(gates[0]!=0 || gates[1]!=0 || gates[2]==0 || nbody<2 || collision_mode[0]==1)return;
-    const double* pos=world_geom_pos?world_geom_pos:xpos+w*ngeom*3;
+    const real_t* pos=world_geom_pos?world_geom_pos:xpos+w*ngeom*3;
     const bool planes=world_geom_pos && world_geom_pos_planes;
     __shared__ int cloud_count, cloud_bad, eigen_result;
-    __shared__ double center[3], covariance[9], axes[9];
+    __shared__ real_t center[3], covariance[9], axes[9];
     if(libero_warp::warp()==0){
         const int lane=libero_warp::lane();
-        double xsum=0.0,ysum=0.0,zsum=0.0;int cnt=0;bool bad=false;
+        real_t xsum=REAL_C(0.0),ysum=REAL_C(0.0),zsum=REAL_C(0.0);int cnt=0;bool bad=false;
         for(int g=lane;g<ngeom;g+=32)if(geom_bodyid[g]!=0){
-            const double x=cf_geom_pos(pos,g,0,ngeom,planes),y=cf_geom_pos(pos,g,1,ngeom,planes),z=cf_geom_pos(pos,g,2,ngeom,planes);
+            const real_t x=cf_geom_pos(pos,g,0,ngeom,planes),y=cf_geom_pos(pos,g,1,ngeom,planes),z=cf_geom_pos(pos,g,2,ngeom,planes);
             bad=bad || !(x==x && y==y && z==z);
             xsum+=x;ysum+=y;zsum+=z;++cnt;
         }
@@ -231,22 +250,22 @@ __device__ inline void cf_bounds_block(int w,
         zsum=libero_warp::sum_to_leader(zsum);
         if(lane==0){
             cloud_bad=any_bad;cloud_count=total;
-            if(total>0){center[0]=xsum/double(total);center[1]=ysum/double(total);center[2]=zsum/double(total);}
+            if(total>0){center[0]=xsum/real_t(total);center[1]=ysum/real_t(total);center[2]=zsum/real_t(total);}
         }
     }
     __syncthreads();
     if(cloud_bad){if(threadIdx.x==0)status[w]=3;return;}
     if(cloud_count==0)return;
     if(libero_warp::warp()==0){
-        double c[6]={0.0,0.0,0.0,0.0,0.0,0.0};
+        real_t c[6]={REAL_C(0.0),REAL_C(0.0),REAL_C(0.0),REAL_C(0.0),REAL_C(0.0),REAL_C(0.0)};
         for(int g=libero_warp::lane();g<ngeom;g+=32)if(geom_bodyid[g]!=0){
-            const double dx=cf_geom_pos(pos,g,0,ngeom,planes)-center[0],dy=cf_geom_pos(pos,g,1,ngeom,planes)-center[1],dz=cf_geom_pos(pos,g,2,ngeom,planes)-center[2];
+            const real_t dx=cf_geom_pos(pos,g,0,ngeom,planes)-center[0],dy=cf_geom_pos(pos,g,1,ngeom,planes)-center[1],dz=cf_geom_pos(pos,g,2,ngeom,planes)-center[2];
             c[0]+=dx*dx;c[1]+=dx*dy;c[2]+=dx*dz;
             c[3]+=dy*dy;c[4]+=dy*dz;c[5]+=dz*dz;
         }
         for(int k=0;k<6;++k)c[k]=libero_warp::sum_to_leader(c[k]);
         if(libero_warp::lane()==0){
-            const double denom=double(cloud_count);
+            const real_t denom=real_t(cloud_count);
             covariance[0]=c[0]/denom;covariance[1]=covariance[3]=c[1]/denom;
             covariance[2]=covariance[6]=c[2]/denom;covariance[4]=c[3]/denom;
             covariance[5]=covariance[7]=c[4]/denom;covariance[8]=c[5]/denom;
@@ -254,7 +273,7 @@ __device__ inline void cf_bounds_block(int w,
     }
     __syncthreads();
     if(threadIdx.x==0){
-        double local_s[34],local_f[9];
+        real_t local_s[34],local_f[9];
         for(int k=0;k<34;++k)local_s[k]=scratch[w*34+k];
         for(int k=0;k<9;++k)local_f[k]=frame[w*9+k];
         for(int k=0;k<9;++k)local_s[k]=covariance[k];
@@ -266,17 +285,17 @@ __device__ inline void cf_bounds_block(int w,
     }
     __syncthreads();
     if(eigen_result<0)return;
-    double* bounds=aabb+w*nbody*6;
+    real_t* bounds=aabb+w*nbody*6;
     for(int task=threadIdx.x;task<nbody*3;task+=blockDim.x){
         const int b=task/3,j=task%3;
-        double* dst=bounds+6*b+2*j;
-        if(b==0 || body_geomnum[b]==0){dst[0]=dst[1]=0.0;continue;}
+        real_t* dst=bounds+6*b+2*j;
+        if(b==0 || body_geomnum[b]==0){dst[0]=dst[1]=REAL_C(0.0);continue;}
         // Three axis owners per body improve occupancy without changing the
         // ordered geom comparisons (NaN and equal bounds keep old semantics).
         for(int i=0;i<body_geomnum[b];++i){
             const int g=body_geomadr[b]+i;
-            const double c=cf_geom_pos(pos,g,0,ngeom,planes)*axes[3*j]+cf_geom_pos(pos,g,1,ngeom,planes)*axes[3*j+1]+cf_geom_pos(pos,g,2,ngeom,planes)*axes[3*j+2];
-            const double lo=c-geom_rbound[g]-geom_margin[g],hi=c+geom_rbound[g]+geom_margin[g];
+            const real_t c=cf_geom_pos(pos,g,0,ngeom,planes)*axes[3*j]+cf_geom_pos(pos,g,1,ngeom,planes)*axes[3*j+1]+cf_geom_pos(pos,g,2,ngeom,planes)*axes[3*j+2];
+            const real_t lo=c-geom_rbound[g]-geom_margin[g],hi=c+geom_rbound[g]+geom_margin[g];
             if(i==0){dst[0]=lo;dst[1]=hi;}
             else {if(dst[0]>lo)dst[0]=lo;if(dst[1]<hi)dst[1]=hi;}
         }
@@ -284,12 +303,12 @@ __device__ inline void cf_bounds_block(int w,
     __syncthreads();
 }
 
-__device__ inline void cf_bounds_prepare_cached_block(int w,const double* world_geom_pos,
+__device__ inline void cf_bounds_prepare_cached_block(int w,const real_t* world_geom_pos,
     const int* position_valid,const int64_t* position_written,const int64_t* forward_epoch,const int* first_error,
-    const int* gates,const int* collision_mode,const double* geom_rbound,const double* geom_margin,
+    const int* gates,const int* collision_mode,const real_t* geom_rbound,const real_t* geom_margin,
     const int* body_geomadr,const int* body_geomnum,const int* geom_bodyid,
-    const double* public_aabb,const double* public_frame,const double* public_scratch,
-    double* cache_aabb,double* cache_frame,double* cache_scratch,
+    const real_t* public_aabb,const real_t* public_frame,const real_t* public_scratch,
+    real_t* cache_aabb,real_t* cache_frame,real_t* cache_scratch,
     int* cache_entered,int* cache_count,int* cache_status,int64_t* cache_epoch,int* cache_options,
     int64_t* prepare_count,int ngeom,int nbody,bool world_geom_pos_planes=false){
     if(position_valid[w]!=1||first_error[w]||position_written[w]!=forward_epoch[w])return;
@@ -310,10 +329,10 @@ __device__ inline void cf_bounds_prepare_cached_block(int w,const double* world_
 }
 
 __device__ inline void cf_bounds_cached_block(int w,
-    const double* xpos,const int* active,const int* gates,const int* collision_mode,
-    const double* geom_rbound,const double* geom_margin,const int* body_geomadr,const int* body_geomnum,
-    const int* geom_bodyid,double* aabb,double* frame,int* entered,int* count,int* status,double* scratch,
-    int ngeom,int nbody,const double* cache_aabb,const double* cache_frame,const double* cache_scratch,
+    const real_t* xpos,const int* active,const int* gates,const int* collision_mode,
+    const real_t* geom_rbound,const real_t* geom_margin,const int* body_geomadr,const int* body_geomnum,
+    const int* geom_bodyid,real_t* aabb,real_t* frame,int* entered,int* count,int* status,real_t* scratch,
+    int ngeom,int nbody,const real_t* cache_aabb,const real_t* cache_frame,const real_t* cache_scratch,
     const int* cache_entered,const int* cache_count,const int* cache_status,const int64_t* cache_epoch,
     const int* cache_options,const int* position_valid,const int64_t* position_written,
     const int64_t* forward_epoch,const int* first_error,int64_t* hit_count,int64_t* fallback_count){
@@ -336,7 +355,7 @@ __device__ inline void cf_bounds_cached_block(int w,
 }
 
 __device__ inline void cf_broadphase(int w,
-    const double* aabb,const int* active,const int* gates,const int* collision_mode,
+    const real_t* aabb,const int* active,const int* gates,const int* collision_mode,
     const int* body_weldid,const int* body_parentid,const int* body_geomadr,
     const int* body_geomnum,const int* geom_bodyid,const int* geom_type,
     const int* geom_contype,const int* geom_conaffinity,const int* can,const int* plane,
@@ -348,7 +367,7 @@ __device__ inline void cf_broadphase(int w,
     if(active[w]!=1){status[w]=2;return;}
     if(gates[0]!=0 || gates[1]!=0 || gates[2]==0 || nbody<2 || collision_mode[0]==1)return;
     int npair=0;int* pairs=out_pair+w*pair_capacity;
-    const double* ab=aabb+w*nbody*6;
+    const real_t* ab=aabb+w*nbody*6;
     for(int b1=0;b1<nbody;++b1) {
         if(can[b1]==0)continue;
         if(!((b1==0 && body_geomnum[b1]>0) || (body_weldid[b1]==0 && plane[b1]!=0)))continue;
@@ -380,7 +399,7 @@ __device__ inline void cf_broadphase(int w,
                 const int b1=live[j],w1=body_weldid[b1],w2=body_weldid[b2];
                 const int p1=body_weldid[body_parentid[w1]],p2=body_weldid[body_parentid[w2]];
                 if(w1==w2 || (filterparent_disabled[0]==0 && w1!=0 && w2!=0 && (w1==p2 || w2==p1)))continue;
-                const double* a1=ab+6*b1;const double* a2=ab+6*b2;
+                const real_t* a1=ab+6*b1;const real_t* a2=ab+6*b2;
                 if(a1[2]>a2[3] || a1[3]<a2[2] || a1[4]>a2[5] || a1[5]<a2[4])continue;
                 // Preserve source capacity check before the affinity filter.
                 if(npair>=pair_capacity){status[w]=1;return;}
@@ -410,7 +429,7 @@ __device__ inline void cf_broadphase(int w,
 // networks preserve stable equal keys. NaN events and larger lists retain the
 // original insertion sort and its comparison barriers.
 __device__ inline void cf_broadphase_warp(int w,
-    const double* aabb,const int* active,const int* gates,const int* collision_mode,
+    const real_t* aabb,const int* active,const int* gates,const int* collision_mode,
     const int* body_weldid,const int* body_parentid,const int* body_geomadr,
     const int* body_geomnum,const int* geom_bodyid,const int* geom_type,
     const int* geom_contype,const int* geom_conaffinity,const int* can,const int* plane,
@@ -423,7 +442,7 @@ __device__ inline void cf_broadphase_warp(int w,
     if(active[w]!=1){if(lane==0)status[w]=2;return;}
     if(gates[0]!=0 || gates[1]!=0 || gates[2]==0 || nbody<2 || collision_mode[0]==1)return;
     int npair=0;int* pairs=out_pair+w*pair_capacity;
-    const double* ab=aabb+w*nbody*6;
+    const real_t* ab=aabb+w*nbody*6;
     for(int b1=0;b1<nbody;++b1){
         if(can[b1]==0)continue;
         if(!((b1==0 && body_geomnum[b1]>0) || (body_weldid[b1]==0 && plane[b1]!=0)))continue;
@@ -471,8 +490,8 @@ __device__ inline void cf_broadphase_warp(int w,
             const int b2=tag,w2=body_weldid[b2];
             // The current sweep body is common to every live candidate.
             // Keep its four tested fields in registers across the active tiles.
-            const double b2_ylo=ab[6*b2+2],b2_yhi=ab[6*b2+3];
-            const double b2_zlo=ab[6*b2+4],b2_zhi=ab[6*b2+5];
+            const real_t b2_ylo=ab[6*b2+2],b2_yhi=ab[6*b2+3];
+            const real_t b2_zlo=ab[6*b2+4],b2_zhi=ab[6*b2+5];
             // Tiny live sets do not justify several warp scans. Preserve
             // the cheap ordered owner path and broadcast its result.
             if(nactive<8){
@@ -481,7 +500,7 @@ __device__ inline void cf_broadphase_warp(int w,
                     const int b1=live[j],w1=body_weldid[b1];
                     const int p1=body_weldid[body_parentid[w1]],p2=body_weldid[body_parentid[w2]];
                     if(w1==w2 || (filterparent_disabled[0]==0 && w1!=0 && w2!=0 && (w1==p2 || w2==p1)))continue;
-                    const double* a1=ab+6*b1;
+                    const real_t* a1=ab+6*b1;
                     if(a1[2]>b2_yhi || a1[3]<b2_ylo || a1[4]>b2_zhi || a1[5]<b2_zlo)continue;
                     if(npair>=pair_capacity){status[w]=1;failed=1;break;}
                     if(body_geomnum[b1]==1 && body_geomnum[b2]==1){
@@ -501,7 +520,7 @@ __device__ inline void cf_broadphase_warp(int w,
                     const int w1=body_weldid[b1];
                     const int p1=body_weldid[body_parentid[w1]],p2=body_weldid[body_parentid[w2]];
                     if(!(w1==w2 || (filterparent_disabled[0]==0 && w1!=0 && w2!=0 && (w1==p2 || w2==p1)))){
-                        const double* a1=ab+6*b1;
+                        const real_t* a1=ab+6*b1;
                         overlap=!(a1[2]>b2_yhi || a1[3]<b2_ylo || a1[4]>b2_zhi || a1[5]<b2_zlo);
                         emit=overlap;
                         if(overlap && body_geomnum[b1]==1 && body_geomnum[b2]==1){
@@ -548,7 +567,7 @@ __device__ inline void cf_broadphase_warp(int w,
 }
 
 __device__ inline void cf_broadphase_block(int w,
-    const double* aabb,const int* active,const int* gates,const int* collision_mode,
+    const real_t* aabb,const int* active,const int* gates,const int* collision_mode,
     const int* body_weldid,const int* body_parentid,const int* body_geomadr,
     const int* body_geomnum,const int* geom_bodyid,const int* geom_type,
     const int* geom_contype,const int* geom_conaffinity,const int* can,const int* plane,

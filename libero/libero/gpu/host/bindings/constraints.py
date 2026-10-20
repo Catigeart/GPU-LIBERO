@@ -5,6 +5,7 @@ are manually maintained in constraints*.cuh. Existing adapter ownership and
 all-or-nothing public commits are retained. Dense elliptic S families only,
 as already admitted by the native dimension specialization factory.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ast
 import inspect
@@ -101,11 +102,11 @@ def _binding_schedule(obj, name):
 
 def _ctype(value):
     if isinstance(value, wp.array):
-        return {wp.float64:'double*', wp.int32:'int32_t*', wp.int64:'int64_t*'}[value.dtype], value
-    if isinstance(value, wp.float64):
-        return 'double', float(value.value)
+        return {scalar.wp_real:'real_t*', wp.int32:'int32_t*', wp.int64:'int64_t*'}[value.dtype], value
+    if isinstance(value, scalar.wp_real):
+        return 'real_t', float(value.value)
     if isinstance(value, (float, np.floating)):
-        return 'double', float(value)
+        return 'real_t', float(value)
     return 'int32_t', int(value)
 
 def _private_token(a):
@@ -289,8 +290,8 @@ class ConstraintPlans:
             'head_id':wp.zeros(workspace.nworld*workspace.rows,dtype=wp.int32,device=workspace.device),
             'head_dim':wp.zeros(workspace.nworld*workspace.rows,dtype=wp.int32,device=workspace.device),
             'head_cone_valid':wp.zeros(workspace.nworld,dtype=wp.int32,device=workspace.device),
-            'head_mu':wp.zeros(workspace.nworld*workspace.rows,dtype=wp.float64,device=workspace.device),
-            'head_friction':wp.zeros(workspace.nworld*workspace.rows*5,dtype=wp.float64,device=workspace.device),
+            'head_mu':wp.zeros(workspace.nworld*workspace.rows,dtype=scalar.wp_real,device=workspace.device),
+            'head_friction':wp.zeros(workspace.nworld*workspace.rows*5,dtype=scalar.wp_real,device=workspace.device),
             'group_math_error':wp.zeros(workspace.nworld,dtype=wp.int32,device=workspace.device),
             'producer_receipt':wp.zeros(workspace.nworld*4,dtype=wp.int32,device=workspace.device),
             'mu_owner':wp.zeros(workspace.nworld*workspace.contacts,dtype=wp.int32,device=workspace.device),
@@ -315,15 +316,15 @@ class ConstraintPlans:
                 ctypes_,values=map(list,zip(*operands))
                 # Only pointer/scalar bindings are synthesized here. Row math
                 # stays handwritten; producers own the final private layout.
-                row_metadata=[('double*','unified_pos',workspace.stage_pos),
-                              ('double*','unified_margin',workspace.stage_margin),
-                              ('double*','unified_loss',workspace.stage_frictionloss),
+                row_metadata=[('real_t*','unified_pos',workspace.stage_pos),
+                              ('real_t*','unified_margin',workspace.stage_margin),
+                              ('real_t*','unified_loss',workspace.stage_frictionloss),
                               ('int32_t*','unified_type',workspace.stage_type),
                               ('int32_t*','unified_id',workspace.stage_id)]
                 receipt=[('int32_t*','producer_receipt',storage['producer_receipt'])]
                 extras = {
                     'position_gate': receipt,
-                    'produce': [('double*', 'unified_J', workspace.stage_J),*row_metadata,
+                    'produce': [('real_t*', 'unified_J', workspace.stage_J),*row_metadata,
                                 ('const int32_t*','cold_friction_map',storage['cold_friction_map']),
                                 ('const int32_t*','cold_friction_mask',storage['cold_friction_mask']),
                                 ('const int32_t*','cold_limit_sides',storage['cold_limit_sides']),
@@ -334,7 +335,7 @@ class ConstraintPlans:
                     'metadata': [*queue,*row_metadata,*receipt],
                     'assemble': receipt,
                     'prediag': receipt,
-                    'jacobian_rows': [('double*', 'unified_J', workspace.stage_J),
+                    'jacobian_rows': [('real_t*', 'unified_J', workspace.stage_J),
                                       ('int32_t*', 'unified_incoming', workspace.incoming_contact),
                                       ('const int32_t*','body_dof_offsets',storage['body_dof_offsets']),
                                       ('const int32_t*','body_dof_indices',storage['body_dof_indices']),
@@ -343,7 +344,7 @@ class ConstraintPlans:
                                       ('const int32_t*','pair_support_columns',storage['pair_support_columns']),
                                       ('const int32_t*','pair_support_members',storage['pair_support_members']),
                                       ('int32_t','pair_cache_enabled',int(bool(pair_support.pair_lookup.size))),
-                                      ('const double*','cdof_planes',workspace.s01.cdof),
+                                      ('const real_t*','cdof_planes',workspace.s01.cdof),
                                       ('int32_t','cdof_pitch',nv),('int32_t','cdof_layout',0),*queue],
                     'impedance': [('int32_t*', 'group_heads', workspace._cuda_impedance_heads),
                                   ('int32_t*','compact_heads',storage['compact_heads']),
@@ -626,7 +627,7 @@ def newton_head_metadata(forward):
         plans.validate_private_bindings()
     result = HeadMetadata.create(owner=forward, nworld=dimensions[0], rows=dimensions[1],
         contacts=dimensions[2], nv=dimensions[3], provider=lambda: _head_metadata_arrays(workspace),
-        validate_owner=validate_owner, array_type=wp.array, int32_dtype=wp.int32, float64_dtype=wp.float64)
+        validate_owner=validate_owner, array_type=wp.array, int32_dtype=wp.int32, float64_dtype=scalar.wp_real)
     forward._cuda_s_head_metadata = result
     return result
 

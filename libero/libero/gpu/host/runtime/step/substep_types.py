@@ -2,6 +2,7 @@
 
 This file is maintained source. No schema discovery or CUDA source generation.
 """
+import libero.gpu.precision as scalar
 import ctypes as ct
 
 class FoundationGateData(ct.Structure):
@@ -783,7 +784,7 @@ class EulerData(ct.Structure):
         ("ma", ct.c_void_p),
         ("damp", ct.c_void_p),
         ("status", ct.c_void_p),
-        ("dt", ct.c_double),
+        ("dt", scalar.ct_real),
         ("nq", ct.c_int32),
         ("nv", ct.c_int32),
         ("nm", ct.c_int32),

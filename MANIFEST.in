@@ -6,8 +6,8 @@ recursive-exclude * __pycache__ *.pyc *.pyo *.so *.o *.a
 prune build
 prune dist
 recursive-include licenses *.txt
-recursive-include tests *.py *.md *.cu *.cuh *.h *.cpp *.json *.xml
-include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt
+recursive-include tests *.py *.md *.cu *.cuh *.h *.cpp *.json *.xml *.csv
+include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt requirements-mjwarp.txt
 recursive-include tools *.py *.json *.txt *.md
 recursive-include media *.svg *.csv *.json
 recursive-include .github *.yml

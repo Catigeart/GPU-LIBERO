@@ -3,6 +3,7 @@
 Pruned CUDA source/ABI requires its own selected-consumer receipt. Public cold
 requests require an owner-bound selection; private builder is qualification-only.
 """
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -43,7 +44,7 @@ def _prepare_candidate(e, root, options, *, runtime, extra_flags=()):
         cached_dt=(e.capacity,), cache_valid=(e.capacity,), cached_warnings=(e.capacity,),
         cached_last=(e.capacity,), cache_hit=(e.capacity,))
     for name, shape in cache_shapes.items():
-        dtype = wp.float64 if name in ("key","cached_ld","cached_inv","cached_si") else (wp.int64 if name=="cached_dt" else wp.int32)
+        dtype = scalar.wp_real if name in ("key","cached_ld","cached_inv","cached_si") else (wp.int64 if name=="cached_dt" else wp.int32)
         if not options.factor_cache and name != "cache_hit":
             shape=(1,)
         values[name]=wp.zeros(shape,dtype=dtype,device=e.device)

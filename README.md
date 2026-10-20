@@ -16,9 +16,17 @@ See [performance results](#performance) for the suite breakdown and measurement 
 
 - Original LIBERO imports, task definitions, environment interfaces, and benchmark suites.
 - 130 manipulation tasks across **LIBERO-Spatial**, **LIBERO-Object**, **LIBERO-Goal**, and **LIBERO-100**, including the **LIBERO-90 / LIBERO-10** split.
-- CUDA physics with FP64 arithmetic and cuBLASDx / cuSOLVERDx integration.
+- Native FP64 CUDA physics with cuBLASDx / cuSOLVERDx, and an upstream MJWarp FP32 fast path.
 - Existing observation, rendering, controller, state, and vector-environment interfaces.
 - LIBERO policy architectures, lifelong learning methods, and dataset tools.
+
+The [MJWarp FP32 backend](libero/libero/gpu/host/backends/mjwarp/README.md)
+uses upstream physics with the existing GPU OSC and observation pipeline.
+It requires an isolated newer-MuJoCo environment and explicit offline
+preparation. Automatic routing selects MJWarp for FP32 and native CUDA for
+FP64; FP64 remains the default precision. The handwritten FP32 backend is
+available with `physics_engine="native"`. The performance table
+below describes the recorded native FP64 implementation.
 
 ## Contents
 
@@ -165,6 +173,13 @@ finally:
 Available suite names include `libero_spatial`, `libero_object`, `libero_goal`, `libero_90`, and `libero_10`. LIBERO uses sparse task-completion rewards.
 
 ### Native GPU batches
+
+An optional `precision="fp32"` batch configuration shares the maintained
+algorithm sources with FP64. Select precision before importing typed physics
+modules and prepare its products offline. Precision is fixed per process; both
+products can coexist in the same CMake build. See the
+[precision guide](libero/libero/gpu/PRECISION.md) for selection, storage,
+validation and current scope. The benchmark results above remain FP64.
 
 Use `GpuBatchEnv` to advance multiple worlds of **one task and one shared static
 model** in a native GPU batch. This is separate from the compatible

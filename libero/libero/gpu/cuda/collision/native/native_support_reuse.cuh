@@ -1,3 +1,4 @@
+#include <precision.cuh>
 // LIBERO GPU query-local support reuse. This helper is handwritten here;
 // MuJoCo/libccd provenance for its callers is in THIRD_PARTY_NOTICES.md.
 #pragma once
@@ -20,7 +21,7 @@
 // and result are transformed using the current pose on every support call.
 struct NativeSupportReuse {
   unsigned long long key[3];
-  double local_result[3];
+  real_t local_result[3];
   int meshindex;
   unsigned valid;
   unsigned hits;
@@ -28,11 +29,11 @@ struct NativeSupportReuse {
 };
 
 static __device__ __forceinline__ bool native_support_reuse_get(
-    NativeSupportReuse* cache, const double* dir, double* result, int* meshindex) {
+    NativeSupportReuse* cache, const real_t* dir, real_t* result, int* meshindex) {
 #if LIBERO_NATIVE_SUPPORT_REUSE
   bool hit=cache->valid!=0;
   for(int i=0;i<3;++i)
-    hit=hit && cache->key[i]==static_cast<unsigned long long>(__double_as_longlong(dir[i]));
+    hit=hit && cache->key[i]==static_cast<unsigned long long>(real_bits(dir[i]));
   if(hit){
     for(int i=0;i<3;++i)result[i]=cache->local_result[i];
     *meshindex=cache->meshindex;
@@ -45,13 +46,13 @@ static __device__ __forceinline__ bool native_support_reuse_get(
 }
 
 static __device__ __forceinline__ void native_support_reuse_put(
-    NativeSupportReuse* cache,const double* dir,const double* result,int meshindex) {
+    NativeSupportReuse* cache,const real_t* dir,const real_t* result,int meshindex) {
 #if LIBERO_NATIVE_SUPPORT_REUSE
   // Failed searches, NaN directions and invalid vertices never create entries.
   if(meshindex<0)return;
   for(int i=0;i<3;++i)if(!isfinite(dir[i]) || !isfinite(result[i]))return;
   for(int i=0;i<3;++i){
-    cache->key[i]=static_cast<unsigned long long>(__double_as_longlong(dir[i]));
+    cache->key[i]=static_cast<unsigned long long>(real_bits(dir[i]));
     cache->local_result[i]=result[i];
   }
   cache->meshindex=meshindex;

@@ -21,6 +21,7 @@ an unimplemented route; a legal detector returning 0 contacts is a distinct,
 recorded outcome (the call still counts at the dispatch/mid layer).
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -32,7 +33,7 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': F
 
 MAX_RAW = 50
 RAW_F = 10
-MINVAL = wp.float64(1.0e-15)
+MINVAL = scalar.wp_real(1.0e-15)
 
 DET_NONE = 0
 DET_PLANE_SPHERE = 1
@@ -111,10 +112,10 @@ def build_route_ids() -> np.ndarray:
 
 
 @wp.func
-def _emit(raw: wp.array(dtype=wp.float64), base: wp.int32, r: wp.int32,
-          dist: wp.float64, px: wp.float64, py: wp.float64, pz: wp.float64,
-          nx: wp.float64, ny: wp.float64, nz: wp.float64,
-          tx: wp.float64, ty: wp.float64, tz: wp.float64) -> wp.int32:
+def _emit(raw: wp.array(dtype=scalar.wp_real), base: wp.int32, r: wp.int32,
+          dist: scalar.wp_real, px: scalar.wp_real, py: scalar.wp_real, pz: scalar.wp_real,
+          nx: scalar.wp_real, ny: scalar.wp_real, nz: scalar.wp_real,
+          tx: scalar.wp_real, ty: scalar.wp_real, tz: scalar.wp_real) -> wp.int32:
     if r >= MAX_RAW:
         return wp.int32(0)
     o = base + r * RAW_F
@@ -132,24 +133,24 @@ def _emit(raw: wp.array(dtype=wp.float64), base: wp.int32, r: wp.int32,
 
 
 @wp.func
-def _norm3(x: wp.float64, y: wp.float64, z: wp.float64) -> wp.float64:
+def _norm3(x: scalar.wp_real, y: scalar.wp_real, z: scalar.wp_real) -> scalar.wp_real:
     return wp.sqrt(x * x + y * y + z * z)
 
 
 @wp.func
-def _sign(x: wp.float64) -> wp.float64:
+def _sign(x: scalar.wp_real) -> scalar.wp_real:
     # mju_sign: -1 / 0 / +1 (engine_util_misc.c:757-765)
-    if x < wp.float64(0.0):
-        return wp.float64(-1.0)
-    elif x > wp.float64(0.0):
-        return wp.float64(1.0)
-    return wp.float64(0.0)
+    if x < scalar.wp_real(0.0):
+        return scalar.wp_real(-1.0)
+    elif x > scalar.wp_real(0.0):
+        return scalar.wp_real(1.0)
+    return scalar.wp_real(0.0)
 
 
 @wp.func
-def _rot(mx: wp.array(dtype=wp.float64), o: wp.int32,
-         vx: wp.float64, vy: wp.float64, vz: wp.float64,
-         out: wp.array(dtype=wp.float64), oo: wp.int32):
+def _rot(mx: wp.array(dtype=scalar.wp_real), o: wp.int32,
+         vx: scalar.wp_real, vy: scalar.wp_real, vz: scalar.wp_real,
+         out: wp.array(dtype=scalar.wp_real), oo: wp.int32):
     # mju_rotVecMat: res = row-major mat * vec
     out[oo] = mx[o] * vx + mx[o + 1] * vy + mx[o + 2] * vz
     out[oo + 1] = mx[o + 3] * vx + mx[o + 4] * vy + mx[o + 5] * vz
@@ -157,9 +158,9 @@ def _rot(mx: wp.array(dtype=wp.float64), o: wp.int32,
 
 
 @wp.func
-def _rot_t(mx: wp.array(dtype=wp.float64), o: wp.int32,
-           vx: wp.float64, vy: wp.float64, vz: wp.float64,
-           out: wp.array(dtype=wp.float64), oo: wp.int32):
+def _rot_t(mx: wp.array(dtype=scalar.wp_real), o: wp.int32,
+           vx: scalar.wp_real, vy: scalar.wp_real, vz: scalar.wp_real,
+           out: wp.array(dtype=scalar.wp_real), oo: wp.int32):
     # mju_rotVecMatT: res = row-major mat^T * vec
     out[oo] = mx[o] * vx + mx[o + 3] * vy + mx[o + 6] * vz
     out[oo + 1] = mx[o + 1] * vx + mx[o + 4] * vy + mx[o + 7] * vz
@@ -173,11 +174,11 @@ def _rot_t(mx: wp.array(dtype=wp.float64), o: wp.int32,
 
 
 @wp.func
-def _plane_sphere(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                  p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                  m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                  p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                  r2: wp.float64, margin: wp.float64) -> wp.int32:
+def _plane_sphere(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                  p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                  m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                  p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                  r2: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     nx = m1[o1 + 2]
     ny = m1[o1 + 5]
     nz = m1[o1 + 8]
@@ -185,19 +186,19 @@ def _plane_sphere(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if cdist > margin + r2:
         return wp.int32(0)
     dist = cdist - r2
-    scl = -dist * wp.float64(0.5) - r2
+    scl = -dist * scalar.wp_real(0.5) - r2
     return _emit(raw, base, 0, dist,
                  p2x + nx * scl, p2y + ny * scl, p2z + nz * scl,
-                 nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                 nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
 
 
 @wp.func
-def _sphere_sphere_r(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                     p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                     m1: wp.array(dtype=wp.float64), o1: wp.int32, r1: wp.float64,
-                     p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                     m2: wp.array(dtype=wp.float64), o2: wp.int32, r2: wp.float64,
-                     margin: wp.float64) -> wp.int32:
+def _sphere_sphere_r(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                     p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                     m1: wp.array(dtype=scalar.wp_real), o1: wp.int32, r1: scalar.wp_real,
+                     p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                     m2: wp.array(dtype=scalar.wp_real), o2: wp.int32, r2: scalar.wp_real,
+                     margin: scalar.wp_real) -> wp.int32:
     dx = p1x - p2x
     dy = p1y - p2y
     dz = p1z - p2z
@@ -222,32 +223,32 @@ def _sphere_sphere_r(raw: wp.array(dtype=wp.float64), base: wp.int32,
         fz = ax * by - ay * bx
         length = _norm3(fx, fy, fz)
         if length < MINVAL:
-            fx = wp.float64(1.0)
-            fy = wp.float64(0.0)
-            fz = wp.float64(0.0)
+            fx = scalar.wp_real(1.0)
+            fy = scalar.wp_real(0.0)
+            fz = scalar.wp_real(0.0)
         else:
-            inv = wp.float64(1.0) / length
+            inv = scalar.wp_real(1.0) / length
             fx *= inv
             fy *= inv
             fz *= inv
     else:
-        inv = wp.float64(1.0) / length
+        inv = scalar.wp_real(1.0) / length
         fx *= inv
         fy *= inv
         fz *= inv
-    scl = r1 + dist * wp.float64(0.5)
+    scl = r1 + dist * scalar.wp_real(0.5)
     return _emit(raw, base, 0, dist,
                  p1x + fx * scl, p1y + fy * scl, p1z + fz * scl,
-                 fx, fy, fz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                 fx, fy, fz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
 
 
 @wp.func
-def _plane_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                   p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                   m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                   p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                   m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                   r2: wp.float64, hl2: wp.float64, margin: wp.float64) -> wp.int32:
+def _plane_capsule(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                   p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                   m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                   p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                   m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                   r2: scalar.wp_real, hl2: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     # mjc_PlaneCapsule: two sphere-plane tests at segment endpoints, frames
     # aligned with the capsule axis (con.frame[3..5] = axis hint).
     ax = m2[o2 + 2]
@@ -284,12 +285,12 @@ def _plane_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
 
 
 @wp.func
-def _plane_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                    p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                    m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                    p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                    m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                    rad: wp.float64, hl: wp.float64, margin: wp.float64) -> wp.int32:
+def _plane_cylinder(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                    p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                    m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                    p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                    m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                    rad: scalar.wp_real, hl: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     # mjc_PlaneCylinder (engine_collision_primitive.c:97-199)
     nx = m1[o1 + 2]
     ny = m1[o1 + 5]
@@ -298,7 +299,7 @@ def _plane_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
     ay = m2[o2 + 5]
     az = m2[o2 + 8]
     prjaxis = nx * ax + ny * ay + nz * az
-    if prjaxis > wp.float64(0.0):
+    if prjaxis > scalar.wp_real(0.0):
         ax = -ax
         ay = -ay
         az = -az
@@ -331,22 +332,22 @@ def _plane_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if dist0 + prjaxis + prjvec <= margin:
         dist = dist0 + prjaxis + prjvec
         cnt = _emit(raw, base, 0, dist,
-                    p2x + vx + ax - nx * dist * wp.float64(0.5),
-                    p2y + vy + ay - ny * dist * wp.float64(0.5),
-                    p2z + vz + az - nz * dist * wp.float64(0.5),
-                    nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                    p2x + vx + ax - nx * dist * scalar.wp_real(0.5),
+                    p2y + vy + ay - ny * dist * scalar.wp_real(0.5),
+                    p2z + vz + az - nz * dist * scalar.wp_real(0.5),
+                    nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     else:
         return wp.int32(0)
     # second point
     if dist0 - prjaxis + prjvec <= margin:
         dist = dist0 - prjaxis + prjvec
         cnt += _emit(raw, base, 1, dist,
-                     p2x + vx - ax - nx * dist * wp.float64(0.5),
-                     p2y + vy - ay - ny * dist * wp.float64(0.5),
-                     p2z + vz - az - nz * dist * wp.float64(0.5),
-                     nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     p2x + vx - ax - nx * dist * scalar.wp_real(0.5),
+                     p2y + vy - ay - ny * dist * scalar.wp_real(0.5),
+                     p2z + vz - az - nz * dist * scalar.wp_real(0.5),
+                     nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     # triangle points on the side closer to the plane
-    prjvec1 = -prjvec * wp.float64(0.5)
+    prjvec1 = -prjvec * scalar.wp_real(0.5)
     if dist0 + prjaxis + prjvec1 <= margin:
         # vec1 = normalize(cross(vec, axis)) * rad * sqrt(3)/2
         # R01-29: the original always constructs both side contacts; only the
@@ -356,42 +357,42 @@ def _plane_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
         cz = vx * ay - vy * ax
         clen = _norm3(cx, cy, cz)
         if clen >= MINVAL:
-            inv = wp.float64(1.0) / clen
+            inv = scalar.wp_real(1.0) / clen
             cx *= inv
             cy *= inv
             cz *= inv
         else:
-            cx = wp.float64(1.0)
-            cy = wp.float64(0.0)
-            cz = wp.float64(0.0)
-        scl = rad * wp.sqrt(wp.float64(3.0)) * wp.float64(0.5)
+            cx = scalar.wp_real(1.0)
+            cy = scalar.wp_real(0.0)
+            cz = scalar.wp_real(0.0)
+        scl = rad * wp.sqrt(scalar.wp_real(3.0)) * scalar.wp_real(0.5)
         cx *= scl
         cy *= scl
         cz *= scl
         dist = dist0 + prjaxis + prjvec1
         # point A
         cnt += _emit(raw, base, cnt, dist,
-                     p2x + cx + ax - vx * wp.float64(0.5) - nx * dist * wp.float64(0.5),
-                     p2y + cy + ay - vy * wp.float64(0.5) - ny * dist * wp.float64(0.5),
-                     p2z + cz + az - vz * wp.float64(0.5) - nz * dist * wp.float64(0.5),
-                     nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     p2x + cx + ax - vx * scalar.wp_real(0.5) - nx * dist * scalar.wp_real(0.5),
+                     p2y + cy + ay - vy * scalar.wp_real(0.5) - ny * dist * scalar.wp_real(0.5),
+                     p2z + cz + az - vz * scalar.wp_real(0.5) - nz * dist * scalar.wp_real(0.5),
+                     nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
         # point B
         cnt += _emit(raw, base, cnt, dist,
-                     p2x - cx + ax - vx * wp.float64(0.5) - nx * dist * wp.float64(0.5),
-                     p2y - cy + ay - vy * wp.float64(0.5) - ny * dist * wp.float64(0.5),
-                     p2z - cz + az - vz * wp.float64(0.5) - nz * dist * wp.float64(0.5),
-                     nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     p2x - cx + ax - vx * scalar.wp_real(0.5) - nx * dist * scalar.wp_real(0.5),
+                     p2y - cy + ay - vy * scalar.wp_real(0.5) - ny * dist * scalar.wp_real(0.5),
+                     p2z - cz + az - vz * scalar.wp_real(0.5) - nz * dist * scalar.wp_real(0.5),
+                     nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     return cnt
 
 
 @wp.func
-def _plane_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
-               p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-               m1: wp.array(dtype=wp.float64), o1: wp.int32,
-               p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-               m2: wp.array(dtype=wp.float64), o2: wp.int32,
-               s20: wp.float64, s21: wp.float64, s22: wp.float64,
-               margin: wp.float64) -> wp.int32:
+def _plane_box(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+               p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+               m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+               p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+               m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+               s20: scalar.wp_real, s21: scalar.wp_real, s22: scalar.wp_real,
+               margin: scalar.wp_real) -> wp.int32:
     # mjc_PlaneBox: up to 4 contacts from the 8 corners below the margin,
     # skipping corners that point up (ldist > 0).
     nx = m1[o1 + 2]
@@ -413,26 +414,26 @@ def _plane_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
         cy = m2[o2 + 3] * sx + m2[o2 + 4] * sy + m2[o2 + 5] * sz
         cz = m2[o2 + 6] * sx + m2[o2 + 7] * sy + m2[o2 + 8] * sz
         ldist = nx * cx + ny * cy + nz * cz
-        if dist + ldist > margin or ldist > wp.float64(0.0):
+        if dist + ldist > margin or ldist > scalar.wp_real(0.0):
             continue
         d = dist + ldist
         cnt += _emit(raw, base, cnt, d,
-                     p2x + cx - nx * d * wp.float64(0.5),
-                     p2y + cy - ny * d * wp.float64(0.5),
-                     p2z + cz - nz * d * wp.float64(0.5),
-                     nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     p2x + cx - nx * d * scalar.wp_real(0.5),
+                     p2y + cy - ny * d * scalar.wp_real(0.5),
+                     p2z + cz - nz * d * scalar.wp_real(0.5),
+                     nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
         if cnt >= 4:
             return wp.int32(4)
     return cnt
 
 
 @wp.func
-def _sphere_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                    p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                    m1: wp.array(dtype=wp.float64), o1: wp.int32, r1: wp.float64,
-                    p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                    m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                    r2: wp.float64, hl2: wp.float64, margin: wp.float64) -> wp.int32:
+def _sphere_capsule(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                    p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                    m1: wp.array(dtype=scalar.wp_real), o1: wp.int32, r1: scalar.wp_real,
+                    p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                    m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                    r2: scalar.wp_real, hl2: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     # mjc_SphereCapsule: clip to segment, then sphere-sphere with capsule radius.
     ax = m2[o2 + 2]
     ay = m2[o2 + 5]
@@ -454,12 +455,12 @@ def _sphere_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
 
 
 @wp.func
-def _sphere_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                     p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                     m1: wp.array(dtype=wp.float64), o1: wp.int32, r1: wp.float64,
-                     p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                     m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                     rad: wp.float64, hl: wp.float64, margin: wp.float64) -> wp.int32:
+def _sphere_cylinder(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                     p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                     m1: wp.array(dtype=scalar.wp_real), o1: wp.int32, r1: scalar.wp_real,
+                     p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                     m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                     rad: scalar.wp_real, hl: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     # mjc_SphereCylinder (engine_collision_primitive.c:318-389)
     ax = m2[o2 + 2]
     ay = m2[o2 + 5]
@@ -476,7 +477,7 @@ def _sphere_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
     ppz = vz - apz
     p_proj_sqr = ppx * ppx + ppy * ppy + ppz * ppz
     absx = x
-    if absx < wp.float64(0.0):
+    if absx < scalar.wp_real(0.0):
         absx = -absx
     collide_side = absx < hl
     collide_cap = p_proj_sqr < rad * rad
@@ -493,7 +494,7 @@ def _sphere_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
                                 m2, o2, rad, margin)
     if collide_cap:
         # _PlaneSphere with the cap plane, then flip the frame normal
-        if x > wp.float64(0.0):
+        if x > scalar.wp_real(0.0):
             cx = p2x + ax * hl
             cy = p2y + ay * hl
             cz = p2z + az * hl
@@ -512,33 +513,33 @@ def _sphere_cylinder(raw: wp.array(dtype=wp.float64), base: wp.int32,
         if cdist > margin + r1:
             return wp.int32(0)
         dist = cdist - r1
-        scl = -dist * wp.float64(0.5) - r1
+        scl = -dist * scalar.wp_real(0.5) - r1
         # flip frame normal because PLANE < SPHERE < CYLINDER ordering
         return _emit(raw, base, 0, dist,
                      p1x + mnx * scl, p1y + mny * scl, p1z + mnz * scl,
                      -mnx, -mny, -mnz,
-                     wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     # corner collision: point sphere at the rim corner
     plen = wp.sqrt(p_proj_sqr)
     scale = rad / plen
     hsign = hl
-    if x <= wp.float64(0.0):
+    if x <= scalar.wp_real(0.0):
         hsign = -hl
     qx = ppx * scale + ax * hsign + p2x
     qy = ppy * scale + ay * hsign + p2y
     qz = ppz * scale + az * hsign + p2z
     return _sphere_sphere_r(raw, base, p1x, p1y, p1z, m1, o1, r1,
-                            qx, qy, qz, m2, o2, wp.float64(0.0), margin)
+                            qx, qy, qz, m2, o2, scalar.wp_real(0.0), margin)
 
 
 @wp.func
-def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                m1: wp.array(dtype=wp.float64), o1: wp.int32, r1: wp.float64,
-                p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                s20: wp.float64, s21: wp.float64, s22: wp.float64,
-                margin: wp.float64) -> wp.int32:
+def _sphere_box(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                m1: wp.array(dtype=scalar.wp_real), o1: wp.int32, r1: scalar.wp_real,
+                p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                s20: scalar.wp_real, s21: scalar.wp_real, s22: scalar.wp_real,
+                margin: scalar.wp_real) -> wp.int32:
     # _SphereBox (engine_collision_box.c:39-94)
     tx = p1x - p2x
     ty = p1y - p2y
@@ -549,19 +550,19 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
     cz = m2[o2 + 2] * tx + m2[o2 + 5] * ty + m2[o2 + 8] * tz
     # clamp center to box (mju_clampVec: clamp only where limit[i] > 0)
     clx = cx
-    if s20 > wp.float64(0.0):
+    if s20 > scalar.wp_real(0.0):
         if clx > s20:
             clx = s20
         elif clx < -s20:
             clx = -s20
     cly = cy
-    if s21 > wp.float64(0.0):
+    if s21 > scalar.wp_real(0.0):
         if cly > s21:
             cly = s21
         elif cly < -s21:
             cly = -s21
     clz = cz
-    if s22 > wp.float64(0.0):
+    if s22 > scalar.wp_real(0.0):
         if clz > s22:
             clz = s22
         elif clz < -s22:
@@ -574,13 +575,13 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
         return wp.int32(0)
     if dist <= MINVAL:
         # sphere center inside the box: nearest face
-        closest = (s20 + s21 + s22) * wp.float64(2.0)
+        closest = (s20 + s21 + s22) * scalar.wp_real(2.0)
         k = wp.int32(0)
         for i in range(6):
             axis = i // 2
-            sign = wp.float64(-1.0)
+            sign = scalar.wp_real(-1.0)
             if (i % 2) == 1:
-                sign = wp.float64(1.0)
+                sign = scalar.wp_real(1.0)
             sz = s20
             if axis == 1:
                 sz = s21
@@ -592,17 +593,17 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
             elif axis == 2:
                 cval = cz
             gap = sign * sz - cval
-            if gap < wp.float64(0.0):
+            if gap < scalar.wp_real(0.0):
                 gap = -gap
             if closest > gap:
                 closest = gap
                 k = i
-        nnx = wp.float64(0.0)
-        nny = wp.float64(0.0)
-        nnz = wp.float64(0.0)
-        sgn = wp.float64(1.0)
+        nnx = scalar.wp_real(0.0)
+        nny = scalar.wp_real(0.0)
+        nnz = scalar.wp_real(0.0)
+        sgn = scalar.wp_real(1.0)
         if (k % 2) == 1:
-            sgn = wp.float64(-1.0)
+            sgn = scalar.wp_real(-1.0)
         axis = k // 2
         if axis == 0:
             nnx = sgn
@@ -611,7 +612,7 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
         else:
             nnz = sgn
         # pos = center + nearest * (r1 - closest) / 2
-        scl = (r1 - closest) * wp.float64(0.5)
+        scl = (r1 - closest) * scalar.wp_real(0.5)
         px = cx + nnx * scl
         py = cy + nny * scl
         pz = cz + nnz * scl
@@ -624,9 +625,9 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
         wy = m2[o2 + 3] * px + m2[o2 + 4] * py + m2[o2 + 5] * pz + p2y
         wz = m2[o2 + 6] * px + m2[o2 + 7] * py + m2[o2 + 8] * pz + p2z
         return _emit(raw, base, 0, dist - r1, wx, wy, wz, fx, fy, fz,
-                     wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                     scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     # normalize the clamp direction
-    inv = wp.float64(1.0) / dist
+    inv = scalar.wp_real(1.0) / dist
     ux = nx * inv
     uy = ny * inv
     uz = nz * inv
@@ -636,9 +637,9 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
     dx = cx + ux * r1
     dy = cy + uy * r1
     dz = cz + uz * r1
-    px = clx * wp.float64(0.5) + dx * wp.float64(0.5)
-    py = cly * wp.float64(0.5) + dy * wp.float64(0.5)
-    pz = clz * wp.float64(0.5) + dz * wp.float64(0.5)
+    px = clx * scalar.wp_real(0.5) + dx * scalar.wp_real(0.5)
+    py = cly * scalar.wp_real(0.5) + dy * scalar.wp_real(0.5)
+    pz = clz * scalar.wp_real(0.5) + dz * scalar.wp_real(0.5)
     fx = m2[o2] * ux + m2[o2 + 1] * uy + m2[o2 + 2] * uz
     fy = m2[o2 + 3] * ux + m2[o2 + 4] * uy + m2[o2 + 5] * uz
     fz = m2[o2 + 6] * ux + m2[o2 + 7] * uy + m2[o2 + 8] * uz
@@ -646,17 +647,17 @@ def _sphere_box(raw: wp.array(dtype=wp.float64), base: wp.int32,
     wy = m2[o2 + 3] * px + m2[o2 + 4] * py + m2[o2 + 5] * pz + p2y
     wz = m2[o2 + 6] * px + m2[o2 + 7] * py + m2[o2 + 8] * pz + p2z
     return _emit(raw, base, 0, dist - r1, wx, wy, wz, fx, fy, fz,
-                 wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                 scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
 
 
 @wp.func
-def _capsule_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                     p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                     m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                     r1: wp.float64, hl1: wp.float64,
-                     p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                     m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                     r2: wp.float64, hl2: wp.float64, margin: wp.float64) -> wp.int32:
+def _capsule_capsule(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                     p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                     m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                     r1: scalar.wp_real, hl1: scalar.wp_real,
+                     p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                     m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                     r2: scalar.wp_real, hl2: scalar.wp_real, margin: scalar.wp_real) -> wp.int32:
     # mjc_CapsuleCapsule (engine_collision_primitive.c:392-485)
     a1x = m1[o1 + 2] * hl1
     a1y = m1[o1 + 5] * hl1
@@ -677,26 +678,26 @@ def _capsule_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if wp.abs(det) >= MINVAL:
         x1 = (mc * u - mb * v) / det
         x2 = (ma * v - mb * u) / det
-        if x1 > wp.float64(1.0):
-            x1 = wp.float64(1.0)
+        if x1 > scalar.wp_real(1.0):
+            x1 = scalar.wp_real(1.0)
             x2 = (v - mb) / mc
-        elif x1 < wp.float64(-1.0):
-            x1 = wp.float64(-1.0)
+        elif x1 < scalar.wp_real(-1.0):
+            x1 = scalar.wp_real(-1.0)
             x2 = (v + mb) / mc
-        if x2 > wp.float64(1.0):
-            x2 = wp.float64(1.0)
+        if x2 > scalar.wp_real(1.0):
+            x2 = scalar.wp_real(1.0)
             x1 = (u - mb) / ma
-            if x1 > wp.float64(1.0):
-                x1 = wp.float64(1.0)
-            elif x1 < wp.float64(-1.0):
-                x1 = wp.float64(-1.0)
-        elif x2 < wp.float64(-1.0):
-            x2 = wp.float64(-1.0)
+            if x1 > scalar.wp_real(1.0):
+                x1 = scalar.wp_real(1.0)
+            elif x1 < scalar.wp_real(-1.0):
+                x1 = scalar.wp_real(-1.0)
+        elif x2 < scalar.wp_real(-1.0):
+            x2 = scalar.wp_real(-1.0)
             x1 = (u + mb) / ma
-            if x1 > wp.float64(1.0):
-                x1 = wp.float64(1.0)
-            elif x1 < wp.float64(-1.0):
-                x1 = wp.float64(-1.0)
+            if x1 > scalar.wp_real(1.0):
+                x1 = scalar.wp_real(1.0)
+            elif x1 < scalar.wp_real(-1.0):
+                x1 = scalar.wp_real(-1.0)
         return _sphere_sphere_r(raw, base,
                                 p1x + a1x * x1, p1y + a1y * x1, p1z + a1z * x1,
                                 m1, o1, r1,
@@ -704,19 +705,19 @@ def _capsule_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
                                 m2, o2, r2, margin)
     # parallel axes: four candidate endpoint tests
     x2 = (v - mb) / mc
-    if x2 > wp.float64(1.0):
-        x2 = wp.float64(1.0)
-    elif x2 < wp.float64(-1.0):
-        x2 = wp.float64(-1.0)
+    if x2 > scalar.wp_real(1.0):
+        x2 = scalar.wp_real(1.0)
+    elif x2 < scalar.wp_real(-1.0):
+        x2 = scalar.wp_real(-1.0)
     n1 = _sphere_sphere_r(raw, base,
                           p1x + a1x, p1y + a1y, p1z + a1z, m1, o1, r1,
                           p2x + a2x * x2, p2y + a2y * x2, p2z + a2z * x2,
                           m2, o2, r2, margin)
     x2 = (v + mb) / mc
-    if x2 > wp.float64(1.0):
-        x2 = wp.float64(1.0)
-    elif x2 < wp.float64(-1.0):
-        x2 = wp.float64(-1.0)
+    if x2 > scalar.wp_real(1.0):
+        x2 = scalar.wp_real(1.0)
+    elif x2 < scalar.wp_real(-1.0):
+        x2 = scalar.wp_real(-1.0)
     n2 = wp.int32(0)
     if n1 + n2 < 2:
         n2 = _sphere_sphere_r(raw, base + n1 * RAW_F,
@@ -726,10 +727,10 @@ def _capsule_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if n1 + n2 >= 2:
         return n1 + n2
     x1 = (u - mb) / ma
-    if x1 > wp.float64(1.0):
-        x1 = wp.float64(1.0)
-    elif x1 < wp.float64(-1.0):
-        x1 = wp.float64(-1.0)
+    if x1 > scalar.wp_real(1.0):
+        x1 = scalar.wp_real(1.0)
+    elif x1 < scalar.wp_real(-1.0):
+        x1 = scalar.wp_real(-1.0)
     n3 = wp.int32(0)
     if n1 + n2 < 2:
         n3 = _sphere_sphere_r(raw, base + (n1 + n2) * RAW_F,
@@ -739,10 +740,10 @@ def _capsule_capsule(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if n1 + n2 + n3 >= 2:
         return n1 + n2 + n3
     x1 = (u + mb) / ma
-    if x1 > wp.float64(1.0):
-        x1 = wp.float64(1.0)
-    elif x1 < wp.float64(-1.0):
-        x1 = wp.float64(-1.0)
+    if x1 > scalar.wp_real(1.0):
+        x1 = scalar.wp_real(1.0)
+    elif x1 < scalar.wp_real(-1.0):
+        x1 = scalar.wp_real(-1.0)
     n4 = wp.int32(0)
     if n1 + n2 + n3 < 2:
         n4 = _sphere_sphere_r(raw, base + (n1 + n2 + n3) * RAW_F,
@@ -759,7 +760,7 @@ def _mesh_support(mesh_vert: wp.array(dtype=wp.float32),
                   mesh_graphadr: wp.array(dtype=wp.int32),
                   mesh_graph: wp.array(dtype=wp.int32),
                   mid: wp.int32,
-                  dx: wp.float64, dy: wp.float64, dz: wp.float64,
+                  dx: scalar.wp_real, dy: scalar.wp_real, dz: scalar.wp_real,
                   scratch: wp.array(dtype=wp.int32), so: wp.int32) -> wp.int32:
     """Support vertex local index of mesh mid in local direction (d).
 
@@ -770,11 +771,11 @@ def _mesh_support(mesh_vert: wp.array(dtype=wp.float32),
     num = mesh_vertnum[mid]
     ga = mesh_graphadr[mid]
     best = wp.int32(-1)
-    tmp = wp.float64(-1.0e10)
+    tmp = scalar.wp_real(-1.0e10)
     if ga < 0:
         for ii in range(num):
             vi = 3 * (adr + ii)
-            vdot = dx * wp.float64(mesh_vert[vi]) + dy * wp.float64(mesh_vert[vi + 1]) + dz * wp.float64(mesh_vert[vi + 2])
+            vdot = dx * scalar.wp_real(mesh_vert[vi]) + dy * scalar.wp_real(mesh_vert[vi + 1]) + dz * scalar.wp_real(mesh_vert[vi + 2])
             if vdot > tmp:
                 tmp = vdot
                 best = ii
@@ -784,7 +785,7 @@ def _mesh_support(mesh_vert: wp.array(dtype=wp.float32),
     cur = wp.int32(0)
     g0 = mesh_graph[ga + 2 + nv]
     vi = 3 * (adr + g0)
-    tmp = dx * wp.float64(mesh_vert[vi]) + dy * wp.float64(mesh_vert[vi + 1]) + dz * wp.float64(mesh_vert[vi + 2])
+    tmp = dx * scalar.wp_real(mesh_vert[vi]) + dy * scalar.wp_real(mesh_vert[vi + 1]) + dz * scalar.wp_real(mesh_vert[vi + 2])
     best = wp.int32(0)
     change = wp.int32(1)
     steps = wp.int32(0)
@@ -798,7 +799,7 @@ def _mesh_support(mesh_vert: wp.array(dtype=wp.float32),
         while loc >= 0:
             gi = mesh_graph[ga + 2 + nv + loc]
             vi2 = 3 * (adr + gi)
-            vdot = dx * wp.float64(mesh_vert[vi2]) + dy * wp.float64(mesh_vert[vi2 + 1]) + dz * wp.float64(mesh_vert[vi2 + 2])
+            vdot = dx * scalar.wp_real(mesh_vert[vi2]) + dy * scalar.wp_real(mesh_vert[vi2 + 1]) + dz * scalar.wp_real(mesh_vert[vi2 + 2])
             if vdot > tmp:
                 tmp = vdot
                 cur = loc
@@ -810,21 +811,21 @@ def _mesh_support(mesh_vert: wp.array(dtype=wp.float32),
 
 
 @wp.func
-def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
-                  p1x: wp.float64, p1y: wp.float64, p1z: wp.float64,
-                  m1: wp.array(dtype=wp.float64), o1: wp.int32,
-                  p2x: wp.float64, p2y: wp.float64, p2z: wp.float64,
-                  m2: wp.array(dtype=wp.float64), o2: wp.int32,
-                  s20: wp.float64, s21: wp.float64, s22: wp.float64,
+def _plane_convex(raw: wp.array(dtype=scalar.wp_real), base: wp.int32,
+                  p1x: scalar.wp_real, p1y: scalar.wp_real, p1z: scalar.wp_real,
+                  m1: wp.array(dtype=scalar.wp_real), o1: wp.int32,
+                  p2x: scalar.wp_real, p2y: scalar.wp_real, p2z: scalar.wp_real,
+                  m2: wp.array(dtype=scalar.wp_real), o2: wp.int32,
+                  s20: scalar.wp_real, s21: scalar.wp_real, s22: scalar.wp_real,
                   t2: wp.int32, d2: wp.int32,
                   mesh_vert: wp.array(dtype=wp.float32),
                   mesh_vertadr: wp.array(dtype=wp.int32),
                   mesh_vertnum: wp.array(dtype=wp.int32),
                   mesh_graphadr: wp.array(dtype=wp.int32),
                   mesh_graph: wp.array(dtype=wp.int32),
-                  rbound2: wp.float64,
+                  rbound2: scalar.wp_real,
                   scratch: wp.array(dtype=wp.int32), so: wp.int32,
-                  margin: wp.float64) -> wp.int32:
+                  margin: scalar.wp_real) -> wp.int32:
     """mjc_PlaneConvex: support contact plus up to 3 extra mesh vertices.
 
     Ellipsoid (dataid < 0) returns exactly the support contact. Mesh extra
@@ -838,9 +839,9 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
     ldx = -(m2[o2] * nx + m2[o2 + 3] * ny + m2[o2 + 6] * nz)
     ldy = -(m2[o2 + 1] * nx + m2[o2 + 4] * ny + m2[o2 + 7] * nz)
     ldz = -(m2[o2 + 2] * nx + m2[o2 + 5] * ny + m2[o2 + 8] * nz)
-    sx = wp.float64(0.0)
-    sy = wp.float64(0.0)
-    sz = wp.float64(0.0)
+    sx = scalar.wp_real(0.0)
+    sy = scalar.wp_real(0.0)
+    sz = scalar.wp_real(0.0)
     best_local = wp.int32(-1)
     if t2 == 4:
         # ellipsoid support: res_i = dir_i*size_i; mju_normalize3(res) (with
@@ -850,15 +851,15 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
         rz = ldz * s22
         nlen = _norm3(rx, ry, rz)
         if nlen >= MINVAL:
-            inv = wp.float64(1.0) / nlen
+            inv = scalar.wp_real(1.0) / nlen
             rx *= inv
             ry *= inv
             rz *= inv
         else:
             # mju_normalize3 fallback: (1,0,0), then res_i *= size_i
-            rx = wp.float64(1.0)
-            ry = wp.float64(0.0)
-            rz = wp.float64(0.0)
+            rx = scalar.wp_real(1.0)
+            ry = scalar.wp_real(0.0)
+            rz = scalar.wp_real(0.0)
         sx = rx * s20
         sy = ry * s21
         sz = rz * s22
@@ -880,9 +881,9 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
                 # for vert_edgeadr access is the one _mesh_support stored.
                 best_local = scratch[so]
                 vi = 3 * (mesh_vertadr[d2] + best)
-                sx = wp.float64(mesh_vert[vi])
-                sy = wp.float64(mesh_vert[vi + 1])
-                sz = wp.float64(mesh_vert[vi + 2])
+                sx = scalar.wp_real(mesh_vert[vi])
+                sy = scalar.wp_real(mesh_vert[vi + 1])
+                sz = scalar.wp_real(mesh_vert[vi + 2])
     elif t2 == 6:
         # box support in local direction
         sx = _sign(ldx) * s20
@@ -908,15 +909,15 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
     if dist > margin:
         return wp.int32(0)
     cnt = _emit(raw, base, 0, dist,
-                wx - nx * dist * wp.float64(0.5),
-                wy - ny * dist * wp.float64(0.5),
-                wz - nz * dist * wp.float64(0.5),
-                nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                wx - nx * dist * scalar.wp_real(0.5),
+                wy - ny * dist * scalar.wp_real(0.5),
+                wz - nz * dist * scalar.wp_real(0.5),
+                nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
     # extra mesh vertices below the margin (maxplanemesh = 3)
     if t2 != 7 or d2 < 0:
         return cnt
     maxplanemesh = 3
-    tolplanemesh = wp.float64(0.3)
+    tolplanemesh = scalar.wp_real(0.3)
     # threshold along locdir relative to geom2 center
     threshold = (p2x - p1x) * nx + (p2y - p1y) * ny + (p2z - p1z) * nz - margin
     ga = mesh_graphadr[d2]
@@ -936,12 +937,12 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
             if i == best_local:
                 continue
             vi = 3 * (adr + i)
-            vdot = ldx * wp.float64(mesh_vert[vi]) + ldy * wp.float64(mesh_vert[vi + 1]) + ldz * wp.float64(mesh_vert[vi + 2])
+            vdot = ldx * scalar.wp_real(mesh_vert[vi]) + ldy * scalar.wp_real(mesh_vert[vi + 1]) + ldz * scalar.wp_real(mesh_vert[vi + 2])
             if vdot > threshold:
                 # addplanemesh: world point, skip if too close to first contact
-                px = m2[o2] * wp.float64(mesh_vert[vi]) + m2[o2 + 1] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 2] * wp.float64(mesh_vert[vi + 2]) + p2x
-                py = m2[o2 + 3] * wp.float64(mesh_vert[vi]) + m2[o2 + 4] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 5] * wp.float64(mesh_vert[vi + 2]) + p2y
-                pz = m2[o2 + 6] * wp.float64(mesh_vert[vi]) + m2[o2 + 7] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 8] * wp.float64(mesh_vert[vi + 2]) + p2z
+                px = m2[o2] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 1] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 2] * scalar.wp_real(mesh_vert[vi + 2]) + p2x
+                py = m2[o2 + 3] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 4] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 5] * scalar.wp_real(mesh_vert[vi + 2]) + p2y
+                pz = m2[o2 + 6] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 7] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 8] * scalar.wp_real(mesh_vert[vi + 2]) + p2z
                 ddx = px - firstx
                 ddy = py - firsty
                 ddz = pz - firstz
@@ -949,10 +950,10 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
                     continue
                 d2i = (px - p1x) * nx + (py - p1y) * ny + (pz - p1z) * nz
                 cnt += _emit(raw, base, cnt, d2i,
-                             px - nx * d2i * wp.float64(0.5),
-                             py - ny * d2i * wp.float64(0.5),
-                             pz - nz * d2i * wp.float64(0.5),
-                             nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                             px - nx * d2i * scalar.wp_real(0.5),
+                             py - ny * d2i * scalar.wp_real(0.5),
+                             pz - nz * d2i * scalar.wp_real(0.5),
+                             nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
         return cnt
     # graph neighborhood of the best vertex (local hull id, R01-27)
     nv = mesh_graph[ga]
@@ -961,21 +962,21 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
     while loc >= 0 and cnt < maxplanemesh:
         gi = mesh_graph[ga + 2 + nv + loc]
         vi = 3 * (adr + gi)
-        vdot = ldx * wp.float64(mesh_vert[vi]) + ldy * wp.float64(mesh_vert[vi + 1]) + ldz * wp.float64(mesh_vert[vi + 2])
+        vdot = ldx * scalar.wp_real(mesh_vert[vi]) + ldy * scalar.wp_real(mesh_vert[vi + 1]) + ldz * scalar.wp_real(mesh_vert[vi + 2])
         if vdot > threshold:
-            px = m2[o2] * wp.float64(mesh_vert[vi]) + m2[o2 + 1] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 2] * wp.float64(mesh_vert[vi + 2]) + p2x
-            py = m2[o2 + 3] * wp.float64(mesh_vert[vi]) + m2[o2 + 4] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 5] * wp.float64(mesh_vert[vi + 2]) + p2y
-            pz = m2[o2 + 6] * wp.float64(mesh_vert[vi]) + m2[o2 + 7] * wp.float64(mesh_vert[vi + 1]) + m2[o2 + 8] * wp.float64(mesh_vert[vi + 2]) + p2z
+            px = m2[o2] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 1] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 2] * scalar.wp_real(mesh_vert[vi + 2]) + p2x
+            py = m2[o2 + 3] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 4] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 5] * scalar.wp_real(mesh_vert[vi + 2]) + p2y
+            pz = m2[o2 + 6] * scalar.wp_real(mesh_vert[vi]) + m2[o2 + 7] * scalar.wp_real(mesh_vert[vi + 1]) + m2[o2 + 8] * scalar.wp_real(mesh_vert[vi + 2]) + p2z
             ddx = px - firstx
             ddy = py - firsty
             ddz = pz - firstz
             if wp.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) >= tolplanemesh * rbound2:
                 d2i = (px - p1x) * nx + (py - p1y) * ny + (pz - p1z) * nz
                 cnt += _emit(raw, base, cnt, d2i,
-                             px - nx * d2i * wp.float64(0.5),
-                             py - ny * d2i * wp.float64(0.5),
-                             pz - nz * d2i * wp.float64(0.5),
-                             nx, ny, nz, wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+                             px - nx * d2i * scalar.wp_real(0.5),
+                             py - ny * d2i * scalar.wp_real(0.5),
+                             pz - nz * d2i * scalar.wp_real(0.5),
+                             nx, ny, nz, scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
         ei += 1
         loc = mesh_graph[ga + 2 + 2 * nv + ei]
     return cnt
@@ -985,23 +986,23 @@ def _plane_convex(raw: wp.array(dtype=wp.float64), base: wp.int32,
 def _detect_kernel(
         call_g1: wp.array(dtype=wp.int32), call_g2: wp.array(dtype=wp.int32),
         call_type1: wp.array(dtype=wp.int32), call_type2: wp.array(dtype=wp.int32),
-        call_margin: wp.array(dtype=wp.float64), call_count: wp.array(dtype=wp.int32),
+        call_margin: wp.array(dtype=scalar.wp_real), call_count: wp.array(dtype=wp.int32),
         active: wp.array(dtype=wp.int32),
-        xpos: wp.array(dtype=wp.float64), xmat: wp.array(dtype=wp.float64),
-        geom_size: wp.array(dtype=wp.float64), geom_dataid: wp.array(dtype=wp.int32),
-        geom_rbound: wp.array(dtype=wp.float64),
+        xpos: wp.array(dtype=scalar.wp_real), xmat: wp.array(dtype=scalar.wp_real),
+        geom_size: wp.array(dtype=scalar.wp_real), geom_dataid: wp.array(dtype=wp.int32),
+        geom_rbound: wp.array(dtype=scalar.wp_real),
         mesh_vert: wp.array(dtype=wp.float32), mesh_vertadr: wp.array(dtype=wp.int32),
         mesh_vertnum: wp.array(dtype=wp.int32), mesh_graphadr: wp.array(dtype=wp.int32),
         mesh_graph: wp.array(dtype=wp.int32),
         route_id: wp.array(dtype=wp.int32),
-        raw: wp.array(dtype=wp.float64), raw_count: wp.array(dtype=wp.int32),
+        raw: wp.array(dtype=scalar.wp_real), raw_count: wp.array(dtype=wp.int32),
         det_status: wp.array(dtype=wp.int32), scratch_i: wp.array(dtype=wp.int32),
-        scratch_f: wp.array(dtype=wp.float64),
-        native_raw: wp.array(dtype=wp.float64), native_count: wp.array(dtype=wp.int32),
-        native_status: wp.array(dtype=wp.int32), native_frame0: wp.array(dtype=wp.float64),
+        scratch_f: wp.array(dtype=scalar.wp_real),
+        native_raw: wp.array(dtype=scalar.wp_real), native_count: wp.array(dtype=wp.int32),
+        native_status: wp.array(dtype=wp.int32), native_frame0: wp.array(dtype=scalar.wp_real),
         native_framewritten: wp.array(dtype=wp.int32),
-        native_diag: wp.array(dtype=wp.int32), raw_bits: wp.array(dtype=wp.uint64),
-        native_raw_bits: wp.array(dtype=wp.uint64), native_frame0_bits: wp.array(dtype=wp.uint64),
+        native_diag: wp.array(dtype=wp.int32), raw_bits: wp.array(dtype=scalar.wp_bits),
+        native_raw_bits: wp.array(dtype=scalar.wp_bits), native_frame0_bits: wp.array(dtype=scalar.wp_bits),
         multiccd: int,
         fe_stage: wp.array(dtype=wp.int32), fe_code: wp.array(dtype=wp.int32),
         fe_item: wp.array(dtype=wp.int32),
@@ -1197,7 +1198,7 @@ def _detect_kernel(
                     # The preceding copy and held-float relations accept
                     # numeric equality. Actual forbidden stores and physical
                     # alias identity require independent evidence.
-                    if k >= 3 and native_frame0[slot * 6 + k] != wp.float64(0.0):
+                    if k >= 3 and native_frame0[slot * 6 + k] != scalar.wp_real(0.0):
                         invalid = 1
             if invalid != 0:
                 det_status[slot] = 8
@@ -1246,11 +1247,11 @@ class DetectorWorkspace:
             return np.ascontiguousarray(a).ravel()
 
         self.geom_size = wp.array(exact('geom_size', np.float64, (self.ngeom, 3)),
-                                 dtype=wp.float64, device=device)
+                                 dtype=scalar.wp_real, device=device)
         self.geom_dataid = wp.array(exact('geom_dataid', np.int32, (self.ngeom,)),
                                    dtype=wp.int32, device=device)
         self.geom_rbound = wp.array(exact('geom_rbound', np.float64, (self.ngeom,)),
-                                   dtype=wp.float64, device=device)
+                                   dtype=scalar.wp_real, device=device)
         nvert = len(static['mesh_vert'])
         ngraph = len(static['mesh_graph'])
         nmesh = len(static['mesh_vertadr'])
@@ -1282,25 +1283,25 @@ class DetectorWorkspace:
         self.call_g2 = wp.zeros(n, dtype=wp.int32, device=device)
         self.call_type1 = wp.zeros(n, dtype=wp.int32, device=device)
         self.call_type2 = wp.zeros(n, dtype=wp.int32, device=device)
-        self.call_margin = wp.zeros(n, dtype=wp.float64, device=device)
+        self.call_margin = wp.zeros(n, dtype=scalar.wp_real, device=device)
         self.call_count = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.active = wp.zeros(nworld, dtype=wp.int32, device=device)
-        self.xpos = wp.zeros(nworld * self.ngeom * 3, dtype=wp.float64, device=device)
-        self.xmat = wp.zeros(nworld * self.ngeom * 9, dtype=wp.float64, device=device)
-        self.raw = wp.zeros(n * MAX_RAW * RAW_F, dtype=wp.float64, device=device)
+        self.xpos = wp.zeros(nworld * self.ngeom * 3, dtype=scalar.wp_real, device=device)
+        self.xmat = wp.zeros(nworld * self.ngeom * 9, dtype=scalar.wp_real, device=device)
+        self.raw = wp.zeros(n * MAX_RAW * RAW_F, dtype=scalar.wp_real, device=device)
         self.raw_count = wp.zeros(n, dtype=wp.int32, device=device)
         self.det_status = wp.zeros(n, dtype=wp.int32, device=device)
-        self.native_raw = wp.zeros(n * MAX_RAW * RAW_F, dtype=wp.float64, device=device)
+        self.native_raw = wp.zeros(n * MAX_RAW * RAW_F, dtype=scalar.wp_real, device=device)
         self.native_count = wp.zeros(n, dtype=wp.int32, device=device)
         self.native_status = wp.zeros(n, dtype=wp.int32, device=device)
         self.native_diag = wp.zeros(n * 16, dtype=wp.int32, device=device)
-        self.native_frame0 = wp.zeros(n * 6, dtype=wp.float64, device=device)
+        self.native_frame0 = wp.zeros(n * 6, dtype=scalar.wp_real, device=device)
         self.native_framewritten = wp.zeros(n, dtype=wp.int32, device=device)
-        self.raw_bits = self.raw.view(wp.uint64)
-        self.native_raw_bits = self.native_raw.view(wp.uint64)
-        self.native_frame0_bits = self.native_frame0.view(wp.uint64)
+        self.raw_bits = self.raw.view(scalar.wp_bits)
+        self.native_raw_bits = self.native_raw.view(scalar.wp_bits)
+        self.native_frame0_bits = self.native_frame0.view(scalar.wp_bits)
         self.scratch_i = wp.zeros(n, dtype=wp.int32, device=device)
-        self.scratch_f = wp.zeros(n * 64, dtype=wp.float64, device=device)
+        self.scratch_f = wp.zeros(n * 64, dtype=scalar.wp_real, device=device)
         self.fe_stage = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.fe_code = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.fe_item = wp.zeros(nworld, dtype=wp.int32, device=device)

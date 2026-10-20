@@ -4,6 +4,7 @@ This module binds handwritten functions; it translates no numerical arithmetic.
 The Newton POTRF/TRSM matrix workspace is dead after final publication and is
 reused by post. Recovery and Euler retain the reset-forward global boundary.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import re
@@ -53,11 +54,11 @@ def prepare(bundle):
     arguments = [('post_work', None)]
     aliases = []
     for (declaration, name), value in zip(parameters[1:], values):
-        if isinstance(value, wp.array) and value.dtype not in (wp.float64, wp.int32, wp.int64):
-            if 'double*' not in declaration.replace(' ', ''):
+        if isinstance(value, wp.array) and value.dtype not in (scalar.wp_real, wp.int32, wp.int64):
+            if 'real_t*' not in declaration.replace(' ', ''):
                 raise TypeError(('unsupported tail vector ABI', name, value.dtype))
             count = value.size * wp.types.type_size_in_bytes(value.dtype) // 8
-            value = wp.array(ptr=value.ptr, dtype=wp.float64, shape=(count,),
+            value = wp.array(ptr=value.ptr, dtype=scalar.wp_real, shape=(count,),
                              device=value.device, copy=False)
             aliases.append(value)
         arguments.append((name, value))

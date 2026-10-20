@@ -23,6 +23,7 @@ and every node matches the source expression graph up to documented rounding
 budgets.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import warp as wp
 
@@ -99,34 +100,34 @@ def _assemble(
     s01_status: wp.array(dtype=wp.int32),
     nf: wp.array(dtype=wp.int32), nlimit: wp.array(dtype=wp.int32),
     ncon: wp.array(dtype=wp.int32),
-    s02_friction_J: wp.array(dtype=wp.float64),
-    s02_friction_pos: wp.array(dtype=wp.float64),
-    s02_friction_margin: wp.array(dtype=wp.float64),
-    s02_friction_loss: wp.array(dtype=wp.float64),
+    s02_friction_J: wp.array(dtype=scalar.wp_real),
+    s02_friction_pos: wp.array(dtype=scalar.wp_real),
+    s02_friction_margin: wp.array(dtype=scalar.wp_real),
+    s02_friction_loss: wp.array(dtype=scalar.wp_real),
     s02_friction_type: wp.array(dtype=wp.int32),
     s02_friction_id: wp.array(dtype=wp.int32),
-    s02_limit_J: wp.array(dtype=wp.float64),
-    s02_limit_pos: wp.array(dtype=wp.float64),
-    s02_limit_margin: wp.array(dtype=wp.float64),
-    s02_limit_loss: wp.array(dtype=wp.float64),
+    s02_limit_J: wp.array(dtype=scalar.wp_real),
+    s02_limit_pos: wp.array(dtype=scalar.wp_real),
+    s02_limit_margin: wp.array(dtype=scalar.wp_real),
+    s02_limit_loss: wp.array(dtype=scalar.wp_real),
     s02_limit_type: wp.array(dtype=wp.int32),
     s02_limit_id: wp.array(dtype=wp.int32),
     s01_rowstart: wp.array2d(dtype=wp.int32),
     s01_local_count: wp.array(dtype=wp.int32),
     s01_dim: wp.array2d(dtype=wp.int32),
     s01_exclude: wp.array2d(dtype=wp.int32),
-    s01_J: wp.array3d(dtype=wp.float64),
-    s01_pos: wp.array2d(dtype=wp.float64),
-    s01_margin: wp.array2d(dtype=wp.float64),
-    s01_loss: wp.array2d(dtype=wp.float64),
+    s01_J: wp.array3d(dtype=scalar.wp_real),
+    s01_pos: wp.array2d(dtype=scalar.wp_real),
+    s01_margin: wp.array2d(dtype=scalar.wp_real),
+    s01_loss: wp.array2d(dtype=scalar.wp_real),
     s01_type: wp.array2d(dtype=wp.int32),
     s01_id: wp.array2d(dtype=wp.int32),
-    efc_J: wp.array(dtype=wp.float64),
+    efc_J: wp.array(dtype=scalar.wp_real),
     efc_type: wp.array(dtype=wp.int32),
     efc_id: wp.array(dtype=wp.int32),
-    efc_pos: wp.array(dtype=wp.float64),
-    efc_margin: wp.array(dtype=wp.float64),
-    efc_frictionloss: wp.array(dtype=wp.float64),
+    efc_pos: wp.array(dtype=scalar.wp_real),
+    efc_margin: wp.array(dtype=scalar.wp_real),
+    efc_frictionloss: wp.array(dtype=scalar.wp_real),
     counts: wp.array(dtype=wp.int32),
     ne_flat: wp.array(dtype=wp.int32),
     nf_flat: wp.array(dtype=wp.int32),
@@ -273,10 +274,10 @@ def _prediag(
     geom2: wp.array2d(dtype=wp.int32),
     dim: wp.array2d(dtype=wp.int32),
     geom_body: wp.array(dtype=wp.int32),
-    body_inv: wp.array(dtype=wp.float64),
-    dof_inv: wp.array(dtype=wp.float64),
+    body_inv: wp.array(dtype=scalar.wp_real),
+    dof_inv: wp.array(dtype=scalar.wp_real),
     jnt_dofadr: wp.array(dtype=wp.int32),
-    prediag: wp.array(dtype=wp.float64),
+    prediag: wp.array(dtype=scalar.wp_real),
     status: wp.array(dtype=wp.int32),
     rows: int, nv: int, njnt: int,
 ):
@@ -337,14 +338,14 @@ def _prediag(
 def _reference(
     committed: wp.array(dtype=wp.int32),
     counts: wp.array(dtype=wp.int32),
-    efc_J: wp.array(dtype=wp.float64),
-    kbip: wp.array(dtype=wp.float64),
-    efc_pos: wp.array(dtype=wp.float64),
-    efc_margin: wp.array(dtype=wp.float64),
-    qvel: wp.array(dtype=wp.float64),
+    efc_J: wp.array(dtype=scalar.wp_real),
+    kbip: wp.array(dtype=scalar.wp_real),
+    efc_pos: wp.array(dtype=scalar.wp_real),
+    efc_margin: wp.array(dtype=scalar.wp_real),
+    qvel: wp.array(dtype=scalar.wp_real),
     qvel_epoch: wp.array(dtype=wp.int64),
-    vel: wp.array(dtype=wp.float64),
-    aref: wp.array(dtype=wp.float64),
+    vel: wp.array(dtype=scalar.wp_real),
+    aref: wp.array(dtype=scalar.wp_real),
     ref_epoch: wp.array(dtype=wp.int64),
     rows: int, nv: int,
 ):
@@ -361,7 +362,7 @@ def _reference(
     if r >= total:
         return
     g = w * rows + r
-    acc = wp.float64(0.0)
+    acc = scalar.wp_real(0.0)
     for j in range(nv):
         acc = acc + efc_J[g * nv + j] * qvel[w * nv + j]
     vel[g] = acc
@@ -391,21 +392,21 @@ def _position_gate(active: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.i
 def _commit_position(
     ready: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
     committed: wp.array(dtype=wp.int32), sc: wp.array(dtype=wp.int32),
-    sj: wp.array(dtype=wp.float64), st: wp.array(dtype=wp.int32), si: wp.array(dtype=wp.int32),
-    sp: wp.array(dtype=wp.float64), sm: wp.array(dtype=wp.float64),
-    sf: wp.array(dtype=wp.float64), sd: wp.array(dtype=wp.float64),
-    sr: wp.array(dtype=wp.float64), sD: wp.array(dtype=wp.float64),
-    sk: wp.array(dtype=wp.float64), sPost: wp.array(dtype=wp.float64),
-    sRoute: wp.array(dtype=wp.int32), sMu: wp.array(dtype=wp.float64),
+    sj: wp.array(dtype=scalar.wp_real), st: wp.array(dtype=wp.int32), si: wp.array(dtype=wp.int32),
+    sp: wp.array(dtype=scalar.wp_real), sm: wp.array(dtype=scalar.wp_real),
+    sf: wp.array(dtype=scalar.wp_real), sd: wp.array(dtype=scalar.wp_real),
+    sr: wp.array(dtype=scalar.wp_real), sD: wp.array(dtype=scalar.wp_real),
+    sk: wp.array(dtype=scalar.wp_real), sPost: wp.array(dtype=scalar.wp_real),
+    sRoute: wp.array(dtype=wp.int32), sMu: wp.array(dtype=scalar.wp_real),
     ncon: wp.array(dtype=wp.int32), exclude: wp.array2d(dtype=wp.int32),
     dim: wp.array2d(dtype=wp.int32), sAddress: wp.array2d(dtype=wp.int32),
-    pc: wp.array(dtype=wp.int32), pj: wp.array(dtype=wp.float64),
+    pc: wp.array(dtype=wp.int32), pj: wp.array(dtype=scalar.wp_real),
     pt: wp.array(dtype=wp.int32), pi: wp.array(dtype=wp.int32),
-    pp: wp.array(dtype=wp.float64), pm: wp.array(dtype=wp.float64),
-    pf: wp.array(dtype=wp.float64), pd: wp.array(dtype=wp.float64),
-    pr: wp.array(dtype=wp.float64), pD: wp.array(dtype=wp.float64),
-    pk: wp.array(dtype=wp.float64), pPost: wp.array(dtype=wp.float64),
-    pRoute: wp.array(dtype=wp.int32), pMu: wp.array(dtype=wp.float64),
+    pp: wp.array(dtype=scalar.wp_real), pm: wp.array(dtype=scalar.wp_real),
+    pf: wp.array(dtype=scalar.wp_real), pd: wp.array(dtype=scalar.wp_real),
+    pr: wp.array(dtype=scalar.wp_real), pD: wp.array(dtype=scalar.wp_real),
+    pk: wp.array(dtype=scalar.wp_real), pPost: wp.array(dtype=scalar.wp_real),
+    pRoute: wp.array(dtype=wp.int32), pMu: wp.array(dtype=scalar.wp_real),
     pAddress: wp.array2d(dtype=wp.int32), rows: int, contacts: int, nv: int,
 ):
     w = wp.tid()
@@ -466,7 +467,7 @@ def _commit_position(
 @wp.kernel(enable_backward=False)
 def _reference_gate(active: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
     committed: wp.array(dtype=wp.int32), counts: wp.array(dtype=wp.int32),
-    qvel: wp.array(dtype=wp.float64), epoch: wp.array(dtype=wp.int64),
+    qvel: wp.array(dtype=scalar.wp_real), epoch: wp.array(dtype=wp.int64),
     expected: wp.array(dtype=wp.int64), ready: wp.array(dtype=wp.int32), rows: int, nv: int):
     w = wp.tid()
     ready[w] = 0
@@ -507,9 +508,9 @@ def _reference_gate(active: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.
 @wp.kernel(enable_backward=False)
 def _commit_reference(ready: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
     committed: wp.array(dtype=wp.int32), counts: wp.array(dtype=wp.int32),
-    sv: wp.array(dtype=wp.float64), sa: wp.array(dtype=wp.float64),
-    epoch: wp.array(dtype=wp.int64), pv: wp.array(dtype=wp.float64),
-    pa: wp.array(dtype=wp.float64), ref_epoch: wp.array(dtype=wp.int64), rows: int):
+    sv: wp.array(dtype=scalar.wp_real), sa: wp.array(dtype=scalar.wp_real),
+    epoch: wp.array(dtype=wp.int64), pv: wp.array(dtype=scalar.wp_real),
+    pa: wp.array(dtype=scalar.wp_real), ref_epoch: wp.array(dtype=wp.int64), rows: int):
     w = wp.tid()
     if ready[w] != 1 or status[w] != 0:
         return

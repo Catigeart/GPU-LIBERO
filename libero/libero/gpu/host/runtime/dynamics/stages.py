@@ -4,6 +4,7 @@ The old candidate is archived separately. This implementation is an author
 candidate until the full source bounds and independent review are complete.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 from types import SimpleNamespace
@@ -58,20 +59,20 @@ def _map_position_status(result_kind: wp.array(dtype=wp.int32),
 
 
 @wp.kernel(enable_backward=False)
-def _gather_eef_site(site_xpos: wp.array(dtype=wp.float64, ndim=2),
-                     site_xmat: wp.array(dtype=wp.float64, ndim=2),
+def _gather_eef_site(site_xpos: wp.array(dtype=scalar.wp_real, ndim=2),
+                     site_xmat: wp.array(dtype=scalar.wp_real, ndim=2),
                      stage_active: wp.array(dtype=wp.int32),
-                     site_pos: wp.array(dtype=wp.float64, ndim=2),
-                     site_mat: wp.array(dtype=wp.float64, ndim=2),
+                     site_pos: wp.array(dtype=scalar.wp_real, ndim=2),
+                     site_mat: wp.array(dtype=scalar.wp_real, ndim=2),
                      nsite: int, eef: int):
     """Fixed device gather of the EEF site pose from the position frames
     output (the only D07 site source; no host values)."""
     w = wp.tid()
     if stage_active[w] != 1:
         for k in range(3):
-            site_pos[w, k] = wp.float64(0.0)
+            site_pos[w, k] = scalar.wp_real(0.0)
         for k in range(9):
-            site_mat[w, k] = wp.float64(0.0)
+            site_mat[w, k] = scalar.wp_real(0.0)
         return
     base_p = w * nsite * 3 + eef * 3
     base_m = w * nsite * 9 + eef * 9
@@ -105,9 +106,9 @@ def _copy_status(src: wp.array(dtype=wp.int32), dst: wp.array(dtype=wp.int32)):
 def _before_control(adapter_status: wp.array(dtype=wp.int32),
                     gate_control: wp.array(dtype=wp.int32),
                     force_refresh: wp.array(dtype=wp.int32),
-                    velp: wp.array(dtype=wp.float64, ndim=2),
-                    velr: wp.array(dtype=wp.float64, ndim=2),
-                    velocity: wp.array(dtype=wp.float64, ndim=2),
+                    velp: wp.array(dtype=scalar.wp_real, ndim=2),
+                    velr: wp.array(dtype=scalar.wp_real, ndim=2),
+                    velocity: wp.array(dtype=scalar.wp_real, ndim=2),
                     control_active: wp.array(dtype=wp.int32),
                     chain_status: wp.array(dtype=wp.int32),
                     needs_update: wp.array(dtype=wp.int32)):
@@ -223,7 +224,7 @@ class DynamicsStages:
             capacity, device=device, uncouple=True, diagnostics=True)
         self.actuation = ActuationForceWorkspace(flat, capacity, device=device)
 
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         nb, nv, nq, ns = 38, 43, 48, 31
 
         # --- single-owner state arrays ---

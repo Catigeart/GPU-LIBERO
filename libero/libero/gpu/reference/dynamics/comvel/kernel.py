@@ -2,6 +2,7 @@
 
 Follows engine_core_smooth.c:1261-1321 and engine_util_spatial.c:339-369,435-446.
 """
+import libero.gpu.precision as scalar
 
 from dataclasses import dataclass
 
@@ -64,8 +65,8 @@ class ComVelModel:
 
 
 @wp.func
-def _cross_motion(cvel: wp.array2d(dtype=wp.float64), cdof: wp.array2d(dtype=wp.float64),
-                  w: int, bi: int, dof: int, out: wp.array2d(dtype=wp.float64)):
+def _cross_motion(cvel: wp.array2d(dtype=scalar.wp_real), cdof: wp.array2d(dtype=scalar.wp_real),
+                  w: int, bi: int, dof: int, out: wp.array2d(dtype=scalar.wp_real)):
     c = 6*bi
     d = 6*dof
     v0, v1, v2 = cvel[w,c], cvel[w,c+1], cvel[w,c+2]
@@ -84,14 +85,14 @@ def _cross_motion(cvel: wp.array2d(dtype=wp.float64), cdof: wp.array2d(dtype=wp.
 
 
 @wp.func
-def _add_three(cvel: wp.array2d(dtype=wp.float64), cdof: wp.array2d(dtype=wp.float64),
-               qvel: wp.array2d(dtype=wp.float64), w: int, bi: int, start: int):
+def _add_three(cvel: wp.array2d(dtype=scalar.wp_real), cdof: wp.array2d(dtype=scalar.wp_real),
+               qvel: wp.array2d(dtype=scalar.wp_real), w: int, bi: int, start: int):
     # mju_mulMatTVec first zeros tmp, then skips exact-zero qvel and adds rows.
-    t0, t1, t2 = wp.float64(0.0), wp.float64(0.0), wp.float64(0.0)
-    t3, t4, t5 = wp.float64(0.0), wp.float64(0.0), wp.float64(0.0)
+    t0, t1, t2 = scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0)
+    t3, t4, t5 = scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0)
     for k in range(3):
         q = qvel[w,start+k]
-        if q != wp.float64(0.0):
+        if q != scalar.wp_real(0.0):
             d = 6*(start+k)
             t0 += cdof[w,d]*q
             t1 += cdof[w,d+1]*q
@@ -110,18 +111,18 @@ def _add_three(cvel: wp.array2d(dtype=wp.float64), cdof: wp.array2d(dtype=wp.flo
 
 @wp.kernel
 def _comvel(active: wp.array(dtype=wp.int32),
-            cdof: wp.array2d(dtype=wp.float64), qvel: wp.array2d(dtype=wp.float64),
+            cdof: wp.array2d(dtype=scalar.wp_real), qvel: wp.array2d(dtype=scalar.wp_real),
             body_parent: wp.array(dtype=wp.int32), body_dofadr: wp.array(dtype=wp.int32),
             body_dofnum: wp.array(dtype=wp.int32), dof_jntid: wp.array(dtype=wp.int32),
             jnt_type: wp.array(dtype=wp.int32), nbody: int, nv: int,
-            cvel: wp.array2d(dtype=wp.float64), cdof_dot: wp.array2d(dtype=wp.float64),
+            cvel: wp.array2d(dtype=scalar.wp_real), cdof_dot: wp.array2d(dtype=scalar.wp_real),
             status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(nbody*6):
-        cvel[w,k] = wp.float64(0.0)
+        cvel[w,k] = scalar.wp_real(0.0)
     for k in range(nv*6):
-        cdof_dot[w,k] = wp.float64(0.0)
+        cdof_dot[w,k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -175,16 +176,16 @@ def _comvel(active: wp.array(dtype=wp.int32),
             status[w] = 3
     if status[w] == 3:
         for k in range(nbody*6):
-            cvel[w,k] = wp.float64(0.0)
+            cvel[w,k] = scalar.wp_real(0.0)
         for k in range(nv*6):
-            cdof_dot[w,k] = wp.float64(0.0)
+            cdof_dot[w,k] = scalar.wp_real(0.0)
 
 
 def launch(model, active, cdof, qvel, cvel, cdof_dot, status, stream=None):
     n = active.shape[0]
-    schemas = ((active,(n,),wp.int32),(cdof,(n,model.nv*6),wp.float64),
-               (qvel,(n,model.nv),wp.float64),(cvel,(n,model.nbody*6),wp.float64),
-               (cdof_dot,(n,model.nv*6),wp.float64),(status,(n,),wp.int32))
+    schemas = ((active,(n,),wp.int32),(cdof,(n,model.nv*6),scalar.wp_real),
+               (qvel,(n,model.nv),scalar.wp_real),(cvel,(n,model.nbody*6),scalar.wp_real),
+               (cdof_dot,(n,model.nv*6),scalar.wp_real),(status,(n,),wp.int32))
     for a, shape, dtype in schemas:
         if a.shape != shape or a.dtype != dtype or not a.device.is_cuda:
             raise ValueError(f"invalid device array: expected {shape}/{dtype}")

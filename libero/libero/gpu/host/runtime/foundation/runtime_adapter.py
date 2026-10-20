@@ -4,6 +4,7 @@ The dynamics backend owns the only forward clock and all physical computation.
 Euler and forward share the exact qpos/qvel allocations. This adapter never
 uploads dynamic intermediates, calls a CPU forward, or adds a refresh forward.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 import hashlib
 import warp as wp
@@ -70,7 +71,7 @@ class FoundationForwardAdapter:
         for a, extent in ((self.qpos, nq), (self.qvel, nv)):
             if a.shape not in ((self.nworld, extent), (self.nworld * extent,)):
                 raise ValueError('model state world-major shape')
-            self._layout(a, wp.float64, a.shape)
+            self._layout(a, scalar.wp_real, a.shape)
         p, e = self.state_epoch, expected_state_epoch
         if max(int(p.ptr), int(e.ptr)) < min(int(p.ptr)+p.size*8, int(e.ptr)+e.size*8):
             raise ValueError('independent intended epoch aliases actual producer')
@@ -420,7 +421,7 @@ class PreparedFrameWorkspace(FrameWorkspace):
         if body_inputs is not None and set(body_inputs) != {'body_xpos','body_xquat','body_xmat','active_world'}:
             raise ValueError('all four actual body input owners required')
         self._body_inputs = dict(body_inputs) if body_inputs is not None else None
-        self.static = {name:wp.array(a.reshape(-1),dtype=wp.float64 if name in FLOAT_FIELDS else wp.int32,device=self.device)
+        self.static = {name:wp.array(a.reshape(-1),dtype=scalar.wp_real if name in FLOAT_FIELDS else wp.int32,device=self.device)
                        for name,a in prepared.items()}
         for name,count,width in (('body_xpos',b,3),('body_xquat',b,4),('body_xmat',b,9),
             ('xipos',b,3),('ximat',b,9),('geom_xpos',g,3),('geom_xmat',g,9),
@@ -428,12 +429,12 @@ class PreparedFrameWorkspace(FrameWorkspace):
             ('geom_tmpquat',g,4),('site_tmpquat',s,4)):
             if body_inputs is not None and name in body_inputs:
                 a=body_inputs[name]
-                if not isinstance(a,wp.array) or a.dtype!=wp.float64 or a.shape!=(nworld*count*width,) or not a.is_contiguous or a.device!=self.device:
+                if not isinstance(a,wp.array) or a.dtype!=scalar.wp_real or a.shape!=(nworld*count*width,) or not a.is_contiguous or a.device!=self.device:
                     raise ValueError('actual body frame input dtype/layout/device: '+name)
                 _origin_record(a)
                 setattr(self,name,a)
             else:
-                setattr(self,name,wp.empty(nworld*count*width,dtype=wp.float64,device=self.device))
+                setattr(self,name,wp.empty(nworld*count*width,dtype=scalar.wp_real,device=self.device))
         if body_inputs is not None:
             a=body_inputs['active_world']
             if not isinstance(a,wp.array) or a.dtype!=wp.int32 or a.shape!=(nworld,) or not a.is_contiguous or a.device!=self.device:
@@ -563,7 +564,7 @@ class PreparedCamlightWorkspace(CamlightWorkspace):
         actual_device=wp.get_device(device)
         for name,width in (('body_xpos',3),('body_xquat',4),('body_xmat',9)):
             a=body_inputs[name]
-            if not isinstance(a,wp.array) or a.dtype!=wp.float64 or a.shape!=(capacity,model.nbody*width) or not a.is_contiguous or a.device!=actual_device:
+            if not isinstance(a,wp.array) or a.dtype!=scalar.wp_real or a.shape!=(capacity,model.nbody*width) or not a.is_contiguous or a.device!=actual_device:
                 raise ValueError('actual body camlight dtype/layout/device: '+name)
             _origin_record(a)
             setattr(self.data,name,a);setattr(self,name,a)

@@ -3,6 +3,7 @@
 Arithmetic follows engine_core_smooth.c:961-1013, engine_util_spatial.c:406-416,
 and the AVX-compatible mju_dot reduction in engine_util_blas.c:631-685.
 """
+import libero.gpu.precision as scalar
 
 from dataclasses import dataclass
 
@@ -81,14 +82,14 @@ class CRBModel:
                    wp.array(dp, dtype=wp.int32, device=device),
                    wp.array(ma, dtype=wp.int32, device=device),
                    wp.array(si, dtype=wp.int32, device=device),
-                   wp.array(m0, dtype=wp.float64, device=device),
-                   wp.array(arm, dtype=wp.float64, device=device))
+                   wp.array(m0, dtype=scalar.wp_real, device=device),
+                   wp.array(arm, dtype=scalar.wp_real, device=device))
 
 
 @wp.func
-def _dot6(cdof: wp.array2d(dtype=wp.float64), w: int, j: int,
-          t0: wp.float64, t1: wp.float64, t2: wp.float64,
-          t3: wp.float64, t4: wp.float64, t5: wp.float64) -> wp.float64:
+def _dot6(cdof: wp.array2d(dtype=scalar.wp_real), w: int, j: int,
+          t0: scalar.wp_real, t1: scalar.wp_real, t2: scalar.wp_real,
+          t3: scalar.wp_real, t4: scalar.wp_real, t5: scalar.wp_real) -> scalar.wp_real:
     p0 = cdof[w, 6*j] * t0
     p1 = cdof[w, 6*j+1] * t1
     p2 = cdof[w, 6*j+2] * t2
@@ -100,25 +101,25 @@ def _dot6(cdof: wp.array2d(dtype=wp.float64), w: int, j: int,
 
 @wp.kernel
 def _crb(active: wp.array(dtype=wp.int32),
-         cinert: wp.array2d(dtype=wp.float64),
-         cdof: wp.array2d(dtype=wp.float64),
+         cinert: wp.array2d(dtype=scalar.wp_real),
+         cdof: wp.array2d(dtype=scalar.wp_real),
          body_parent: wp.array(dtype=wp.int32),
          dof_body: wp.array(dtype=wp.int32),
          dof_parent: wp.array(dtype=wp.int32),
          dof_madr: wp.array(dtype=wp.int32),
          dof_simple: wp.array(dtype=wp.int32),
-         dof_m0: wp.array(dtype=wp.float64),
-         dof_armature: wp.array(dtype=wp.float64),
+         dof_m0: wp.array(dtype=scalar.wp_real),
+         dof_armature: wp.array(dtype=scalar.wp_real),
          nbody: int, nv: int, nm: int,
-         crb: wp.array2d(dtype=wp.float64),
-         qm: wp.array2d(dtype=wp.float64),
+         crb: wp.array2d(dtype=scalar.wp_real),
+         qm: wp.array2d(dtype=scalar.wp_real),
          status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(nbody*10):
-        crb[w, k] = wp.float64(0.0)
+        crb[w, k] = scalar.wp_real(0.0)
     for k in range(nm):
-        qm[w, k] = wp.float64(0.0)
+        qm[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -173,17 +174,17 @@ def _crb(active: wp.array(dtype=wp.int32),
             status[w] = 3
     if status[w] == 3:
         for k in range(nbody*10):
-            crb[w, k] = wp.float64(0.0)
+            crb[w, k] = scalar.wp_real(0.0)
         for k in range(nm):
-            qm[w, k] = wp.float64(0.0)
+            qm[w, k] = scalar.wp_real(0.0)
 
 
 def launch(model, active, cinert, cdof, crb, qm, status, stream=None):
     n = active.shape[0]
-    schemas = ((active, (n,), wp.int32), (cinert, (n, model.nbody*10), wp.float64),
-               (cdof, (n, model.nv*6), wp.float64),
-               (crb, (n, model.nbody*10), wp.float64),
-               (qm, (n, model.nM), wp.float64), (status, (n,), wp.int32))
+    schemas = ((active, (n,), wp.int32), (cinert, (n, model.nbody*10), scalar.wp_real),
+               (cdof, (n, model.nv*6), scalar.wp_real),
+               (crb, (n, model.nbody*10), scalar.wp_real),
+               (qm, (n, model.nM), scalar.wp_real), (status, (n,), wp.int32))
     for a, shape, dtype in schemas:
         if a.shape != shape or a.dtype != dtype or not a.device.is_cuda:
             raise ValueError(f"invalid device array: expected {shape}/{dtype}")

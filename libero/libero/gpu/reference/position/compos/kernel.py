@@ -3,6 +3,7 @@
 Source: MuJoCo c9246e1, Apache-2.0, engine_core_smooth.c:179-265 and
 engine_util_spatial.c:371-435. Scalar expression order follows those files.
 """
+import libero.gpu.precision as scalar
 
 from dataclasses import dataclass
 
@@ -96,9 +97,9 @@ class ComposModel:
                 for i in different
             )
         return cls(nbody, njnt, nv,
-                   wp.array(mass, dtype=wp.float64, device=device),
-                   wp.array(mass_subtree, dtype=wp.float64, device=device),
-                   wp.array(inertia.reshape(-1), dtype=wp.float64, device=device),
+                   wp.array(mass, dtype=scalar.wp_real, device=device),
+                   wp.array(mass_subtree, dtype=scalar.wp_real, device=device),
+                   wp.array(inertia.reshape(-1), dtype=scalar.wp_real, device=device),
                    wp.array(parent, dtype=wp.int32, device=device),
                    wp.array(root, dtype=wp.int32, device=device),
                    wp.array(jtype, dtype=wp.int32, device=device),
@@ -109,32 +110,32 @@ class ComposModel:
 
 @wp.kernel
 def _compos(active: wp.array(dtype=wp.int32),
-            xipos: wp.array2d(dtype=wp.float64),
-            ximat: wp.array2d(dtype=wp.float64),
-            xanchor: wp.array2d(dtype=wp.float64),
-            xmat: wp.array2d(dtype=wp.float64),
-            xaxis: wp.array2d(dtype=wp.float64),
-            mass: wp.array(dtype=wp.float64),
-            mass_subtree: wp.array(dtype=wp.float64),
-            inertia: wp.array(dtype=wp.float64),
+            xipos: wp.array2d(dtype=scalar.wp_real),
+            ximat: wp.array2d(dtype=scalar.wp_real),
+            xanchor: wp.array2d(dtype=scalar.wp_real),
+            xmat: wp.array2d(dtype=scalar.wp_real),
+            xaxis: wp.array2d(dtype=scalar.wp_real),
+            mass: wp.array(dtype=scalar.wp_real),
+            mass_subtree: wp.array(dtype=scalar.wp_real),
+            inertia: wp.array(dtype=scalar.wp_real),
             parent: wp.array(dtype=wp.int32),
             root: wp.array(dtype=wp.int32),
             jtype: wp.array(dtype=wp.int32),
             jbody: wp.array(dtype=wp.int32),
             jdof: wp.array(dtype=wp.int32),
             nbody: wp.int32, njnt: wp.int32, nv: wp.int32,
-            subtree_com: wp.array2d(dtype=wp.float64),
-            cinert: wp.array2d(dtype=wp.float64),
-            cdof: wp.array2d(dtype=wp.float64),
+            subtree_com: wp.array2d(dtype=scalar.wp_real),
+            cinert: wp.array2d(dtype=scalar.wp_real),
+            cdof: wp.array2d(dtype=scalar.wp_real),
             status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(nbody * 3):
-        subtree_com[w, k] = wp.float64(0.0)
+        subtree_com[w, k] = scalar.wp_real(0.0)
     for k in range(nbody * 10):
-        cinert[w, k] = wp.float64(0.0)
+        cinert[w, k] = scalar.wp_real(0.0)
     for k in range(nv * 6):
-        cdof[w, k] = wp.float64(0.0)
+        cdof[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -162,11 +163,11 @@ def _compos(active: wp.array(dtype=wp.int32),
             p = parent[i]
             for c in range(3):
                 subtree_com[w, 3 * p + c] += subtree_com[w, 3 * i + c]
-        if mass_subtree[i] < wp.float64(1.0e-15):
+        if mass_subtree[i] < scalar.wp_real(1.0e-15):
             for c in range(3):
                 subtree_com[w, 3 * i + c] = xipos[w, 3 * i + c]
         else:
-            inv = wp.float64(1.0) / mass_subtree[i]
+            inv = scalar.wp_real(1.0) / mass_subtree[i]
             for c in range(3):
                 subtree_com[w, 3 * i + c] *= inv
 
@@ -217,9 +218,9 @@ def _compos(active: wp.array(dtype=wp.int32),
         typ = jtype[j]
         skip = 0
         if typ == 0:
-            cdof[w, da + 3] = wp.float64(1.0)
-            cdof[w, da + 10] = wp.float64(1.0)
-            cdof[w, da + 17] = wp.float64(1.0)
+            cdof[w, da + 3] = scalar.wp_real(1.0)
+            cdof[w, da + 10] = scalar.wp_real(1.0)
+            cdof[w, da + 17] = scalar.wp_real(1.0)
             skip = 18
         if typ == 0 or typ == 1:
             for k in range(3):
@@ -258,25 +259,25 @@ def _compos(active: wp.array(dtype=wp.int32),
             status[w] = 3
     if status[w] == 3:
         for k in range(nbody * 3):
-            subtree_com[w, k] = wp.float64(0.0)
+            subtree_com[w, k] = scalar.wp_real(0.0)
         for k in range(nbody * 10):
-            cinert[w, k] = wp.float64(0.0)
+            cinert[w, k] = scalar.wp_real(0.0)
         for k in range(nv * 6):
-            cdof[w, k] = wp.float64(0.0)
+            cdof[w, k] = scalar.wp_real(0.0)
 
 
 def launch(model: ComposModel, active, xipos, ximat, xanchor, xmat, xaxis,
            subtree_com, cinert, cdof, status, stream=None):
     """Launch only; all arrays must be preallocated on the device."""
     n = active.shape[0]
-    schemas = ((active, (n,), wp.int32), (xipos, (n, model.nbody * 3), wp.float64),
-               (ximat, (n, model.nbody * 9), wp.float64),
-               (xanchor, (n, model.njnt * 3), wp.float64),
-               (xmat, (n, model.nbody * 9), wp.float64),
-               (xaxis, (n, model.njnt * 3), wp.float64),
-               (subtree_com, (n, model.nbody * 3), wp.float64),
-               (cinert, (n, model.nbody * 10), wp.float64),
-               (cdof, (n, model.nv * 6), wp.float64), (status, (n,), wp.int32))
+    schemas = ((active, (n,), wp.int32), (xipos, (n, model.nbody * 3), scalar.wp_real),
+               (ximat, (n, model.nbody * 9), scalar.wp_real),
+               (xanchor, (n, model.njnt * 3), scalar.wp_real),
+               (xmat, (n, model.nbody * 9), scalar.wp_real),
+               (xaxis, (n, model.njnt * 3), scalar.wp_real),
+               (subtree_com, (n, model.nbody * 3), scalar.wp_real),
+               (cinert, (n, model.nbody * 10), scalar.wp_real),
+               (cdof, (n, model.nv * 6), scalar.wp_real), (status, (n,), wp.int32))
     for array, shape, dtype in schemas:
         if array.shape != shape or array.dtype != dtype or not array.device.is_cuda:
             raise ValueError(f"device array schema mismatch: expected {shape}/{dtype}")

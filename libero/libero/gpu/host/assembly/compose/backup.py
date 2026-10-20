@@ -4,6 +4,7 @@ The copies use an element grid, so compose's world ownership contract does not
 apply. A single generated kernel copies disjoint fields without arithmetic.
 Event selection and physics remain separate producer/consumer launches.
 """
+import libero.gpu.precision as scalar
 import ast
 import inspect
 import textwrap
@@ -45,7 +46,7 @@ class MultiFieldCopyPlan:
                 raise ValueError("contiguous backup buffers required")
             if source.dtype != target.dtype or source.device != target.device:
                 raise ValueError("backup field schema differs")
-            if source.dtype not in (wp.float64, wp.int32, wp.int64):
+            if source.dtype not in (scalar.wp_real, wp.int32, wp.int64):
                 raise TypeError("backup scalar dtype unsupported")
             if slot is not None and (source.device != slot.device or source.dtype == wp.int64):
                 raise ValueError("original event copy requires f64/i32 on the slot device")
@@ -83,7 +84,7 @@ class MultiFieldCopyPlan:
         body = ["    cell = wp.tid()"] if slot is None else ["    world, cell = wp.tid()"]
         if slot is not None:
             body += ["    row = slot[world]", "    if row < 0: return"]
-        names = {wp.float64: "float64", wp.int32: "int32", wp.int64: "int64"}
+        names = {scalar.wp_real: scalar.name, wp.int32: "int32", wp.int64: "int64"}
         for index, (source, _) in enumerate(self.pairs):
             dtype = names[source.dtype]
             args += [f"s{index}: wp.array(dtype=wp.{dtype})", f"t{index}: wp.array(dtype=wp.{dtype})"]
@@ -112,7 +113,7 @@ class MultiFieldCopyPlan:
                 if self.slot is None:
                     wp.copy(target, source, stream=stream)
                 else:
-                    kernel = _copy_f64 if source.dtype == wp.float64 else _copy_i32
+                    kernel = _copy_f64 if source.dtype == scalar.wp_real else _copy_i32
                     if source.dtype == wp.int64:
                         raise TypeError("original event copy supports f64/i32 only")
                     width, rows = self.widths[index], self.rows[index]

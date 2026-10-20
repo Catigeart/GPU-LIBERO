@@ -7,6 +7,7 @@ Only the simple Jacobian scalar expression and topology traversal are used.
 """
 
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import hashlib
 import json
@@ -127,19 +128,19 @@ class StaticModel:
 
 @wp.kernel(enable_backward=False)
 def _jacobian(
-    cdof: wp.array3d(dtype=wp.float64),
-    subtree_com: wp.array3d(dtype=wp.float64),
-    points: wp.array3d(dtype=wp.float64),
+    cdof: wp.array3d(dtype=scalar.wp_real),
+    subtree_com: wp.array3d(dtype=scalar.wp_real),
+    points: wp.array3d(dtype=scalar.wp_real),
     body_ids: wp.array2d(dtype=wp.int32),
-    site_xpos: wp.array3d(dtype=wp.float64),
+    site_xpos: wp.array3d(dtype=scalar.wp_real),
     site_ids: wp.array2d(dtype=wp.int32),
     query_count: wp.array(dtype=wp.int32),
     active_world: wp.array(dtype=wp.int32),
     body_rootid: wp.array(dtype=wp.int32),
     site_bodyid: wp.array(dtype=wp.int32),
     ancestor_mask: wp.array2d(dtype=wp.int32),
-    jacp: wp.array4d(dtype=wp.float64),
-    jacr: wp.array4d(dtype=wp.float64),
+    jacp: wp.array4d(dtype=scalar.wp_real),
+    jacr: wp.array4d(dtype=scalar.wp_real),
     status: wp.array2d(dtype=wp.int32),
     nv: int, nbody: int, nsite: int, capacity: int, site_mode: int,
 ):
@@ -147,8 +148,8 @@ def _jacobian(
     # Every launch overwrites dirty outputs before inspecting dynamic IDs.
     for row in range(3):
         for dof in range(nv):
-            jacp[world, query, row, dof] = wp.float64(0.0)
-            jacr[world, query, row, dof] = wp.float64(0.0)
+            jacp[world, query, row, dof] = scalar.wp_real(0.0)
+            jacr[world, query, row, dof] = scalar.wp_real(0.0)
     status[world, query] = STATUS_OK
     active = active_world[world]
     if active == 0:
@@ -164,9 +165,9 @@ def _jacobian(
         return
 
     body = int(0)
-    px = wp.float64(0.0)
-    py = wp.float64(0.0)
-    pz = wp.float64(0.0)
+    px = scalar.wp_real(0.0)
+    py = scalar.wp_real(0.0)
+    pz = scalar.wp_real(0.0)
     if site_mode == 1:
         site = site_ids[world, query]
         if site < 0 or site >= nsite:
@@ -225,8 +226,8 @@ def _jacobian(
         status[world, query] = STATUS_NUMERIC
         for row in range(3):
             for dof in range(nv):
-                jacp[world, query, row, dof] = wp.float64(0.0)
-                jacr[world, query, row, dof] = wp.float64(0.0)
+                jacp[world, query, row, dof] = scalar.wp_real(0.0)
+                jacr[world, query, row, dof] = scalar.wp_real(0.0)
 
 
 class JacobianWorkspace:
@@ -255,7 +256,7 @@ class JacobianWorkspace:
                                     device=self.device)
         self.ancestor_mask = wp.array(static.ancestor_mask, dtype=wp.int32,
                                       device=self.device)
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         N, Q = nworld, capacity
         self.cdof = wp.zeros((N, self.nv, 6), dtype=F, device=self.device)
         self.subtree_com = wp.zeros((N, self.nbody, 3), dtype=F, device=self.device)

@@ -3,6 +3,7 @@
 Callers own and prefill all device buffers. The production launch methods do
 no allocation, host arithmetic, upload, download or inter-stage transfer.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True,
@@ -12,17 +13,17 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True,
 @wp.kernel(enable_backward=False)
 def _warm_select(active: wp.array(dtype=wp.int32),
                  nefc: wp.array(dtype=wp.int32),
-                 warm_cost: wp.array(dtype=wp.float64),
-                 smooth_cost: wp.array(dtype=wp.float64),
-                 warm_qacc: wp.array(dtype=wp.float64, ndim=2),
-                 smooth_qacc: wp.array(dtype=wp.float64, ndim=2),
-                 smooth_force: wp.array(dtype=wp.float64, ndim=2),
+                 warm_cost: wp.array(dtype=scalar.wp_real),
+                 smooth_cost: wp.array(dtype=scalar.wp_real),
+                 warm_qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                 smooth_qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                 smooth_force: wp.array(dtype=scalar.wp_real, ndim=2),
                  smooth_state: wp.array(dtype=wp.int32, ndim=2),
-                 smooth_qfrc: wp.array(dtype=wp.float64, ndim=2),
-                 qacc: wp.array(dtype=wp.float64, ndim=2),
-                 force: wp.array(dtype=wp.float64, ndim=2),
+                 smooth_qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
+                 qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                 force: wp.array(dtype=scalar.wp_real, ndim=2),
                  state: wp.array(dtype=wp.int32, ndim=2),
-                 qfrc: wp.array(dtype=wp.float64, ndim=2),
+                 qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
                  choice: wp.array(dtype=wp.int32),
                  status: wp.array(dtype=wp.int32),
                  nv: int, capacity: int):
@@ -67,13 +68,13 @@ def _warm_select(active: wp.array(dtype=wp.int32),
 @wp.kernel(enable_backward=False)
 def _commit_step(active: wp.array(dtype=wp.int32),
                  nefc: wp.array(dtype=wp.int32),
-                 alpha: wp.array(dtype=wp.float64),
-                 search: wp.array(dtype=wp.float64, ndim=2),
-                 mv: wp.array(dtype=wp.float64, ndim=2),
-                 jv: wp.array(dtype=wp.float64, ndim=2),
-                 qacc: wp.array(dtype=wp.float64, ndim=2),
-                 ma: wp.array(dtype=wp.float64, ndim=2),
-                 jaref: wp.array(dtype=wp.float64, ndim=2),
+                 alpha: wp.array(dtype=scalar.wp_real),
+                 search: wp.array(dtype=scalar.wp_real, ndim=2),
+                 mv: wp.array(dtype=scalar.wp_real, ndim=2),
+                 jv: wp.array(dtype=scalar.wp_real, ndim=2),
+                 qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+                 ma: wp.array(dtype=scalar.wp_real, ndim=2),
+                 jaref: wp.array(dtype=scalar.wp_real, ndim=2),
                  committed: wp.array(dtype=wp.int32),
                  status: wp.array(dtype=wp.int32),
                  nv: int, capacity: int):
@@ -93,7 +94,7 @@ def _commit_step(active: wp.array(dtype=wp.int32),
     if not wp.isfinite(a):
         status[w]=3
         return
-    if a==wp.float64(0.0):
+    if a==scalar.wp_real(0.0):
         committed[w]=0
         return
     for i in range(nv):
@@ -120,10 +121,10 @@ def _commit_step(active: wp.array(dtype=wp.int32),
 
 
 @wp.func
-def _source_dot_self(grad: wp.array(dtype=wp.float64, ndim=2), w: int, nv: int) -> wp.float64:
+def _source_dot_self(grad: wp.array(dtype=scalar.wp_real, ndim=2), w: int, nv: int) -> scalar.wp_real:
     # engine_util_blas.c mju_dot: four independent lanes, then source reduction.
-    s0=wp.float64(0.0);s1=wp.float64(0.0)
-    s2=wp.float64(0.0);s3=wp.float64(0.0)
+    s0=scalar.wp_real(0.0);s1=scalar.wp_real(0.0)
+    s2=scalar.wp_real(0.0);s3=scalar.wp_real(0.0)
     i=wp.int32(0)
     while i<=nv-4:
         x=grad[w,i];s0=s0+x*x
@@ -151,23 +152,23 @@ def _stats_stop(active: wp.array(dtype=wp.int32),
                 committed: wp.array(dtype=wp.int32),
                 oldstate: wp.array(dtype=wp.int32, ndim=2),
                 newstate: wp.array(dtype=wp.int32, ndim=2),
-                grad: wp.array(dtype=wp.float64, ndim=2),
-                oldcost: wp.array(dtype=wp.float64),
-                newcost: wp.array(dtype=wp.float64),
-                meaninertia: wp.array(dtype=wp.float64),
-                tolerance: wp.array(dtype=wp.float64),
-                lineslope: wp.array(dtype=wp.float64),
+                grad: wp.array(dtype=scalar.wp_real, ndim=2),
+                oldcost: wp.array(dtype=scalar.wp_real),
+                newcost: wp.array(dtype=scalar.wp_real),
+                meaninertia: wp.array(dtype=scalar.wp_real),
+                tolerance: wp.array(dtype=scalar.wp_real),
+                lineslope: wp.array(dtype=scalar.wp_real),
                 nactive: wp.array(dtype=wp.int32),
                 nupdate: wp.array(dtype=wp.int32),
                 neval: wp.array(dtype=wp.int32),
                 iteration: wp.array(dtype=wp.int32),
                 solver_iter_base: wp.array(dtype=wp.int32),
                 maxiter: wp.array(dtype=wp.int32),
-                stats_f: wp.array(dtype=wp.float64, ndim=3),
+                stats_f: wp.array(dtype=scalar.wp_real, ndim=3),
                 stats_i: wp.array(dtype=wp.int32, ndim=3),
                 out_nchange: wp.array(dtype=wp.int32),
-                out_improvement: wp.array(dtype=wp.float64),
-                out_gradient: wp.array(dtype=wp.float64),
+                out_improvement: wp.array(dtype=scalar.wp_real),
+                out_gradient: wp.array(dtype=scalar.wp_real),
                 out_stop: wp.array(dtype=wp.int32),
                 out_reason: wp.array(dtype=wp.int32),
                 out_iter: wp.array(dtype=wp.int32),
@@ -189,7 +190,7 @@ def _stats_stop(active: wp.array(dtype=wp.int32),
         status[w]=4
         return
     inertia=meaninertia[w];tol=tolerance[w]
-    if not wp.isfinite(oldcost[w]) or not wp.isfinite(newcost[w]) or not wp.isfinite(inertia) or not wp.isfinite(tol) or not wp.isfinite(lineslope[w]) or inertia<=wp.float64(0.0) or tol<wp.float64(0.0):
+    if not wp.isfinite(oldcost[w]) or not wp.isfinite(newcost[w]) or not wp.isfinite(inertia) or not wp.isfinite(tol) or not wp.isfinite(lineslope[w]) or inertia<=scalar.wp_real(0.0) or tol<scalar.wp_real(0.0):
         status[w]=3
         return
     if nactive[w]<0 or nupdate[w]<0 or neval[w]<0:
@@ -207,7 +208,7 @@ def _stats_stop(active: wp.array(dtype=wp.int32),
     if not wp.isfinite(dot):
         status[w]=3
         return
-    scale=inertia*wp.float64(nv)
+    scale=inertia*scalar.wp_real(nv)
     improvement=(oldcost[w]-newcost[w])/scale
     gradient=wp.sqrt(dot)/scale
     if not wp.isfinite(improvement) or not wp.isfinite(gradient):
@@ -243,8 +244,8 @@ def _stats_stop(active: wp.array(dtype=wp.int32),
 def _finalize(active: wp.array(dtype=wp.int32),
               solver_exit: wp.array(dtype=wp.int32),
               iteration: wp.array(dtype=wp.int32),
-              qacc: wp.array(dtype=wp.float64, ndim=2),
-              warmstart: wp.array(dtype=wp.float64, ndim=2),
+              qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+              warmstart: wp.array(dtype=scalar.wp_real, ndim=2),
               solver_iter: wp.array(dtype=wp.int32),
               solver_nnz: wp.array(dtype=wp.int32),
               status: wp.array(dtype=wp.int32),

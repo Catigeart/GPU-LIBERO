@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 
 namespace collision_cuda {
@@ -9,11 +10,11 @@ namespace collision_cuda {
 // preserves the original first error, stage and successful request prefix.
 __device__ inline bool tree_parallel_live(int w,
     const int* stage,const int* stage_count,const int* active_in,
-    const double* xipos,const double* ximat,const double* geom_pos,const double* geom_mat,
+    const real_t* xipos,const real_t* ximat,const real_t* geom_pos,const real_t* geom_mat,
     const int* body_adr,const int* body_num,const int* geom_adr,const int* geom_num,
-    const int* child,const int* geomid,const double* bvh_aa,const double* geom_aa,
-    const double* rbound,const int* gtype,const int* pair1,const int* pair2,
-    int* stack1,int* stack2,double* product,double* offset,
+    const int* child,const int* geomid,const real_t* bvh_aa,const real_t* geom_aa,
+    const real_t* rbound,const int* gtype,const int* pair1,const int* pair2,
+    int* stack1,int* stack2,real_t* product,real_t* offset,
     int* out_req,int* out_visit,int* out_stack,int* out_leaf,int* out_active,
     int* req_count,int* visit_count,int* stack_count,int* leaf_count,int* status,int* first_stage,
     int stage_slots,int req_slots,int visit_slots,int stack_slots,int leaf_slots,int nbody,int ngeom,
@@ -36,7 +37,7 @@ __device__ inline bool tree_parallel_live(int w,
     const size_t request_start=stack_start+size_t(blockDim.x)*max_stack*2;
     if(request_start>cells)return false;
     int* metadata=arena;
-    double* coefficients=reinterpret_cast<double*>(arena+coefficient_start);
+    real_t* coefficients=reinterpret_cast<real_t*>(arena+coefficient_start);
     int* stacks=arena+stack_start;
     int* private_requests=arena+request_start;
     if(tid==0){
@@ -72,8 +73,8 @@ __device__ inline bool tree_parallel_live(int w,
         const int b1=entry[0],b2=entry[1],merged=entry[2],start=entry[3],end=entry[4],route=entry[5];
         int* requests=private_requests+size_t(meta[UpperBase])*2;
         const int capacity=meta[UpperCount];
-        double* products=coefficients+size_t(s)*48;
-        double* offsets=products+36;
+        real_t* products=coefficients+size_t(s)*48;
+        real_t* offsets=products+36;
         int rc=0,vc=0,sc=0,lc=0,initialize=1;
         bool failed=false;
         if(route==2){
@@ -157,7 +158,7 @@ __device__ inline bool tree_parallel_live(int w,
         }
     }
     if(last_initialized>=0){
-        const double* values=coefficients+size_t(last_initialized)*48;
+        const real_t* values=coefficients+size_t(last_initialized)*48;
         for(int i=tid;i<48;i+=blockDim.x){
             if(i<36)product[w*36+i]=values[i];else offset[w*12+i-36]=values[i];
         }

@@ -4,13 +4,14 @@ This helper does not regenerate or replace production CUDA sources.
 """
 
 
-def correct_boxbox_edge_contacts(body):
-    """Keep lateral feature gaps out of signed penetration depths.
+def correct_boxbox_contacts(body):
+    """Derive the maintained first-vertex clip and edge-depth corrections.
 
     The no-intersection fallback clamps corners to the other face. A clamped
     point outside that face has a lateral gap, even when it is below the
     reference plane. Its Euclidean distance is positive and must fit margin.
     Keep the projection determinant intact across all four corner queries.
+    Face clipping checks vertex zero's exterior while preserving its boundary.
     """
     replacements = [
         ('      if (nl == 0) {',
@@ -40,4 +41,12 @@ def correct_boxbox_edge_contacts(body):
         if old not in tail:
             raise ValueError('BoxBox edge-contact source drift: ' + old)
         tail = tail.replace(old, new, 1)
+    for axis, half in ((0, 'lx'), (1, 'ly')):
+        old = (f'    if (i)\n'
+               f'      if (tmp1[{axis}] <= -{half} || tmp1[{axis}] >= {half})')
+        new = (f'    if (i ? (tmp1[{axis}] <= -{half} || tmp1[{axis}] >= {half}) : '
+               f'(tmp1[{axis}] < -{half} || tmp1[{axis}] > {half}))')
+        if old not in head:
+            raise ValueError('BoxBox face-contact source drift: ' + old)
+        head = head.replace(old, new, 1)
     return head + 'edgeedge:' + tail

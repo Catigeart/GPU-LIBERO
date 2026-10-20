@@ -4,6 +4,7 @@ One thread handles one world in source request order.  The actual narrowphase
 belongs to a downstream stage; a call is emitted even when it returns 0 later.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -52,29 +53,29 @@ def validate_static(static:dict, *, callback=None):
 
 
 @wp.func
-def _max_source(a:wp.float64,b:wp.float64)->wp.float64:
+def _max_source(a:scalar.wp_real,b:scalar.wp_real)->scalar.wp_real:
     if a>=b:return a
     return b
 
 
 @wp.func
-def _admitted(a:wp.float64)->bool:
-    return a==a and wp.abs(a)<=wp.float64(1e100)
+def _admitted(a:scalar.wp_real)->bool:
+    return a==a and wp.abs(a)<=scalar.wp_real(scalar.safe_magnitude)
 
 
 @wp.kernel(enable_backward=False)
-def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=wp.float64),
-              xpos:wp.array(dtype=wp.float64),xmat:wp.array(dtype=wp.float64),
+def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=scalar.wp_real),
+              xpos:wp.array(dtype=scalar.wp_real),xmat:wp.array(dtype=scalar.wp_real),
               active:wp.array(dtype=wp.int32),counts:wp.array(dtype=wp.int32),
               geom_type:wp.array(dtype=wp.int32),geom_contype:wp.array(dtype=wp.int32),
               geom_conaffinity:wp.array(dtype=wp.int32),geom_priority:wp.array(dtype=wp.int32),
-              geom_condim:wp.array(dtype=wp.int32),geom_margin:wp.array(dtype=wp.float64),
-              geom_gap:wp.array(dtype=wp.float64),geom_rbound:wp.array(dtype=wp.float64),
+              geom_condim:wp.array(dtype=wp.int32),geom_margin:wp.array(dtype=scalar.wp_real),
+              geom_gap:wp.array(dtype=scalar.wp_real),geom_rbound:wp.array(dtype=scalar.wp_real),
               pair_geom1:wp.array(dtype=wp.int32),pair_geom2:wp.array(dtype=wp.int32),
-              pair_dim:wp.array(dtype=wp.int32),pair_margin:wp.array(dtype=wp.float64),
-              pair_gap:wp.array(dtype=wp.float64),override:wp.array(dtype=wp.int32),
-              o_margin:wp.array(dtype=wp.float64),present:wp.array(dtype=wp.int32),
-              out_i:wp.array(dtype=wp.int32),out_f:wp.array(dtype=wp.float64),
+              pair_dim:wp.array(dtype=wp.int32),pair_margin:wp.array(dtype=scalar.wp_real),
+              pair_gap:wp.array(dtype=scalar.wp_real),override:wp.array(dtype=wp.int32),
+              o_margin:wp.array(dtype=scalar.wp_real),present:wp.array(dtype=wp.int32),
+              out_i:wp.array(dtype=wp.int32),out_f:wp.array(dtype=scalar.wp_real),
               call_index:wp.array(dtype=wp.int32),call_count:wp.array(dtype=wp.int32),
               mid_count:wp.array(dtype=wp.int32),status:wp.array(dtype=wp.int32),
               error_index:wp.array(dtype=wp.int32),slots:int,capacity:int,ngeom:int,npair:int):
@@ -134,8 +135,8 @@ def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=wp.float64
             if (geom_contype[g1]&geom_conaffinity[g2])==0 and (geom_contype[g2]&geom_conaffinity[g1])==0:
                 out_i[b]=2
                 continue
-        margin=wp.float64(0.0)
-        gap=wp.float64(0.0)
+        margin=scalar.wp_real(0.0)
+        gap=scalar.wp_real(0.0)
         dim=wp.int32(0)
         if ipair<0:
             margin=_max_source(geom_margin[g1],geom_margin[g2])
@@ -160,7 +161,7 @@ def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=wp.float64
         r1=geom_rbound[g1]
         r2=geom_rbound[g2]
         rejected=0
-        if r1>wp.float64(0.0) and r2>wp.float64(0.0):
+        if r1>scalar.wp_real(0.0) and r2>scalar.wp_real(0.0):
             bound=r1+r2+margin
             p1=(w*ngeom+g1)*3
             p2=(w*ngeom+g2)*3
@@ -172,7 +173,7 @@ def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=wp.float64
             dz=xpos[p1+2]-xpos[p2+2]
             dist2=dx*dx+dy*dy+dz*dz
             if dist2>bound*bound:rejected=1
-        if rejected==0 and type1==0 and r2>wp.float64(0.0):
+        if rejected==0 and type1==0 and r2>scalar.wp_real(0.0):
             p1=(w*ngeom+g1)*3;p2=(w*ngeom+g2)*3;m1=(w*ngeom+g1)*9
             for k in range(3):
                 if not _admitted(xpos[p1+k]) or not _admitted(xpos[p2+k]):
@@ -184,7 +185,7 @@ def _dispatch(raw:wp.array(dtype=wp.int32), usermargin:wp.array(dtype=wp.float64
             dz=xpos[p2+2]-xpos[p1+2]
             plane=dx*xmat[m1+2]+dy*xmat[m1+5]+dz*xmat[m1+8]
             if plane>margin+r2:rejected=1
-        if rejected==0 and type2==0 and r1>wp.float64(0.0):
+        if rejected==0 and type2==0 and r1>scalar.wp_real(0.0):
             p1=(w*ngeom+g2)*3;p2=(w*ngeom+g1)*3;m1=(w*ngeom+g2)*9
             for k in range(3):
                 if not _admitted(xpos[p1+k]) or not _admitted(xpos[p2+k]):
@@ -219,17 +220,17 @@ class CollisionDispatchWorkspace:
         self.ngeom=len(static['geom_type']);self.npair=len(static['pair_geom1'])
         self.static={}
         for name,a in static.items():
-            dtype=wp.float64 if a.dtype==np.float64 else wp.int32
+            dtype=scalar.wp_real if a.dtype==np.float64 else wp.int32
             self.static[name]=(wp.array(np.ascontiguousarray(a).ravel(),dtype=dtype,device=device)
                                if a.size else wp.zeros(1,dtype=dtype,device=device))
         self.raw=wp.zeros(nworld*slots*3,dtype=wp.int32,device=device)
-        self.usermargin=wp.zeros(nworld*slots,dtype=wp.float64,device=device)
-        self.xpos=wp.zeros(nworld*self.ngeom*3,dtype=wp.float64,device=device)
-        self.xmat=wp.zeros(nworld*self.ngeom*9,dtype=wp.float64,device=device)
+        self.usermargin=wp.zeros(nworld*slots,dtype=scalar.wp_real,device=device)
+        self.xpos=wp.zeros(nworld*self.ngeom*3,dtype=scalar.wp_real,device=device)
+        self.xmat=wp.zeros(nworld*self.ngeom*9,dtype=scalar.wp_real,device=device)
         self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.counts=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.out_i=wp.zeros(nworld*slots*12,dtype=wp.int32,device=device)
-        self.out_f=wp.zeros(nworld*slots*2,dtype=wp.float64,device=device)
+        self.out_f=wp.zeros(nworld*slots*2,dtype=scalar.wp_real,device=device)
         self.call_index=wp.zeros(nworld*capacity,dtype=wp.int32,device=device)
         self.call_count=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.mid_count=wp.zeros(nworld,dtype=wp.int32,device=device)

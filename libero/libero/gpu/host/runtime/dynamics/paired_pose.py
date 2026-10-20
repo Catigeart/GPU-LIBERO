@@ -4,6 +4,7 @@ Original two-model FrozenModel/pins are untouched. This adapter has no inherited
 acceptance; exact captured static read-set and model identity are mandatory.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import hashlib,json
 from types import SimpleNamespace, MappingProxyType
 import numpy as np
@@ -74,11 +75,11 @@ class CapturedBodyProducer:
         if self.actual_upload_readset_sha256!=model.readset_sha256:raise ValueError("actual static upload snapshot SHA")
         n=upload_dims;nb=n['nbody'];nj=n['njnt'];nm=n['nmocap'];nq=n['nq']
         m=Model()
-        for target,source,dtype in (('qpos0','qpos0',wp.float64),('parent','body_parentid',wp.int32),('jnum','body_jntnum',wp.int32),('jadr','body_jntadr',wp.int32),('mocapid','body_mocapid',wp.int32),('bpos','body_pos',wp.float64),('bquat','body_quat',wp.float64),('jtype','jnt_type',wp.int32),('qadr','jnt_qposadr',wp.int32),('jaxis','jnt_axis',wp.float64),('jpos','jnt_pos',wp.float64)):
+        for target,source,dtype in (('qpos0','qpos0',scalar.wp_real),('parent','body_parentid',wp.int32),('jnum','body_jntnum',wp.int32),('jadr','body_jntadr',wp.int32),('mocapid','body_mocapid',wp.int32),('bpos','body_pos',scalar.wp_real),('bquat','body_quat',scalar.wp_real),('jtype','jnt_type',wp.int32),('qadr','jnt_qposadr',wp.int32),('jaxis','jnt_axis',scalar.wp_real),('jpos','jnt_pos',scalar.wp_real)):
             setattr(m,target,wp.array(np.ascontiguousarray(upload_arrays[source].reshape(-1)),dtype=dtype,device=device))
         m.nq=nq;m.nb=nb;m.nj=nj;m.nm=nm;self.static=m
         d=Data();g=Diagnostic()
-        def f(shape):return wp.zeros(shape,wp.float64,device=device)
+        def f(shape):return wp.zeros(shape,scalar.wp_real,device=device)
         def i(shape):return wp.zeros(shape,wp.int32,device=device)
         d.active=i(capacity);d.qpos=f((capacity,max(1,nq)));d.mocap_pos=f((capacity,max(1,nm*3)));d.mocap_quat=f((capacity,max(1,nm*4)))
         d.qtmp=f((capacity,max(1,nq)));d.mqtmp=f((capacity,max(1,nm*4)))
@@ -96,11 +97,11 @@ class CapturedBodyProducer:
         wp.launch(_commit,dim=self.capacity,inputs=[self.static,self.data,self.diag],device=self.device,stream=stream)
 
 @wp.kernel(enable_backward=False)
-def _held_body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64),
-          body_xquat: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=wp.float64),
-          body_ipos: wp.array(dtype=wp.float64), body_iquat: wp.array(dtype=wp.float64),
-          body_sameframe: wp.array(dtype=wp.int32), xipos: wp.array(dtype=wp.float64),
-          ximat: wp.array(dtype=wp.float64), body_tmpquat: wp.array(dtype=wp.float64), nbody: int):
+def _held_body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=scalar.wp_real),
+          body_xquat: wp.array(dtype=scalar.wp_real), body_xmat: wp.array(dtype=scalar.wp_real),
+          body_ipos: wp.array(dtype=scalar.wp_real), body_iquat: wp.array(dtype=scalar.wp_real),
+          body_sameframe: wp.array(dtype=wp.int32), xipos: wp.array(dtype=scalar.wp_real),
+          ximat: wp.array(dtype=scalar.wp_real), body_tmpquat: wp.array(dtype=scalar.wp_real), nbody: int):
     tid = wp.tid()
     w = tid // nbody
     i = tid - w * nbody
@@ -109,9 +110,9 @@ def _held_body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.fl
     if i == 0:
         _zero_frame(xipos, ximat, tid)
         _zero_tmp(body_tmpquat, tid)
-        ximat[9 * tid] = wp.float64(1.0)
-        ximat[9 * tid + 4] = wp.float64(1.0)
-        ximat[9 * tid + 8] = wp.float64(1.0)
+        ximat[9 * tid] = scalar.wp_real(1.0)
+        ximat[9 * tid + 4] = scalar.wp_real(1.0)
+        ximat[9 * tid + 8] = scalar.wp_real(1.0)
     elif body_sameframe[i] == 1:
         _copy_position(body_xpos, xipos, tid, tid)
         _copy_matrix(body_xmat, ximat, tid, tid)
@@ -121,13 +122,13 @@ def _held_body(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.fl
         _matrix(body_xquat, body_iquat, ximat, body_tmpquat, tid, i, tid)
 
 @wp.kernel(enable_backward=False)
-def _held_objects(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=wp.float64),
-             body_xquat: wp.array(dtype=wp.float64), body_xmat: wp.array(dtype=wp.float64),
-             xipos: wp.array(dtype=wp.float64), ximat: wp.array(dtype=wp.float64),
-             bodyid: wp.array(dtype=wp.int32), local_pos: wp.array(dtype=wp.float64),
-             local_quat: wp.array(dtype=wp.float64), sameframe: wp.array(dtype=wp.int32),
-             out_pos: wp.array(dtype=wp.float64), out_mat: wp.array(dtype=wp.float64),
-             tmpquat: wp.array(dtype=wp.float64),
+def _held_objects(active: wp.array(dtype=wp.int32), body_xpos: wp.array(dtype=scalar.wp_real),
+             body_xquat: wp.array(dtype=scalar.wp_real), body_xmat: wp.array(dtype=scalar.wp_real),
+             xipos: wp.array(dtype=scalar.wp_real), ximat: wp.array(dtype=scalar.wp_real),
+             bodyid: wp.array(dtype=wp.int32), local_pos: wp.array(dtype=scalar.wp_real),
+             local_quat: wp.array(dtype=scalar.wp_real), sameframe: wp.array(dtype=wp.int32),
+             out_pos: wp.array(dtype=scalar.wp_real), out_mat: wp.array(dtype=scalar.wp_real),
+             tmpquat: wp.array(dtype=scalar.wp_real),
              nbody: int, nobject: int):
     tid = wp.tid()
     w = tid // nobject
@@ -195,21 +196,21 @@ class CapturedFrameProducer:
             raise ValueError("captured frame static readset mismatch")
         self.device = wp.get_device(device)
         self.nworld, self.nbody, self.ngeom, self.nsite = nworld, b, g, s
-        self.static = {name: wp.array(a.reshape(-1), dtype=(wp.float64 if name in FLOAT_FIELDS else wp.int32), device=self.device)
+        self.static = {name: wp.array(a.reshape(-1), dtype=(scalar.wp_real if name in FLOAT_FIELDS else wp.int32), device=self.device)
                        for name, a in prepared.items()}
-        self.body_xpos = wp.empty(nworld * b * 3, dtype=wp.float64, device=self.device)
-        self.body_xquat = wp.empty(nworld * b * 4, dtype=wp.float64, device=self.device)
-        self.body_xmat = wp.empty(nworld * b * 9, dtype=wp.float64, device=self.device)
+        self.body_xpos = wp.empty(nworld * b * 3, dtype=scalar.wp_real, device=self.device)
+        self.body_xquat = wp.empty(nworld * b * 4, dtype=scalar.wp_real, device=self.device)
+        self.body_xmat = wp.empty(nworld * b * 9, dtype=scalar.wp_real, device=self.device)
         self.active_world = wp.empty(nworld, dtype=wp.int32, device=self.device)
-        self.xipos = wp.empty(nworld * b * 3, dtype=wp.float64, device=self.device)
-        self.ximat = wp.empty(nworld * b * 9, dtype=wp.float64, device=self.device)
-        self.geom_xpos = wp.empty(nworld * g * 3, dtype=wp.float64, device=self.device)
-        self.geom_xmat = wp.empty(nworld * g * 9, dtype=wp.float64, device=self.device)
-        self.site_xpos = wp.empty(nworld * s * 3, dtype=wp.float64, device=self.device)
-        self.site_xmat = wp.empty(nworld * s * 9, dtype=wp.float64, device=self.device)
-        self.body_tmpquat = wp.empty(nworld * b * 4, dtype=wp.float64, device=self.device)
-        self.geom_tmpquat = wp.empty(nworld * g * 4, dtype=wp.float64, device=self.device)
-        self.site_tmpquat = wp.empty(nworld * s * 4, dtype=wp.float64, device=self.device)
+        self.xipos = wp.empty(nworld * b * 3, dtype=scalar.wp_real, device=self.device)
+        self.ximat = wp.empty(nworld * b * 9, dtype=scalar.wp_real, device=self.device)
+        self.geom_xpos = wp.empty(nworld * g * 3, dtype=scalar.wp_real, device=self.device)
+        self.geom_xmat = wp.empty(nworld * g * 9, dtype=scalar.wp_real, device=self.device)
+        self.site_xpos = wp.empty(nworld * s * 3, dtype=scalar.wp_real, device=self.device)
+        self.site_xmat = wp.empty(nworld * s * 9, dtype=scalar.wp_real, device=self.device)
+        self.body_tmpquat = wp.empty(nworld * b * 4, dtype=scalar.wp_real, device=self.device)
+        self.geom_tmpquat = wp.empty(nworld * g * 4, dtype=scalar.wp_real, device=self.device)
+        self.site_tmpquat = wp.empty(nworld * s * 4, dtype=scalar.wp_real, device=self.device)
         self.status = wp.empty(nworld, dtype=wp.int32, device=self.device)
 
     def launch(self, *, stream=None):
@@ -309,7 +310,7 @@ class PairedPoseProducer:
             source_arrays+=[(array,actual_frames[key]) for key,array in self.frames.static.items()]
             for array,original in source_arrays:
                 if not isinstance(array,wp.array) or not array.size:continue
-                original=np.ascontiguousarray(original,dtype=np.float64 if array.dtype==wp.float64 else np.int32)
+                original=np.ascontiguousarray(original,dtype=np.float64 if array.dtype==scalar.wp_real else np.int32)
                 logical_bytes=array.size*wp.types.type_size_in_bytes(array.dtype)
                 if not array.is_contiguous or logical_bytes%4 or original.nbytes!=logical_bytes:raise ValueError("static word source schema")
                 view=wp.array(ptr=array.ptr,dtype=wp.uint32,shape=(logical_bytes//4,),capacity=array.capacity,device=actual_device)

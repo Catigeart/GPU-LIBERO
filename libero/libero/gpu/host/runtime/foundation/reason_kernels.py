@@ -2,6 +2,7 @@
 These are not physics producers and do not modify any original input/output.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import warp as wp
 wp.set_module_options({"enable_backward":False,"fuse_fp":True,"fast_math":False})
 NV=43
@@ -17,7 +18,7 @@ BAD_OFFSET=3
 BAD_CONTACT=4
 BAD_NUMERIC=5
 CAPACITY=6
-SAFE_MAGNITUDE=wp.float64(1.0e100)
+SAFE_MAGNITUDE=scalar.wp_real(scalar.safe_magnitude)
 from libero.gpu.reference.position.body_kinematics.kernel import Model, Data, Diagnostic
 from libero.gpu.reference.newton.newton_direction.kernel import _factor
 
@@ -62,13 +63,13 @@ def _reason_body(m: Model, d: Data, g: Diagnostic, reason_code: wp.array(dtype=w
         if m.jtype[j] == 3:
             qa = m.qadr[j]
             angle = d.qpos[w, qa] - m.qpos0[qa]
-            if angle != wp.float64(0.0):
-                z = angle * wp.float64(0.5)
-                if not wp.isfinite(z) or wp.abs(z) > wp.float64(4.0):
+            if angle != scalar.wp_real(0.0):
+                z = angle * scalar.wp_real(0.5)
+                if not wp.isfinite(z) or wp.abs(z) > scalar.wp_real(4.0):
                     reason_code[w] = 2
                     if not wp.isfinite(z):
                         reason_kind[w] = 5
-                    elif wp.abs(z) > wp.float64(4.0):
+                    elif wp.abs(z) > scalar.wp_real(4.0):
                         reason_kind[w] = 6
                     else:
                         reason_kind[w] = 8
@@ -81,7 +82,7 @@ def _reason_body(m: Model, d: Data, g: Diagnostic, reason_code: wp.array(dtype=w
             pass
 
 @wp.kernel(enable_backward=False)
-def _reason_contact(ncon: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32), capacity: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), geom1: wp.array2d(dtype=wp.int32), geom2: wp.array2d(dtype=wp.int32), pos: wp.array3d(dtype=wp.float64), frame: wp.array3d(dtype=wp.float64), dist: wp.array2d(dtype=wp.float64), margin: wp.array2d(dtype=wp.float64), dim: wp.array2d(dtype=wp.int32), exclude: wp.array2d(dtype=wp.int32), cdof: wp.array3d(dtype=wp.float64), subtree: wp.array3d(dtype=wp.float64), geom_body: wp.array(dtype=wp.int32), rowstart: wp.array2d(dtype=wp.int32), local_count: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), maxcon: int, maxrows: int, nv: int, nbody: int, ngeom: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_contact(ncon: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32), capacity: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), geom1: wp.array2d(dtype=wp.int32), geom2: wp.array2d(dtype=wp.int32), pos: wp.array3d(dtype=scalar.wp_real), frame: wp.array3d(dtype=scalar.wp_real), dist: wp.array2d(dtype=scalar.wp_real), margin: wp.array2d(dtype=scalar.wp_real), dim: wp.array2d(dtype=wp.int32), exclude: wp.array2d(dtype=wp.int32), cdof: wp.array3d(dtype=scalar.wp_real), subtree: wp.array3d(dtype=scalar.wp_real), geom_body: wp.array(dtype=wp.int32), rowstart: wp.array2d(dtype=wp.int32), local_count: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), maxcon: int, maxrows: int, nv: int, nbody: int, ngeom: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -218,7 +219,7 @@ def _reason_contact(ncon: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.
         pass
 
 @wp.kernel(enable_backward=False)
-def _reason_scalar(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32), capacity: wp.array(dtype=wp.int32), frictionloss: wp.array(dtype=wp.float64), jnt_type: wp.array(dtype=wp.int32), limited: wp.array(dtype=wp.int32), qposadr: wp.array(dtype=wp.int32), dofadr: wp.array(dtype=wp.int32), ranges: wp.array(dtype=wp.float64), margins: wp.array(dtype=wp.float64), friction_J: wp.array(dtype=wp.float64), friction_pos: wp.array(dtype=wp.float64), friction_margin: wp.array(dtype=wp.float64), friction_loss: wp.array(dtype=wp.float64), friction_type: wp.array(dtype=wp.int32), friction_id: wp.array(dtype=wp.int32), friction_global_adr: wp.array(dtype=wp.int32), limit_J: wp.array(dtype=wp.float64), limit_pos: wp.array(dtype=wp.float64), limit_margin: wp.array(dtype=wp.float64), limit_loss: wp.array(dtype=wp.float64), limit_type: wp.array(dtype=wp.int32), limit_id: wp.array(dtype=wp.int32), limit_global_adr: wp.array(dtype=wp.int32), nf_delta: wp.array(dtype=wp.int32), nlimit_delta: wp.array(dtype=wp.int32), nefc_delta: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_scalar(qpos: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32), capacity: wp.array(dtype=wp.int32), frictionloss: wp.array(dtype=scalar.wp_real), jnt_type: wp.array(dtype=wp.int32), limited: wp.array(dtype=wp.int32), qposadr: wp.array(dtype=wp.int32), dofadr: wp.array(dtype=wp.int32), ranges: wp.array(dtype=scalar.wp_real), margins: wp.array(dtype=scalar.wp_real), friction_J: wp.array(dtype=scalar.wp_real), friction_pos: wp.array(dtype=scalar.wp_real), friction_margin: wp.array(dtype=scalar.wp_real), friction_loss: wp.array(dtype=scalar.wp_real), friction_type: wp.array(dtype=wp.int32), friction_id: wp.array(dtype=wp.int32), friction_global_adr: wp.array(dtype=wp.int32), limit_J: wp.array(dtype=scalar.wp_real), limit_pos: wp.array(dtype=scalar.wp_real), limit_margin: wp.array(dtype=scalar.wp_real), limit_loss: wp.array(dtype=scalar.wp_real), limit_type: wp.array(dtype=wp.int32), limit_id: wp.array(dtype=wp.int32), limit_global_adr: wp.array(dtype=wp.int32), nf_delta: wp.array(dtype=wp.int32), nlimit_delta: wp.array(dtype=wp.int32), nefc_delta: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -260,7 +261,7 @@ def _reason_scalar(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.i
             pass
     nf = wp.int32(0)
     for i in range(NV):
-        if frictionloss[i] > wp.float64(0.0):
+        if frictionloss[i] > scalar.wp_real(0.0):
             nf += 1
         else:
             pass
@@ -276,12 +277,12 @@ def _reason_scalar(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.i
                 pass
             value = qpos[w * NQ + qposadr[j]]
             margin = margins[j]
-            lower = wp.float64(-1.0) * (ranges[2 * j] - value)
+            lower = scalar.wp_real(-1.0) * (ranges[2 * j] - value)
             if lower < margin:
                 nl += 1
             else:
                 pass
-            upper = wp.float64(1.0) * (ranges[2 * j + 1] - value)
+            upper = scalar.wp_real(1.0) * (ranges[2 * j + 1] - value)
             if upper < margin:
                 nl += 1
             else:
@@ -297,7 +298,7 @@ def _reason_scalar(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.i
         pass
 
 @wp.kernel(enable_backward=False)
-def _reason_update(active: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.int32), ne: wp.array(dtype=wp.int32), nf: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int32), flag: wp.array(dtype=wp.int32), jar: wp.array(dtype=wp.float64), D: wp.array(dtype=wp.float64), R: wp.array(dtype=wp.float64), loss: wp.array(dtype=wp.float64), typ: wp.array(dtype=wp.int32), cid: wp.array(dtype=wp.int32), J: wp.array(dtype=wp.float64), mu: wp.array(dtype=wp.float64), fr: wp.array(dtype=wp.float64), dim: wp.array(dtype=wp.int32), force: wp.array(dtype=wp.float64), state: wp.array(dtype=wp.int32), H: wp.array(dtype=wp.float64), cost: wp.array(dtype=wp.float64), status: wp.array(dtype=wp.int32), rows: int, contacts: int, nv: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_update(active: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.int32), ne: wp.array(dtype=wp.int32), nf: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int32), flag: wp.array(dtype=wp.int32), jar: wp.array(dtype=scalar.wp_real), D: wp.array(dtype=scalar.wp_real), R: wp.array(dtype=scalar.wp_real), loss: wp.array(dtype=scalar.wp_real), typ: wp.array(dtype=wp.int32), cid: wp.array(dtype=wp.int32), J: wp.array(dtype=scalar.wp_real), mu: wp.array(dtype=scalar.wp_real), fr: wp.array(dtype=scalar.wp_real), dim: wp.array(dtype=wp.int32), force: wp.array(dtype=scalar.wp_real), state: wp.array(dtype=wp.int32), H: wp.array(dtype=scalar.wp_real), cost: wp.array(dtype=scalar.wp_real), status: wp.array(dtype=wp.int32), rows: int, contacts: int, nv: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -358,13 +359,13 @@ def _reason_update(active: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.in
             else:
                 pass
             d = dim[cb + c]
-            if d != 1 and d != 3 and (d != 4) and (d != 6) or i + d > n or mu[cb + c] <= wp.float64(0.0) or (not wp.isfinite(mu[cb + c])):
+            if d != 1 and d != 3 and (d != 4) and (d != 6) or i + d > n or mu[cb + c] <= scalar.wp_real(0.0) or (not wp.isfinite(mu[cb + c])):
                 reason_code[w] = 4
                 if d != 1 and d != 3 and (d != 4) and (d != 6):
                     reason_kind[w] = 4
                 elif i + d > n:
                     reason_kind[w] = 2
-                elif mu[cb + c] <= wp.float64(0.0):
+                elif mu[cb + c] <= scalar.wp_real(0.0):
                     reason_kind[w] = 6
                 elif not wp.isfinite(mu[cb + c]):
                     reason_kind[w] = 5
@@ -381,9 +382,9 @@ def _reason_update(active: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.in
                 else:
                     pass
             for j in range(d - 1):
-                if fr[(cb + c) * 5 + j] <= wp.float64(0.0) or not wp.isfinite(fr[(cb + c) * 5 + j]):
+                if fr[(cb + c) * 5 + j] <= scalar.wp_real(0.0) or not wp.isfinite(fr[(cb + c) * 5 + j]):
                     reason_code[w] = 6
-                    if fr[(cb + c) * 5 + j] <= wp.float64(0.0):
+                    if fr[(cb + c) * 5 + j] <= scalar.wp_real(0.0):
                         reason_kind[w] = 6
                     elif not wp.isfinite(fr[(cb + c) * 5 + j]):
                         reason_kind[w] = 5
@@ -415,7 +416,7 @@ def _reason_update(active: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.in
                 pass
 
 @wp.kernel(enable_backward=False)
-def _reason_hessian(count: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), kind: wp.array(dtype=wp.int32), state: wp.array(dtype=wp.int32), oldstate: wp.array(dtype=wp.int32), D: wp.array(dtype=wp.float64), J: wp.array(dtype=wp.float64), qm: wp.array(dtype=wp.float64), H: wp.array(dtype=wp.float64), efc_id: wp.array(dtype=wp.int32), contact_dim: wp.array(dtype=wp.int32), contact_H: wp.array(dtype=wp.float64), ncone: wp.array(dtype=wp.int32), nnz: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), route: wp.array(dtype=wp.int32), rows: int, contacts: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_hessian(count: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), kind: wp.array(dtype=wp.int32), state: wp.array(dtype=wp.int32), oldstate: wp.array(dtype=wp.int32), D: wp.array(dtype=scalar.wp_real), J: wp.array(dtype=scalar.wp_real), qm: wp.array(dtype=scalar.wp_real), H: wp.array(dtype=scalar.wp_real), efc_id: wp.array(dtype=wp.int32), contact_dim: wp.array(dtype=wp.int32), contact_H: wp.array(dtype=scalar.wp_real), ncone: wp.array(dtype=wp.int32), nnz: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), route: wp.array(dtype=wp.int32), rows: int, contacts: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -492,9 +493,9 @@ def _reason_hessian(count: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int
             reads_d = True
         else:
             pass
-        if reads_d and (D[w * rows + r] < wp.float64(0.0) or not wp.isfinite(D[w * rows + r])):
+        if reads_d and (D[w * rows + r] < scalar.wp_real(0.0) or not wp.isfinite(D[w * rows + r])):
             reason_code[w] = 4
-            if reads_d and D[w * rows + r] < wp.float64(0.0):
+            if reads_d and D[w * rows + r] < scalar.wp_real(0.0):
                 reason_kind[w] = 6
             elif reads_d and (not wp.isfinite(D[w * rows + r])):
                 reason_kind[w] = 5
@@ -504,7 +505,7 @@ def _reason_hessian(count: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int
         else:
             pass
         reads_j = s == 4
-        if kind[w] == 1 and s == 1 and (D[w * rows + r] != wp.float64(0.0)):
+        if kind[w] == 1 and s == 1 and (D[w * rows + r] != scalar.wp_real(0.0)):
             reads_j = True
         else:
             pass
@@ -579,7 +580,7 @@ def _reason_hessian(count: wp.array(dtype=wp.int32), ncon: wp.array(dtype=wp.int
         pass
 
 @wp.kernel(enable_backward=False)
-def _reason_direction(Ma: wp.array(dtype=wp.float64, ndim=2), smooth: wp.array(dtype=wp.float64, ndim=2), constraint: wp.array(dtype=wp.float64, ndim=2), H: wp.array(dtype=wp.float64, ndim=3), Hcone: wp.array(dtype=wp.float64, ndim=3), ncone: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), upstream_status: wp.array(dtype=wp.int32), grad: wp.array(dtype=wp.float64, ndim=2), Mgrad: wp.array(dtype=wp.float64, ndim=2), candidate: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32), scratch_grad: wp.array(dtype=wp.float64, ndim=2), scratch_x: wp.array(dtype=wp.float64, ndim=2), scratch_fwd: wp.array(dtype=wp.float64, ndim=2), reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_direction(Ma: wp.array(dtype=scalar.wp_real, ndim=2), smooth: wp.array(dtype=scalar.wp_real, ndim=2), constraint: wp.array(dtype=scalar.wp_real, ndim=2), H: wp.array(dtype=scalar.wp_real, ndim=3), Hcone: wp.array(dtype=scalar.wp_real, ndim=3), ncone: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32), upstream_status: wp.array(dtype=wp.int32), grad: wp.array(dtype=scalar.wp_real, ndim=2), Mgrad: wp.array(dtype=scalar.wp_real, ndim=2), candidate: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32), scratch_grad: wp.array(dtype=scalar.wp_real, ndim=2), scratch_x: wp.array(dtype=scalar.wp_real, ndim=2), scratch_fwd: wp.array(dtype=scalar.wp_real, ndim=2), reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -623,7 +624,7 @@ def _reason_direction(Ma: wp.array(dtype=wp.float64, ndim=2), smooth: wp.array(d
             else:
                 pass
     for i in range(NV):
-        if _factor(H, Hcone, w, cone, i, i) == wp.float64(0.0):
+        if _factor(H, Hcone, w, cone, i, i) == scalar.wp_real(0.0):
             reason_code[w] = 4
             reason_kind[w] = 6
             return
@@ -631,7 +632,7 @@ def _reason_direction(Ma: wp.array(dtype=wp.float64, ndim=2), smooth: wp.array(d
             pass
 
 @wp.kernel(enable_backward=False)
-def _reason_warm(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), warm_cost: wp.array(dtype=wp.float64), smooth_cost: wp.array(dtype=wp.float64), warm_qacc: wp.array(dtype=wp.float64, ndim=2), smooth_qacc: wp.array(dtype=wp.float64, ndim=2), smooth_force: wp.array(dtype=wp.float64, ndim=2), smooth_state: wp.array(dtype=wp.int32, ndim=2), smooth_qfrc: wp.array(dtype=wp.float64, ndim=2), qacc: wp.array(dtype=wp.float64, ndim=2), force: wp.array(dtype=wp.float64, ndim=2), state: wp.array(dtype=wp.int32, ndim=2), qfrc: wp.array(dtype=wp.float64, ndim=2), choice: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_warm(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), warm_cost: wp.array(dtype=scalar.wp_real), smooth_cost: wp.array(dtype=scalar.wp_real), warm_qacc: wp.array(dtype=scalar.wp_real, ndim=2), smooth_qacc: wp.array(dtype=scalar.wp_real, ndim=2), smooth_force: wp.array(dtype=scalar.wp_real, ndim=2), smooth_state: wp.array(dtype=wp.int32, ndim=2), smooth_qfrc: wp.array(dtype=scalar.wp_real, ndim=2), qacc: wp.array(dtype=scalar.wp_real, ndim=2), force: wp.array(dtype=scalar.wp_real, ndim=2), state: wp.array(dtype=wp.int32, ndim=2), qfrc: wp.array(dtype=scalar.wp_real, ndim=2), choice: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -683,7 +684,7 @@ def _reason_warm(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32
             pass
 
 @wp.kernel(enable_backward=False)
-def _reason_step(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), alpha: wp.array(dtype=wp.float64), search: wp.array(dtype=wp.float64, ndim=2), mv: wp.array(dtype=wp.float64, ndim=2), jv: wp.array(dtype=wp.float64, ndim=2), qacc: wp.array(dtype=wp.float64, ndim=2), ma: wp.array(dtype=wp.float64, ndim=2), jaref: wp.array(dtype=wp.float64, ndim=2), committed: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_step(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), alpha: wp.array(dtype=scalar.wp_real), search: wp.array(dtype=scalar.wp_real, ndim=2), mv: wp.array(dtype=scalar.wp_real, ndim=2), jv: wp.array(dtype=scalar.wp_real, ndim=2), qacc: wp.array(dtype=scalar.wp_real, ndim=2), ma: wp.array(dtype=scalar.wp_real, ndim=2), jaref: wp.array(dtype=scalar.wp_real, ndim=2), committed: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -715,7 +716,7 @@ def _reason_step(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32
         pass
 
 @wp.kernel(enable_backward=False)
-def _reason_stats(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), stage: wp.array(dtype=wp.int32), committed: wp.array(dtype=wp.int32), oldstate: wp.array(dtype=wp.int32, ndim=2), newstate: wp.array(dtype=wp.int32, ndim=2), grad: wp.array(dtype=wp.float64, ndim=2), oldcost: wp.array(dtype=wp.float64), newcost: wp.array(dtype=wp.float64), meaninertia: wp.array(dtype=wp.float64), tolerance: wp.array(dtype=wp.float64), lineslope: wp.array(dtype=wp.float64), nactive: wp.array(dtype=wp.int32), nupdate: wp.array(dtype=wp.int32), neval: wp.array(dtype=wp.int32), iteration: wp.array(dtype=wp.int32), solver_iter_base: wp.array(dtype=wp.int32), maxiter: wp.array(dtype=wp.int32), stats_f: wp.array(dtype=wp.float64, ndim=3), stats_i: wp.array(dtype=wp.int32, ndim=3), out_nchange: wp.array(dtype=wp.int32), out_improvement: wp.array(dtype=wp.float64), out_gradient: wp.array(dtype=wp.float64), out_stop: wp.array(dtype=wp.int32), out_reason: wp.array(dtype=wp.int32), out_iter: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
+def _reason_stats(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), stage: wp.array(dtype=wp.int32), committed: wp.array(dtype=wp.int32), oldstate: wp.array(dtype=wp.int32, ndim=2), newstate: wp.array(dtype=wp.int32, ndim=2), grad: wp.array(dtype=scalar.wp_real, ndim=2), oldcost: wp.array(dtype=scalar.wp_real), newcost: wp.array(dtype=scalar.wp_real), meaninertia: wp.array(dtype=scalar.wp_real), tolerance: wp.array(dtype=scalar.wp_real), lineslope: wp.array(dtype=scalar.wp_real), nactive: wp.array(dtype=wp.int32), nupdate: wp.array(dtype=wp.int32), neval: wp.array(dtype=wp.int32), iteration: wp.array(dtype=wp.int32), solver_iter_base: wp.array(dtype=wp.int32), maxiter: wp.array(dtype=wp.int32), stats_f: wp.array(dtype=scalar.wp_real, ndim=3), stats_i: wp.array(dtype=wp.int32, ndim=3), out_nchange: wp.array(dtype=wp.int32), out_improvement: wp.array(dtype=scalar.wp_real), out_gradient: wp.array(dtype=scalar.wp_real), out_stop: wp.array(dtype=wp.int32), out_reason: wp.array(dtype=wp.int32), out_iter: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32), nv: int, capacity: int, reason_code: wp.array(dtype=wp.int32), reason_kind: wp.array(dtype=wp.int32)):
     w = wp.tid()
     reason_code[w] = 0
     reason_kind[w] = 0
@@ -767,7 +768,7 @@ def _reason_stats(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int3
         pass
     inertia = meaninertia[w]
     tol = tolerance[w]
-    if not wp.isfinite(oldcost[w]) or not wp.isfinite(newcost[w]) or (not wp.isfinite(inertia)) or (not wp.isfinite(tol)) or (not wp.isfinite(lineslope[w])) or (inertia <= wp.float64(0.0)) or (tol < wp.float64(0.0)):
+    if not wp.isfinite(oldcost[w]) or not wp.isfinite(newcost[w]) or (not wp.isfinite(inertia)) or (not wp.isfinite(tol)) or (not wp.isfinite(lineslope[w])) or (inertia <= scalar.wp_real(0.0)) or (tol < scalar.wp_real(0.0)):
         reason_code[w] = 3
         if not wp.isfinite(oldcost[w]):
             reason_kind[w] = 5
@@ -779,9 +780,9 @@ def _reason_stats(active: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int3
             reason_kind[w] = 5
         elif not wp.isfinite(lineslope[w]):
             reason_kind[w] = 5
-        elif inertia <= wp.float64(0.0):
+        elif inertia <= scalar.wp_real(0.0):
             reason_kind[w] = 6
-        elif tol < wp.float64(0.0):
+        elif tol < scalar.wp_real(0.0):
             reason_kind[w] = 6
         else:
             reason_kind[w] = 8

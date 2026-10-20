@@ -5,6 +5,7 @@ the ordered successful prefix. Complete C retains the block collective helper.
 All numerical bodies come from handwritten CUDA or frozen MuJoCo/libccd C,
 never from Warp-generated C++. No dense BLAS/LAPACK operation occurs here.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import ctypes as ct
@@ -33,7 +34,7 @@ class Params(ct.Structure):
     _fields_ = ([(n, ct.c_void_p) for n in POINTER_NAMES] +
                 [(n, ct.c_int) for n in INTEGER_NAMES] +
                 [('diagnostic_profile', ct.c_int), ('query_subgroup_width', ct.c_int),
-                 ('box_private_capacity', ct.c_int), ('mpr_tolerance', ct.c_double)])
+                 ('box_private_capacity', ct.c_int), ('mpr_tolerance', scalar.ct_real)])
 
 
 def source(*, device_only=False):
@@ -87,7 +88,7 @@ class DetectorPlan:
         self.box_private_capacity=50
         self.route_subgroup_widths=wp.array(np.full(14,query_subgroup_width,dtype=np.int32),dtype=wp.int32,device=workspace.device)
         self.mesh_edge_end=workspace.mesh_edge_end
-        self.primitive_raw=wp.empty(workspace.nworld*workspace.pairs*80,dtype=wp.float64,device=workspace.device)
+        self.primitive_raw=wp.empty(workspace.nworld*workspace.pairs*80,dtype=scalar.wp_real,device=workspace.device)
         self.primitive_count=wp.empty(workspace.nworld*workspace.pairs,dtype=wp.int32,device=workspace.device)
         self.primitive_status=wp.empty(workspace.nworld*workspace.pairs,dtype=wp.int32,device=workspace.device)
         self.query_order=wp.empty(workspace.nworld*workspace.pairs,dtype=wp.int32,device=workspace.device)
@@ -108,6 +109,7 @@ class DetectorPlan:
         self.bindings = tuple((a.ptr, a.shape, a.dtype) for a in self.owners)
         if workspace.nworld <= 0 or workspace.pairs <= 0:
             raise ValueError('positive world and pair capacity required')
+        self._mpr_tolerance = workspace.mpr_tolerance
         self.params = Params(*[a.ptr for a in self.owners],
                              *[getattr(workspace, n) for n in INTEGER_NAMES],
                              int(diagnostic_profile=='fast'),query_subgroup_width,box_private_capacity,
@@ -167,7 +169,8 @@ class DetectorPlan:
         if any(getattr(self.workspace,n) is not a for n,a in zip(self.public_pointer_names,self.owners[:-12])):
             raise ValueError('detector arrays rebound; reinstall')
         if any(getattr(self.workspace,n) != getattr(self.params,n) for n in INTEGER_NAMES) or \
-                self.workspace.mpr_tolerance != self.params.mpr_tolerance:
+                self.workspace.mpr_tolerance != self._mpr_tolerance or \
+                self.params.mpr_tolerance != scalar.ct_real(self._mpr_tolerance).value:
             raise ValueError('detector capacity/options changed; reinstall')
         if self.diagnostic_profile not in ('compatibility','fast') or \
                 self.params.diagnostic_profile != int(self.diagnostic_profile=='fast'):

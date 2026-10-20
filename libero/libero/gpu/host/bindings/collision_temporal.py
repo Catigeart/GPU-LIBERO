@@ -5,6 +5,7 @@ and private workspace, seals original array owners, and replaces the existing
 bounds/broadphase stages only. Tree, dispatch, detection, explicit-pair merges,
 ordering, contact parameters and public raw-capacity writes remain connected.
 """
+import libero.gpu.precision as scalar
 from collections import UserDict
 import math
 import numpy as np
@@ -125,11 +126,11 @@ def prepare_temporal_collision_stages(ws, stages, *, dynamics, profile='fast',
         storage['tree_num_shadow'] = wp.array(tree_num, dtype=wp.int32, device=ws.device)
         for name, data, dtype in (
             ('static_pair', graph.pairs, wp.int32), ('static_global', graph.global_pairs, wp.int32),
-            ('integer_shadow', graph.integer_shadow, wp.int32), ('float_shadow', graph.float_shadow, wp.float64)):
+            ('integer_shadow', graph.integer_shadow, wp.int32), ('float_shadow', graph.float_shadow, scalar.wp_real)):
             storage[name] = wp.array(data if data.size else np.zeros(1, dtype=np.int32), dtype=dtype, device=ws.device)
         for name, width, dtype in (
-            ('fat_bounds', ws.nbody * 6, wp.float64), ('cache_pair', k, wp.int32),
-            ('current_radius', ws.ngeom, wp.float64),
+            ('fat_bounds', ws.nbody * 6, scalar.wp_real), ('cache_pair', k, wp.int32),
+            ('current_radius', ws.ngeom, scalar.wp_real),
             ('cache_global', k, wp.int32), ('flags', k, wp.int32), ('prefix', k + 1, wp.int32),
             ('cache_count', 1, wp.int32), ('cache_valid', 1, wp.int32), ('cache_mode', 1, wp.int32),
             ('cache_age', 1, wp.int32), ('reason', 1, wp.int32), ('hit_count', 1, wp.int64),

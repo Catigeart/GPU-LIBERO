@@ -4,6 +4,7 @@ The mass workspace owns its buffers; Euler only fills them through device
 kernels.  Every production launch has three Euler kernels and the accepted
 N06 factor/solve kernel.  A failed world never commits partial state.
 """
+import libero.gpu.precision as scalar
 
 import hashlib
 import numpy as np
@@ -30,22 +31,22 @@ _JOINT_TOPOLOGIES={
 
 @wp.kernel(enable_backward=False)
 def _prepare(active: wp.array(dtype=wp.int32),
-             qpos: wp.array(dtype=wp.float64, ndim=2),
-             qvel: wp.array(dtype=wp.float64, ndim=2),
-             time: wp.array(dtype=wp.float64),
-             qm: wp.array(dtype=wp.float64, ndim=2),
-             smooth: wp.array(dtype=wp.float64, ndim=2),
-             constraint: wp.array(dtype=wp.float64, ndim=2),
-             qacc: wp.array(dtype=wp.float64, ndim=2),
-             damping: wp.array(dtype=wp.float64),
+             qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+             qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+             time: wp.array(dtype=scalar.wp_real),
+             qm: wp.array(dtype=scalar.wp_real, ndim=2),
+             smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+             constraint: wp.array(dtype=scalar.wp_real, ndim=2),
+             qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+             damping: wp.array(dtype=scalar.wp_real),
              madr: wp.array(dtype=wp.int32),
-             mass_qm: wp.array(dtype=wp.float64, ndim=2),
-             mass_rhs: wp.array(dtype=wp.float64, ndim=3),
+             mass_qm: wp.array(dtype=scalar.wp_real, ndim=2),
+             mass_rhs: wp.array(dtype=scalar.wp_real, ndim=3),
              mass_count: wp.array(dtype=wp.int32),
              mass_active: wp.array(dtype=wp.int32),
              damped: wp.array(dtype=wp.int32),
              status: wp.array(dtype=wp.int32),
-             dt: wp.float64, nq: int, nv: int, nm: int):
+             dt: scalar.wp_real, nq: int, nv: int, nm: int):
     w = wp.tid()
     status[w] = 0
     damped[w] = 0
@@ -54,10 +55,10 @@ def _prepare(active: wp.array(dtype=wp.int32),
     # MhB/RHS are diagnostic device outputs too; clear them even when an
     # inactive world carries NaN payload or this slot was active previously.
     for a in range(nm):
-        mass_qm[w,a]=wp.float64(0.0)
+        mass_qm[w,a]=scalar.wp_real(0.0)
     for r in range(4):
         for i in range(nv):
-            mass_rhs[w,r,i]=wp.float64(0.0)
+            mass_rhs[w,r,i]=scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -74,7 +75,7 @@ def _prepare(active: wp.array(dtype=wp.int32),
         if not wp.isfinite(qvel[w, i]) or not wp.isfinite(qacc[w, i]) or not wp.isfinite(smooth[w, i]) or not wp.isfinite(constraint[w, i]):
             status[w] = 2
             return
-        if damping[i] > wp.float64(0.0):
+        if damping[i] > scalar.wp_real(0.0):
             damped[w] = 1
     if damped[w] == 0:
         return
@@ -94,12 +95,12 @@ def _prepare(active: wp.array(dtype=wp.int32),
 def _source_solve_labels(active: wp.array(dtype=wp.int32),
                          damped: wp.array(dtype=wp.int32),
                          mass_status: wp.array(dtype=wp.int32),
-                         rhs: wp.array(dtype=wp.float64, ndim=3),
-                         ld: wp.array(dtype=wp.float64, ndim=2),
+                         rhs: wp.array(dtype=scalar.wp_real, ndim=3),
+                         ld: wp.array(dtype=scalar.wp_real, ndim=2),
                          madr: wp.array(dtype=wp.int32),
                          parent: wp.array(dtype=wp.int32),
                          simple: wp.array(dtype=wp.int32),
-                         work: wp.array(dtype=wp.float64, ndim=2),
+                         work: wp.array(dtype=scalar.wp_real, ndim=2),
                          zero_skip: wp.array(dtype=wp.int32, ndim=2), nv: int):
     """Device diagnostic replay of source first triangular pass.
 
@@ -109,7 +110,7 @@ def _source_solve_labels(active: wp.array(dtype=wp.int32),
     w=wp.tid()
     for i in range(nv):
         zero_skip[w,i]=0
-        work[w,i]=wp.float64(0.0)
+        work[w,i]=scalar.wp_real(0.0)
     if active[w]!=1 or damped[w]==0 or (mass_status[w]!=0 and mass_status[w]!=5):
         return
     for i in range(nv):
@@ -117,7 +118,7 @@ def _source_solve_labels(active: wp.array(dtype=wp.int32),
     for i in range(nv-1,-1,-1):
         if simple[i]!=0:
             continue
-        if work[w,i]==wp.float64(0.0):
+        if work[w,i]==scalar.wp_real(0.0):
             zero_skip[w,i]=1
         else:
             a=madr[i]+1
@@ -130,29 +131,29 @@ def _source_solve_labels(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _integrate(active: wp.array(dtype=wp.int32),
-               qpos: wp.array(dtype=wp.float64, ndim=2),
-               qvel: wp.array(dtype=wp.float64, ndim=2),
-               time: wp.array(dtype=wp.float64),
-               qacc: wp.array(dtype=wp.float64, ndim=2),
-               solution: wp.array(dtype=wp.float64, ndim=3),
+               qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+               qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+               time: wp.array(dtype=scalar.wp_real),
+               qacc: wp.array(dtype=scalar.wp_real, ndim=2),
+               solution: wp.array(dtype=scalar.wp_real, ndim=3),
                mass_status: wp.array(dtype=wp.int32),
                damped: wp.array(dtype=wp.int32),
                jtype: wp.array(dtype=wp.int32),
                padr: wp.array(dtype=wp.int32),
                vadr: wp.array(dtype=wp.int32),
-               scratch_pos: wp.array(dtype=wp.float64, ndim=2),
-               scratch_vel: wp.array(dtype=wp.float64, ndim=2),
-               used_acc: wp.array(dtype=wp.float64, ndim=2),
-               scratch_time: wp.array(dtype=wp.float64),
-               axis: wp.array(dtype=wp.float64, ndim=3),
-               angle: wp.array(dtype=wp.float64, ndim=2),
-               increment: wp.array(dtype=wp.float64, ndim=3),
-               pre_norm: wp.array(dtype=wp.float64, ndim=3),
+               scratch_pos: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_vel: wp.array(dtype=scalar.wp_real, ndim=2),
+               used_acc: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_time: wp.array(dtype=scalar.wp_real),
+               axis: wp.array(dtype=scalar.wp_real, ndim=3),
+               angle: wp.array(dtype=scalar.wp_real, ndim=2),
+               increment: wp.array(dtype=scalar.wp_real, ndim=3),
+               pre_norm: wp.array(dtype=scalar.wp_real, ndim=3),
                axis_fallback: wp.array(dtype=wp.int32, ndim=2),
                zero_angle: wp.array(dtype=wp.int32, ndim=2),
                quat_fallback: wp.array(dtype=wp.int32, ndim=2),
                status: wp.array(dtype=wp.int32),
-               dt: wp.float64, nq: int, nv: int, njnt: int):
+               dt: scalar.wp_real, nq: int, nv: int, njnt: int):
     w = wp.tid()
     if active[w] != 1 or status[w] != 0:
         return
@@ -202,13 +203,13 @@ def _integrate(active: wp.array(dtype=wp.int32),
                 status[w]=3
                 return
             axis_fallback[w,qi]=0
-            if length < wp.float64(1.0e-15):
+            if length < scalar.wp_real(1.0e-15):
                 axis_fallback[w,qi]=1
-                x = wp.float64(1.0)
-                y = wp.float64(0.0)
-                z = wp.float64(0.0)
+                x = scalar.wp_real(1.0)
+                y = scalar.wp_real(0.0)
+                z = scalar.wp_real(0.0)
             else:
-                inv = wp.float64(1.0)/length
+                inv = scalar.wp_real(1.0)/length
                 x = x*inv
                 y = y*inv
                 z = z*inv
@@ -221,11 +222,11 @@ def _integrate(active: wp.array(dtype=wp.int32),
             axis[w, qi, 2] = z
             angle[w, qi] = a
             zero_angle[w,qi]=0
-            c = wp.float64(1.0)
-            s = wp.float64(0.0)
-            if a != wp.float64(0.0):
-                half = a*wp.float64(0.5)
-                if not wp.isfinite(half) or wp.abs(half) > wp.float64(4.0):
+            c = scalar.wp_real(1.0)
+            s = scalar.wp_real(0.0)
+            if a != scalar.wp_real(0.0):
+                half = a*scalar.wp_real(0.5)
+                if not wp.isfinite(half) or wp.abs(half) > scalar.wp_real(4.0):
                     status[w] = 4
                     return
                 s = sin45(half)
@@ -242,10 +243,10 @@ def _integrate(active: wp.array(dtype=wp.int32),
             if not wp.isfinite(b0) or not wp.isfinite(b1) or not wp.isfinite(b2) or not wp.isfinite(b3):
                 status[w]=3
                 return
-            if a == wp.float64(0.0):
-                b1 = wp.float64(0.0)
-                b2 = wp.float64(0.0)
-                b3 = wp.float64(0.0)
+            if a == scalar.wp_real(0.0):
+                b1 = scalar.wp_real(0.0)
+                b2 = scalar.wp_real(0.0)
+                b3 = scalar.wp_real(0.0)
             increment[w, qi, 0] = b0
             increment[w, qi, 1] = b1
             increment[w, qi, 2] = b2
@@ -280,14 +281,14 @@ def _integrate(active: wp.array(dtype=wp.int32),
                 status[w]=3
                 return
             quat_fallback[w,qi]=0
-            if qlength < wp.float64(1.0e-15):
+            if qlength < scalar.wp_real(1.0e-15):
                 quat_fallback[w,qi]=1
-                t0 = wp.float64(1.0)
-                t1 = wp.float64(0.0)
-                t2 = wp.float64(0.0)
-                t3 = wp.float64(0.0)
+                t0 = scalar.wp_real(1.0)
+                t1 = scalar.wp_real(0.0)
+                t2 = scalar.wp_real(0.0)
+                t3 = scalar.wp_real(0.0)
             else:
-                qinv = wp.float64(1.0)/qlength
+                qinv = scalar.wp_real(1.0)/qlength
                 t0 = t0*qinv
                 t1 = t1*qinv
                 t2 = t2*qinv
@@ -312,67 +313,67 @@ def _integrate(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _commit(active: wp.array(dtype=wp.int32),
-            qpos: wp.array(dtype=wp.float64, ndim=2),
-            qvel: wp.array(dtype=wp.float64, ndim=2),
-            time: wp.array(dtype=wp.float64),
-            qH: wp.array(dtype=wp.float64, ndim=2),
-            qHDiagInv: wp.array(dtype=wp.float64, ndim=2),
-            mass_ld: wp.array(dtype=wp.float64, ndim=2),
-            mass_inv: wp.array(dtype=wp.float64, ndim=2),
-            mass_qm: wp.array(dtype=wp.float64, ndim=2),
-            mass_rhs: wp.array(dtype=wp.float64, ndim=3),
-            mass_sqrt_inv: wp.array(dtype=wp.float64, ndim=2),
-            mass_solution: wp.array(dtype=wp.float64, ndim=3),
+            qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+            qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+            time: wp.array(dtype=scalar.wp_real),
+            qH: wp.array(dtype=scalar.wp_real, ndim=2),
+            qHDiagInv: wp.array(dtype=scalar.wp_real, ndim=2),
+            mass_ld: wp.array(dtype=scalar.wp_real, ndim=2),
+            mass_inv: wp.array(dtype=scalar.wp_real, ndim=2),
+            mass_qm: wp.array(dtype=scalar.wp_real, ndim=2),
+            mass_rhs: wp.array(dtype=scalar.wp_real, ndim=3),
+            mass_sqrt_inv: wp.array(dtype=scalar.wp_real, ndim=2),
+            mass_solution: wp.array(dtype=scalar.wp_real, ndim=3),
             mass_pivot: wp.array(dtype=wp.int32, ndim=2),
             mass_warning_count: wp.array(dtype=wp.int32),
             mass_warning_last: wp.array(dtype=wp.int32),
             damped: wp.array(dtype=wp.int32),
-            scratch_pos: wp.array(dtype=wp.float64, ndim=2),
-            scratch_vel: wp.array(dtype=wp.float64, ndim=2),
-            used_acc: wp.array(dtype=wp.float64, ndim=2),
-            scratch_time: wp.array(dtype=wp.float64),
-            axis: wp.array(dtype=wp.float64, ndim=3),
-            angle: wp.array(dtype=wp.float64, ndim=2),
-            increment: wp.array(dtype=wp.float64, ndim=3),
-            pre_norm: wp.array(dtype=wp.float64, ndim=3),
+            scratch_pos: wp.array(dtype=scalar.wp_real, ndim=2),
+            scratch_vel: wp.array(dtype=scalar.wp_real, ndim=2),
+            used_acc: wp.array(dtype=scalar.wp_real, ndim=2),
+            scratch_time: wp.array(dtype=scalar.wp_real),
+            axis: wp.array(dtype=scalar.wp_real, ndim=3),
+            angle: wp.array(dtype=scalar.wp_real, ndim=2),
+            increment: wp.array(dtype=scalar.wp_real, ndim=3),
+            pre_norm: wp.array(dtype=scalar.wp_real, ndim=3),
             axis_fallback: wp.array(dtype=wp.int32, ndim=2),
             zero_angle: wp.array(dtype=wp.int32, ndim=2),
             quat_fallback: wp.array(dtype=wp.int32, ndim=2),
-            zero_work: wp.array(dtype=wp.float64, ndim=2),
+            zero_work: wp.array(dtype=scalar.wp_real, ndim=2),
             zero_skip: wp.array(dtype=wp.int32, ndim=2),
             status: wp.array(dtype=wp.int32), nq: int, nv: int, nm: int, nquat: int):
     w = wp.tid()
     if active[w] != 1 or status[w] != 0:
         for a in range(nm):
-            mass_qm[w,a]=wp.float64(0.0)
-            mass_ld[w,a]=wp.float64(0.0)
+            mass_qm[w,a]=scalar.wp_real(0.0)
+            mass_ld[w,a]=scalar.wp_real(0.0)
         for i in range(nv):
-            mass_inv[w,i]=wp.float64(0.0)
-            mass_sqrt_inv[w,i]=wp.float64(0.0)
+            mass_inv[w,i]=scalar.wp_real(0.0)
+            mass_sqrt_inv[w,i]=scalar.wp_real(0.0)
             mass_pivot[w,i]=0
-            zero_work[w,i]=wp.float64(0.0)
+            zero_work[w,i]=scalar.wp_real(0.0)
             zero_skip[w,i]=0
             for r in range(4):
-                mass_rhs[w,r,i]=wp.float64(0.0)
-                mass_solution[w,r,i]=wp.float64(0.0)
+                mass_rhs[w,r,i]=scalar.wp_real(0.0)
+                mass_solution[w,r,i]=scalar.wp_real(0.0)
         mass_warning_count[w]=0
         mass_warning_last[w]=-1
         for i in range(nq):
-            scratch_pos[w, i] = wp.float64(0.0)
+            scratch_pos[w, i] = scalar.wp_real(0.0)
         for i in range(nv):
-            scratch_vel[w, i] = wp.float64(0.0)
-            used_acc[w, i] = wp.float64(0.0)
-        scratch_time[w] = wp.float64(0.0)
+            scratch_vel[w, i] = scalar.wp_real(0.0)
+            used_acc[w, i] = scalar.wp_real(0.0)
+        scratch_time[w] = scalar.wp_real(0.0)
         for i in range(nquat):
-            angle[w, i] = wp.float64(0.0)
+            angle[w, i] = scalar.wp_real(0.0)
             axis_fallback[w,i]=0
             zero_angle[w,i]=0
             quat_fallback[w,i]=0
             for k in range(3):
-                axis[w, i, k] = wp.float64(0.0)
+                axis[w, i, k] = scalar.wp_real(0.0)
             for k in range(4):
-                increment[w, i, k] = wp.float64(0.0)
-                pre_norm[w, i, k] = wp.float64(0.0)
+                increment[w, i, k] = scalar.wp_real(0.0)
+                pre_norm[w, i, k] = scalar.wp_real(0.0)
         return
     for i in range(nq):
         qpos[w, i] = scratch_pos[w, i]
@@ -427,7 +428,7 @@ class EulerWorkspace:
                     raise ValueError('nonfinite damping')
             elif hashlib.sha256(canonical.tobytes()).hexdigest()!=expected[name]:
                 raise ValueError('unsupported Euler joint topology: '+name)
-            setattr(self,name,wp.array(canonical,dtype=wp.float64 if dtype==np.float64 else wp.int32,device=device))
+            setattr(self,name,wp.array(canonical,dtype=scalar.wp_real if dtype==np.float64 else wp.int32,device=device))
         jt=np.asarray(model.jnt_type,dtype=np.int32)
         qp=np.asarray(model.jnt_qposadr,dtype=np.int32)
         qv=np.asarray(model.jnt_dofadr,dtype=np.int32)
@@ -441,7 +442,7 @@ class EulerWorkspace:
             ('dof_Madr','dof_parentid','dof_simplenum','dof_damping','jnt_type','jnt_qposadr','jnt_dofadr'))+
             np.float64(self.dt).tobytes()+np.int32(self.nu).tobytes()+
             np.int32(self.nsensordata).tobytes()).hexdigest()
-        f64 = wp.float64
+        f64 = scalar.wp_real
         self.active = wp.zeros(capacity,dtype=wp.int32,device=device)
         for name, shape in (('qpos',(capacity,self.nq)),('qvel',(capacity,self.nv)),
                             ('time',(capacity,)),('qM',(capacity,self.nM)),
@@ -488,7 +489,7 @@ class EulerWorkspace:
                 continue
             if arr.dtype != dtype or tuple(arr.shape) != tuple(dst.shape):
                 raise TypeError((name,'dtype/shape',arr.dtype,arr.shape,dst.shape))
-            wp.copy(dst,wp.array(np.ascontiguousarray(arr),dtype=wp.int32 if name=='active' else wp.float64,device=self.device))
+            wp.copy(dst,wp.array(np.ascontiguousarray(arr),dtype=wp.int32 if name=='active' else scalar.wp_real,device=self.device))
 
     def launch(self, stream=None):
         m=self.mass

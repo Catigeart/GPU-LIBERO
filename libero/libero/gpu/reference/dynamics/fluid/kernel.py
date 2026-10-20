@@ -5,6 +5,7 @@ engine_support.c:208-260,1174-1207,1220-1267;
 engine_util_spatial.c:449-477. Static box parameters are checked by an
 independent original-expression C helper in scripts/gpu_fluid/box_params.c.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 import numpy as np
@@ -27,56 +28,56 @@ else:
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True})
 
-PI = wp.float64(3.14159265358979323846)
+PI = scalar.wp_real(3.14159265358979323846)
 
 
 @wp.func
-def _cross(a: wp.vec3d, b: wp.vec3d):
-    return wp.vec3d(a[1]*b[2]-a[2]*b[1],
+def _cross(a: scalar.vec3_real, b: scalar.vec3_real):
+    return scalar.vec3_real(a[1]*b[2]-a[2]*b[1],
                     a[2]*b[0]-a[0]*b[2],
                     a[0]*b[1]-a[1]*b[0])
 
 
 @wp.func
-def _rot(m: wp.array(dtype=wp.float64, ndim=3), w: int, body: int, v: wp.vec3d):
-    return wp.vec3d(m[w, body, 0]*v[0]+m[w, body, 1]*v[1]+m[w, body, 2]*v[2],
+def _rot(m: wp.array(dtype=scalar.wp_real, ndim=3), w: int, body: int, v: scalar.vec3_real):
+    return scalar.vec3_real(m[w, body, 0]*v[0]+m[w, body, 1]*v[1]+m[w, body, 2]*v[2],
                     m[w, body, 3]*v[0]+m[w, body, 4]*v[1]+m[w, body, 5]*v[2],
                     m[w, body, 6]*v[0]+m[w, body, 7]*v[1]+m[w, body, 8]*v[2])
 
 
 @wp.func
-def _rot_t(m: wp.array(dtype=wp.float64, ndim=3), w: int, body: int, v: wp.vec3d):
-    return wp.vec3d(m[w, body, 0]*v[0]+m[w, body, 3]*v[1]+m[w, body, 6]*v[2],
+def _rot_t(m: wp.array(dtype=scalar.wp_real, ndim=3), w: int, body: int, v: scalar.vec3_real):
+    return scalar.vec3_real(m[w, body, 0]*v[0]+m[w, body, 3]*v[1]+m[w, body, 6]*v[2],
                     m[w, body, 1]*v[0]+m[w, body, 4]*v[1]+m[w, body, 7]*v[2],
                     m[w, body, 2]*v[0]+m[w, body, 5]*v[1]+m[w, body, 8]*v[2])
 
 
 @wp.kernel(enable_backward=False)
-def _fluid(cvel: wp.array(dtype=wp.float64, ndim=3),
-           subtree_com: wp.array(dtype=wp.float64, ndim=3),
-           xipos: wp.array(dtype=wp.float64, ndim=3),
-           ximat: wp.array(dtype=wp.float64, ndim=3),
-           cdof: wp.array(dtype=wp.float64, ndim=3),
+def _fluid(cvel: wp.array(dtype=scalar.wp_real, ndim=3),
+           subtree_com: wp.array(dtype=scalar.wp_real, ndim=3),
+           xipos: wp.array(dtype=scalar.wp_real, ndim=3),
+           ximat: wp.array(dtype=scalar.wp_real, ndim=3),
+           cdof: wp.array(dtype=scalar.wp_real, ndim=3),
            active: wp.array(dtype=wp.int32),
            rootid: wp.array(dtype=wp.int32),
-           mass: wp.array(dtype=wp.float64),
-           box: wp.array(dtype=wp.float64, ndim=2),
+           mass: wp.array(dtype=scalar.wp_real),
+           box: wp.array(dtype=scalar.wp_real, ndim=2),
            ancestor: wp.array(dtype=wp.int32, ndim=2),
-           wind: wp.array(dtype=wp.float64),
-           opt: wp.array(dtype=wp.float64),
+           wind: wp.array(dtype=scalar.wp_real),
+           opt: wp.array(dtype=scalar.wp_real),
            passive_disabled: int,
            diagnostic: int,
-           stages: wp.array(dtype=wp.float64, ndim=3),
-           qfrc: wp.array(dtype=wp.float64, ndim=2),
+           stages: wp.array(dtype=scalar.wp_real, ndim=3),
+           qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
            status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for j in range(43):
-        qfrc[w, j] = wp.float64(0.0)
+        qfrc[w, j] = scalar.wp_real(0.0)
     if diagnostic != 0:
         for body in range(38):
             for k in range(334):
-                stages[w, body, k] = wp.float64(0.0)
+                stages[w, body, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -85,7 +86,7 @@ def _fluid(cvel: wp.array(dtype=wp.float64, ndim=3),
     # mj_passive clears qfrc before returning for mjDSBL_PASSIVE.
     if passive_disabled != 0:
         return
-    if opt[0] <= wp.float64(0.0) and opt[1] <= wp.float64(0.0):
+    if opt[0] <= scalar.wp_real(0.0) and opt[1] <= scalar.wp_real(0.0):
         return
     # The fixed-input contract requires finite dynamic data. Checking here
     # prevents nonfinite inactive payloads from entering the fluid branch.
@@ -109,47 +110,47 @@ def _fluid(cvel: wp.array(dtype=wp.float64, ndim=3),
                 return
 
     for body in range(1, 38):
-        if mass[body] < wp.float64(1.0e-15):
+        if mass[body] < scalar.wp_real(1.0e-15):
             continue
         root = rootid[body]
-        offset = wp.vec3d(xipos[w, body, 0]-subtree_com[w, root, 0],
+        offset = scalar.vec3_real(xipos[w, body, 0]-subtree_com[w, root, 0],
                           xipos[w, body, 1]-subtree_com[w, root, 1],
                           xipos[w, body, 2]-subtree_com[w, root, 2])
-        ang = wp.vec3d(cvel[w, body, 0], cvel[w, body, 1], cvel[w, body, 2])
-        lin = wp.vec3d(cvel[w, body, 3], cvel[w, body, 4], cvel[w, body, 5])
+        ang = scalar.vec3_real(cvel[w, body, 0], cvel[w, body, 1], cvel[w, body, 2])
+        lin = scalar.vec3_real(cvel[w, body, 3], cvel[w, body, 4], cvel[w, body, 5])
         # mj_objectVelocity: transformSpatial velocity from root COM to body COM.
         local_ang = _rot_t(ximat, w, body, ang)
         object_lin = _rot_t(ximat, w, body, lin-_cross(offset, ang))
         # Wind angular part is zero, so its translated linear component is wind.
         local_wind = _rot_t(ximat, w, body,
-                            wp.vec3d(wind[0], wind[1], wind[2]))
+                            scalar.vec3_real(wind[0], wind[1], wind[2]))
         local_lin = object_lin - local_wind
         if diagnostic != 0:
             for r in range(3):
                 stages[w, body, r] = box[body, r]
                 stages[w, body, 3+r] = local_ang[r]
                 stages[w, body, 6+r] = object_lin[r]
-                stages[w, body, 9+r] = wp.float64(0.0)
+                stages[w, body, 9+r] = scalar.wp_real(0.0)
                 stages[w, body, 12+r] = local_wind[r]
                 stages[w, body, 15+r] = local_ang[r]
                 stages[w, body, 18+r] = local_lin[r]
         x, y, z = box[body, 0], box[body, 1], box[body, 2]
         visc, density = opt[0], opt[1]
-        torque = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-        force = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-        if visc > wp.float64(0.0):
-            diam = (x+y+z)/wp.float64(3.0)
+        torque = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+        force = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+        if visc > scalar.wp_real(0.0):
+            diam = (x+y+z)/scalar.wp_real(3.0)
             ang_scl = -PI*diam*diam*diam*visc
-            lin_scl = -wp.float64(3.0)*PI*diam*visc
+            lin_scl = -scalar.wp_real(3.0)*PI*diam*visc
             torque = local_ang*ang_scl
             force = local_lin*lin_scl
-        if density > wp.float64(0.0):
-            force[0] = force[0] - wp.float64(0.5)*density*y*z*wp.abs(local_lin[0])*local_lin[0]
-            force[1] = force[1] - wp.float64(0.5)*density*x*z*wp.abs(local_lin[1])*local_lin[1]
-            force[2] = force[2] - wp.float64(0.5)*density*x*y*wp.abs(local_lin[2])*local_lin[2]
-            torque[0] = torque[0] - density*x*(y*y*y*y+z*z*z*z)*wp.abs(local_ang[0])*local_ang[0]/wp.float64(64.0)
-            torque[1] = torque[1] - density*y*(x*x*x*x+z*z*z*z)*wp.abs(local_ang[1])*local_ang[1]/wp.float64(64.0)
-            torque[2] = torque[2] - density*z*(x*x*x*x+y*y*y*y)*wp.abs(local_ang[2])*local_ang[2]/wp.float64(64.0)
+        if density > scalar.wp_real(0.0):
+            force[0] = force[0] - scalar.wp_real(0.5)*density*y*z*wp.abs(local_lin[0])*local_lin[0]
+            force[1] = force[1] - scalar.wp_real(0.5)*density*x*z*wp.abs(local_lin[1])*local_lin[1]
+            force[2] = force[2] - scalar.wp_real(0.5)*density*x*y*wp.abs(local_lin[2])*local_lin[2]
+            torque[0] = torque[0] - density*x*(y*y*y*y+z*z*z*z)*wp.abs(local_ang[0])*local_ang[0]/scalar.wp_real(64.0)
+            torque[1] = torque[1] - density*y*(x*x*x*x+z*z*z*z)*wp.abs(local_ang[1])*local_ang[1]/scalar.wp_real(64.0)
+            torque[2] = torque[2] - density*z*(x*x*x*x+y*y*y*y)*wp.abs(local_ang[2])*local_ang[2]/scalar.wp_real(64.0)
         world_torque = _rot(ximat, w, body, torque)
         world_force = _rot(ximat, w, body, force)
         if diagnostic != 0:
@@ -160,23 +161,23 @@ def _fluid(cvel: wp.array(dtype=wp.float64, ndim=3),
                 stages[w, body, 30+r] = world_force[r]
         # mj_applyFT: mj_jac(point=xipos,body), Jp^T force then Jr^T torque.
         for j in range(43):
-            jp = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-            jr = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+            jp = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+            jr = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
             if ancestor[body, j] != 0:
-                jr = wp.vec3d(cdof[w, j, 0], cdof[w, j, 1], cdof[w, j, 2])
-                jp = wp.vec3d(cdof[w, j, 3], cdof[w, j, 4], cdof[w, j, 5]) + _cross(jr, offset)
+                jr = scalar.vec3_real(cdof[w, j, 0], cdof[w, j, 1], cdof[w, j, 2])
+                jp = scalar.vec3_real(cdof[w, j, 3], cdof[w, j, 4], cdof[w, j, 5]) + _cross(jr, offset)
             if diagnostic != 0:
                 for r in range(3):
                     stages[w, body, 33+43*r+j] = jp[r]
                     stages[w, body, 162+43*r+j] = jr[r]
-            qforce = wp.float64(0.0)
+            qforce = scalar.wp_real(0.0)
             for r in range(3):
-                if world_force[r] != wp.float64(0.0):
+                if world_force[r] != scalar.wp_real(0.0):
                     qforce = qforce + jp[r]*world_force[r]
             qfrc[w, j] = qfrc[w, j] + qforce
-            qtorque = wp.float64(0.0)
+            qtorque = scalar.wp_real(0.0)
             for r in range(3):
-                if world_torque[r] != wp.float64(0.0):
+                if world_torque[r] != scalar.wp_real(0.0):
                     qtorque = qtorque + jr[r]*world_torque[r]
             qfrc[w, j] = qfrc[w, j] + qtorque
             if diagnostic != 0:
@@ -194,29 +195,29 @@ class FluidWorkspace:
         self.prepare_version = prepared.prepare_version
         self.model_identity_sha256 = prepared.model_identity_sha256
         self.passive_disabled = prepared.passive_disabled
-        self.cvel = wp.zeros((capacity, 38, 6), wp.float64, device=device)
-        self.subtree_com = wp.zeros((capacity, 38, 3), wp.float64, device=device)
-        self.xipos = wp.zeros((capacity, 38, 3), wp.float64, device=device)
-        self.ximat = wp.zeros((capacity, 38, 9), wp.float64, device=device)
-        self.cdof = wp.zeros((capacity, 43, 6), wp.float64, device=device)
+        self.cvel = wp.zeros((capacity, 38, 6), scalar.wp_real, device=device)
+        self.subtree_com = wp.zeros((capacity, 38, 3), scalar.wp_real, device=device)
+        self.xipos = wp.zeros((capacity, 38, 3), scalar.wp_real, device=device)
+        self.ximat = wp.zeros((capacity, 38, 9), scalar.wp_real, device=device)
+        self.cdof = wp.zeros((capacity, 43, 6), scalar.wp_real, device=device)
         self.active = wp.zeros(capacity, wp.int32, device=device)
-        self.qfrc = wp.zeros((capacity, 43), wp.float64, device=device)
+        self.qfrc = wp.zeros((capacity, 43), scalar.wp_real, device=device)
         self.status = wp.zeros(capacity, wp.int32, device=device)
-        self._empty_stages = wp.zeros((1, 1, 1), wp.float64, device=device)
+        self._empty_stages = wp.zeros((1, 1, 1), scalar.wp_real, device=device)
         for name, value, dtype in (
             ('rootid', prepared.rootid, wp.int32),
-            ('mass', prepared.mass, wp.float64),
-            ('box', prepared.box, wp.float64),
+            ('mass', prepared.mass, scalar.wp_real),
+            ('box', prepared.box, scalar.wp_real),
             ('ancestor', prepared.ancestor, wp.int32),
-            ('wind', prepared.wind, wp.float64),
-            ('opt', prepared.opt, wp.float64),
+            ('wind', prepared.wind, scalar.wp_real),
+            ('opt', prepared.opt, scalar.wp_real),
         ):
             arr = np.ascontiguousarray(value, np.int32 if dtype == wp.int32 else np.float64)
             setattr(self, name, wp.array(arr, dtype=dtype, device=device))
 
     def enable_diagnostics(self):
         """Allocate optional stage storage before a diagnostic launch/capture."""
-        self.stages = wp.zeros((self.capacity, 38, 334), wp.float64,
+        self.stages = wp.zeros((self.capacity, 38, 334), scalar.wp_real,
                                device=self.device)
 
     def launch(self, stream=None, diagnostic=False):

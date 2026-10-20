@@ -4,6 +4,7 @@ This independent ABI deliberately owns no old D/Newton/forward publications.
 Its two private consumer-valid flags revoke before any payload store. Existing
 runtime force-write/downstream invalidation is a separate unavailable contract.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 from threading import RLock
 
@@ -50,7 +51,7 @@ class AppliedForceWrite:
         shapes=((W,nv),(W,nb,6),(W,nv),(W,nb,6))+((W,),)*5
         spans=[]
         for i,(a,shape) in enumerate(zip(arrays,shapes)):
-            dtype=self._wp.float64 if i<4 else self._wp.int32;width=8 if i<4 else 4
+            dtype=scalar.wp_real if i<4 else self._wp.int32;width=scalar.itemsize if i<4 else 4
             if not isinstance(a,self._wp.array) or a.dtype!=dtype or tuple(a.shape)!=shape:
                 raise ValueError('applied-force exact shape/dtype owner required')
             count=1;strides=[]

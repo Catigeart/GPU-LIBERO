@@ -90,3 +90,30 @@ threads. Build that target in an existing configured GPU build directory and
 run its executable separately from the Python tests.
 The cases include rotated frames, fully and partially infinite bounds, and
 separated bodies, in addition to ordered overflow and explicit-pair handling.
+
+Precision regressions build from the production CUDA bodies in both scalar configurations.
+`precision_gram_test.cu` checks two-world dense/sparse reductions, the cache and
+fallback, and shared-loan redzones. `tests/support/box_contact_source.py` retains
+the upstream source derivation solely for tests; it does not generate production
+code. The derivation test checks the edge tail and first-vertex clip statements;
+BoxBox geometric fixtures cover touching, swapped boxes, SAT ties and scales.
+
+The optional `flash_newton_replay_probe` and `flash_newton_replay_probe_fp32`
+CMake shared-library targets expose diagnostic entries for the NV=39 normal
+atomic-reduction configuration. They link the production, separately compiled
+Newton object. A caller supplies retained device arguments and buffers; the
+Newton-only entry holds geometry, constraints and smooth dynamics fixed, and
+the forward entry returns before control or integration. The forward fixture
+includes the maintained physical-substep source in its own translation unit to
+access the actual forward function. Neither target is a normal product
+dependency, and neither adds diagnostics to the production execution path.
+The entries are declared in `cuda/newton_replay_probe.cu`; their return codes
+report CUDA launch errors, while the output records contain solver status.
+`flash_newton_replay_launch_entry_policy` selects the initial-gradient test
+explicitly, so both policies can be compared using one numerical device object.
+
+The optional `flash_boxbox_replay_probe` and `_fp32` shared-library targets
+accept batches of frozen sizes, positions, rotation matrices and margins.
+They call the maintained BoxBox body using scalar or 8/16/32-lane cooperation
+and export contact geometry and the selected axis. Their ABI is declared in
+`cuda/boxbox_replay_probe.cu`; neither target is a normal product dependency.

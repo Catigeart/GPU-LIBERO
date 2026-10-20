@@ -1,7 +1,8 @@
+#include "precision.cuh"
 #pragma once
 namespace collision_cuda {
 __device__ void cf_commit_contacts(int w,int* active,int* error,int* ncon,
-        double* candidate_f,int* candidate_i,double* public_f,int* public_i,int capacity){
+        real_t* candidate_f,int* candidate_i,real_t* public_f,int* public_i,int capacity){
     if(active[w]!=1||error[w])return;
     const int n=ncon[w];if(n<0||n>capacity)return;
     const long long base=1LL*w*capacity;
@@ -9,9 +10,9 @@ __device__ void cf_commit_contacts(int w,int* active,int* error,int* ncon,
     libero_vec::copy_block(candidate_i+base*5,public_i+base*5,size_t(n)*5);
 }
 
-__device__ inline void cf_scatter_f(int j,int t,double value,double* dist,double* pos,
-        double* frame,double* margin,double* friction,double* solref,
-        double* solreffriction,double* solimp){
+__device__ inline void cf_scatter_f(int j,int t,real_t value,real_t* dist,real_t* pos,
+        real_t* frame,real_t* margin,real_t* friction,real_t* solref,
+        real_t* solreffriction,real_t* solimp){
     if(j==0)dist[t]=value;
     else if(j<4)pos[t*3+j-1]=value;
     else if(j<13)frame[t*9+j-4]=value;
@@ -30,10 +31,10 @@ __device__ inline void cf_scatter_i(int j,int t,int value,int* dim,int* geom1,in
 // final scatter publishes C's AoS and S's SoA from the same guarded wide loads.
 // S admission remains a separate decision and never rolls back a valid C.
 __device__ void cf_commit_contacts_transport(int w,int* active,int* valid,int* error,
-        int* cerror,int* cactive,int* ncon,double* candidate_f,int* candidate_i,
-        double* public_f,int* public_i,int* target_active,int* target_ncon,
-        double* dist,double* pos,double* frame,double* margin,double* friction,
-        double* solref,double* solreffriction,double* solimp,
+        int* cerror,int* cactive,int* ncon,real_t* candidate_f,int* candidate_i,
+        real_t* public_f,int* public_i,int* target_active,int* target_ncon,
+        real_t* dist,real_t* pos,real_t* frame,real_t* margin,real_t* friction,
+        real_t* solref,real_t* solreffriction,real_t* solimp,
         int* dim,int* geom1,int* geom2,int* exclude,int source_capacity,int target_capacity){
     if(threadIdx.x==0)target_active[w]=0;
     __syncthreads();
@@ -49,7 +50,7 @@ __device__ void cf_commit_contacts_transport(int w,int* active,int* valid,int* e
     const long long nf=1LL*n*65;
     for(long long unit=threadIdx.x;unit<(nf+1)/2;unit+=blockDim.x){
         const long long field=unit*2;
-        double2 v;
+        real2_t v;
         if(field+1<nf){v=libero_vec::load_pair(candidate_f+base*65+field);
             libero_vec::store_pair(public_f+base*65+field,v.x,v.y);}
         else{v.x=candidate_f[base*65+field];public_f[base*65+field]=v.x;}
@@ -83,22 +84,22 @@ __device__ void cf_commit_contacts_transport(int w,int* active,int* valid,int* e
 // Live candidates contain only the 28 initialized solver fields. Preserve
 // all 65 public doubles, including mu/H zeros, at transactional commit.
 __device__ void cf_commit_contacts_live(int w,int* active,int* error,int* ncon,
-        double* candidate_f,int* candidate_i,double* public_f,int* public_i,int capacity){
+        real_t* candidate_f,int* candidate_i,real_t* public_f,int* public_i,int capacity){
     if(active[w]!=1||error[w])return;
     const int n=ncon[w];if(n<0||n>capacity)return;
     const long long base=1LL*w*capacity;
     for(long long field=threadIdx.x;field<1LL*n*65;field+=blockDim.x){
         const int k=field%65;const long long row=base+field/65;
-        public_f[row*65+k]=k<28?candidate_f[row*28+k]:0.0;
+        public_f[row*65+k]=k<28?candidate_f[row*28+k]:REAL_C(0.0);
     }
     libero_vec::copy_block(candidate_i+base*5,public_i+base*5,size_t(n)*5);
 }
 
 __device__ void cf_commit_contacts_transport_live(int w,int* active,int* valid,int* error,
-        int* cerror,int* cactive,int* ncon,double* candidate_f,int* candidate_i,
-        double* public_f,int* public_i,int* target_active,int* target_ncon,
-        double* dist,double* pos,double* frame,double* margin,double* friction,
-        double* solref,double* solreffriction,double* solimp,
+        int* cerror,int* cactive,int* ncon,real_t* candidate_f,int* candidate_i,
+        real_t* public_f,int* public_i,int* target_active,int* target_ncon,
+        real_t* dist,real_t* pos,real_t* frame,real_t* margin,real_t* friction,
+        real_t* solref,real_t* solreffriction,real_t* solimp,
         int* dim,int* geom1,int* geom2,int* exclude,int source_capacity,int target_capacity){
     if(threadIdx.x==0)target_active[w]=0;
     __syncthreads();
@@ -109,7 +110,7 @@ __device__ void cf_commit_contacts_transport_live(int w,int* active,int* valid,i
     const long long base=1LL*w*source_capacity;
     for(long long field=threadIdx.x;field<1LL*n*65;field+=blockDim.x){
         const int k=field%65;const long long row=base+field/65;
-        const double value=k<28?candidate_f[row*28+k]:0.0;
+        const real_t value=k<28?candidate_f[row*28+k]:REAL_C(0.0);
         public_f[row*65+k]=value;
         if(target_ok&&k<28)cf_scatter_f(k,w*target_capacity+field/65,value,
             dist,pos,frame,margin,friction,solref,solreffriction,solimp);
@@ -123,8 +124,8 @@ __device__ void cf_commit_contacts_transport_live(int w,int* active,int* valid,i
 }
 
 __device__ void cf_transport(int w,int* active,int* valid,int* error,int* cerror,int* cactive,int* ncon,
-        double* cf,int* ci,int* target_active,int* target_ncon,double* dist,double* pos,double* frame,
-        double* margin,double* friction,double* solref,double* solreffriction,double* solimp,
+        real_t* cf,int* ci,int* target_active,int* target_ncon,real_t* dist,real_t* pos,real_t* frame,
+        real_t* margin,real_t* friction,real_t* solref,real_t* solreffriction,real_t* solimp,
         int* dim,int* geom1,int* geom2,int* exclude,int source_capacity,int target_capacity){
     if(threadIdx.x==0)target_active[w]=0;
     __syncthreads();
@@ -132,7 +133,7 @@ __device__ void cf_transport(int w,int* active,int* valid,int* error,int* cerror
     if(active[w]!=1||valid[w]!=1||error[w]||cactive[w]!=1||cerror[w]||n<0||n>source_capacity||n>target_capacity)return;
     for(int k=threadIdx.x;k<n;k+=blockDim.x){
         int a=(w*source_capacity+k)*65,b=(w*source_capacity+k)*5,t=w*target_capacity+k;
-        for(int j=0;j<28;j+=2){const double2 v=libero_vec::load_pair(cf+a+j);
+        for(int j=0;j<28;j+=2){const real2_t v=libero_vec::load_pair(cf+a+j);
             cf_scatter_f(j,t,v.x,dist,pos,frame,margin,friction,solref,solreffriction,solimp);
             cf_scatter_f(j+1,t,v.y,dist,pos,frame,margin,friction,solref,solreffriction,solimp);}
         const int* src=ci+b;

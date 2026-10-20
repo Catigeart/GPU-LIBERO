@@ -3,6 +3,7 @@
 Source order: MuJoCo 2.3.7 engine_forward.c:364-379. The native factor and
 single-RHS solve are the accepted mass_solve._factor_solve GPU transcription.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 import importlib.util
@@ -23,24 +24,24 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': F
 
 
 @wp.kernel(enable_backward=False)
-def _make_force(passive: wp.array(dtype=wp.float64, ndim=2),
-                bias: wp.array(dtype=wp.float64, ndim=2),
-                applied: wp.array(dtype=wp.float64, ndim=2),
-                actuator: wp.array(dtype=wp.float64, ndim=2),
-                xfrc: wp.array(dtype=wp.float64, ndim=3),
+def _make_force(passive: wp.array(dtype=scalar.wp_real, ndim=2),
+                bias: wp.array(dtype=scalar.wp_real, ndim=2),
+                applied: wp.array(dtype=scalar.wp_real, ndim=2),
+                actuator: wp.array(dtype=scalar.wp_real, ndim=2),
+                xfrc: wp.array(dtype=scalar.wp_real, ndim=3),
                 active: wp.array(dtype=wp.int32),
                 work_active: wp.array(dtype=wp.int32),
                 entry_status: wp.array(dtype=wp.int32),
-                smooth: wp.array(dtype=wp.float64, ndim=2),
-                rhs: wp.array(dtype=wp.float64, ndim=3),
+                smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+                rhs: wp.array(dtype=scalar.wp_real, ndim=3),
                 nv: int, nbody: int):
     w = wp.tid()
     entry_status[w] = 0
     work_active[w] = 0
     for i in range(nv):
-        smooth[w, i] = wp.float64(0.0)
+        smooth[w, i] = scalar.wp_real(0.0)
         for r in range(4):
-            rhs[w, r, i] = wp.float64(0.0)
+            rhs[w, r, i] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -48,7 +49,7 @@ def _make_force(passive: wp.array(dtype=wp.float64, ndim=2),
         return
     for b in range(nbody):
         for k in range(6):
-            if xfrc[w, b, k] != wp.float64(0.0):
+            if xfrc[w, b, k] != scalar.wp_real(0.0):
                 entry_status[w] = 6
                 return
     for i in range(nv):
@@ -71,9 +72,9 @@ def _make_force(passive: wp.array(dtype=wp.float64, ndim=2),
 @wp.kernel(enable_backward=False)
 def _finish(entry_status: wp.array(dtype=wp.int32),
             factor_status: wp.array(dtype=wp.int32),
-            solution: wp.array(dtype=wp.float64, ndim=3),
-            smooth: wp.array(dtype=wp.float64, ndim=2),
-            qacc: wp.array(dtype=wp.float64, ndim=2),
+            solution: wp.array(dtype=scalar.wp_real, ndim=3),
+            smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+            qacc: wp.array(dtype=scalar.wp_real, ndim=2),
             status: wp.array(dtype=wp.int32), nv: int):
     w = wp.tid()
     s = factor_status[w]
@@ -84,9 +85,9 @@ def _finish(entry_status: wp.array(dtype=wp.int32),
         if s == 0 or s == 5:
             qacc[w, i] = solution[w, 0, i]
         else:
-            qacc[w, i] = wp.float64(0.0)
+            qacc[w, i] = scalar.wp_real(0.0)
         if s != 0 and s != 5:
-            smooth[w, i] = wp.float64(0.0)
+            smooth[w, i] = scalar.wp_real(0.0)
 
 
 class SmoothAccelerationWorkspace:
@@ -102,16 +103,16 @@ class SmoothAccelerationWorkspace:
         self.mass = MassSolveWorkspace(model, capacity, device=device)
         self.nv, self.nM, self.nbody = int(model.nv), int(model.nM), int(model.nbody)
         self.capacity, self.device = capacity, device
-        self.passive = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
-        self.bias = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
-        self.applied = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
-        self.actuator = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
-        self.xfrc = wp.zeros((capacity,self.nbody,6), dtype=wp.float64, device=device)
+        self.passive = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
+        self.bias = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
+        self.applied = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
+        self.actuator = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
+        self.xfrc = wp.zeros((capacity,self.nbody,6), dtype=scalar.wp_real, device=device)
         self.active = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.work_active = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.entry_status = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.smooth = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
-        self.qacc = wp.zeros((capacity,self.nv), dtype=wp.float64, device=device)
+        self.smooth = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
+        self.qacc = wp.zeros((capacity,self.nv), dtype=scalar.wp_real, device=device)
         self.acc = self.qacc
         self.status = wp.zeros(capacity, dtype=wp.int32, device=device)
         # Aliases established in prepare; no production data copies.

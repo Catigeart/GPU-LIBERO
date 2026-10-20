@@ -1,5 +1,6 @@
 """Frozen two-model workspace and caller-owned state for the N16 prefix."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import hashlib,json
 from pathlib import Path
 import numpy as np
@@ -75,11 +76,11 @@ class BodyKinematicsWorkspace:
         model.validate();self.model=model;self.capacity=capacity;self.device=device
         n=model.dims;nb=n['nbody'];nj=n['njnt'];nm=n['nmocap'];nq=n['nq']
         m=Model()
-        for target,source,dtype in (('qpos0','qpos0',wp.float64),('parent','body_parentid',wp.int32),('jnum','body_jntnum',wp.int32),('jadr','body_jntadr',wp.int32),('mocapid','body_mocapid',wp.int32),('bpos','body_pos',wp.float64),('bquat','body_quat',wp.float64),('jtype','jnt_type',wp.int32),('qadr','jnt_qposadr',wp.int32),('jaxis','jnt_axis',wp.float64),('jpos','jnt_pos',wp.float64)):
+        for target,source,dtype in (('qpos0','qpos0',scalar.wp_real),('parent','body_parentid',wp.int32),('jnum','body_jntnum',wp.int32),('jadr','body_jntadr',wp.int32),('mocapid','body_mocapid',wp.int32),('bpos','body_pos',scalar.wp_real),('bquat','body_quat',scalar.wp_real),('jtype','jnt_type',wp.int32),('qadr','jnt_qposadr',wp.int32),('jaxis','jnt_axis',scalar.wp_real),('jpos','jnt_pos',scalar.wp_real)):
             setattr(m,target,wp.array(np.ascontiguousarray(model.arrays[source].reshape(-1)),dtype=dtype,device=device))
         m.nq=nq;m.nb=nb;m.nj=nj;m.nm=nm;self.static=m
         d=Data();g=Diagnostic()
-        def f(shape):return wp.zeros(shape,wp.float64,device=device)
+        def f(shape):return wp.zeros(shape,scalar.wp_real,device=device)
         def i(shape):return wp.zeros(shape,wp.int32,device=device)
         d.active=i(capacity);d.qpos=f((capacity,nq));d.mocap_pos=f((capacity,max(1,nm*3)));d.mocap_quat=f((capacity,max(1,nm*4)))
         d.qtmp=f((capacity,nq));d.mqtmp=f((capacity,max(1,nm*4)))
@@ -103,7 +104,7 @@ class BodyKinematicsWorkspace:
             if not isinstance(a,np.ndarray) or a.shape!=shapes[name] or a.dtype!=dt:raise ValueError('input schema '+name)
             payload=np.ascontiguousarray(a.reshape((N,-1)) if name.startswith('mocap') else a)
             if name.startswith('mocap') and payload.shape[1]==0:continue
-            wp.copy(getattr(self,name),wp.array(payload,dtype=wp.int32 if name=='active' else wp.float64,device=self.device))
+            wp.copy(getattr(self,name),wp.array(payload,dtype=wp.int32 if name=='active' else scalar.wp_real,device=self.device))
     def download(self):
         """Diagnostic download, explicitly outside the production launch interval."""
         n=self.model.dims;N=self.capacity;nb=n['nbody'];nj=n['njnt'];nm=n['nmocap']

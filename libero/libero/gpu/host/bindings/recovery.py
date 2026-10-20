@@ -1,4 +1,5 @@
 """Native check/reset/protocol; real conditional forward stays scheduler-owned."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import types
@@ -21,7 +22,7 @@ def install(bundle,root):
     for field,warning in [('qpos',4),('qvel',5),('qacc',6)]:
         stages=[('cf_recovery::check',[d.views[field],d.active,d.reset_mask,d.reason,d.bad_index,d.source_error,d.catalog[field]['width'],warning],'block')]
         for name,view in d.views.items():
-            kind={wp.float64:'f64',wp.int32:'i32',wp.int64:'i64'}[view.dtype]
+            kind={scalar.wp_real:'f64',wp.int32:'i32',wp.int64:'i64'}[view.dtype]
             stages.append(('cf_recovery::reset_'+kind,[view,d.defaults[name],d.reset_mask,d.catalog[name]['width']],'block'))
         stages.append(('cf_recovery::warnings',[d.warning_number,d.warning_lastinfo,d.reset_mask,d.reason,d.bad_index],'lane0'))
         if getattr(d,'_fusion_protocol',None) is not None:

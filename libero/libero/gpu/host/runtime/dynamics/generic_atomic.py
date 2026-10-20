@@ -3,10 +3,11 @@
 Generated with scripts/gpu_d_runtime/generate_count_kernels.py.
 Numerical/model qualification is independent of the original fixed licence.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
-PI = wp.float64(3.14159265358979323846)
-V6 = wp.types.vector(length=6,dtype=wp.float64)
+PI = scalar.wp_real(3.14159265358979323846)
+V6 = wp.types.vector(length=6,dtype=scalar.wp_real)
 STATUS_OK = 0
 STATUS_ACTIVE = 1
 STATUS_INPUT = 2
@@ -14,11 +15,11 @@ STATUS_ARITHMETIC = 3
 
 
 @wp.kernel(enable_backward=False)
-def joint_passive_count(qpos: wp.array(dtype=wp.float64, ndim=2), qvel: wp.array(dtype=wp.float64, ndim=2), active: wp.array(dtype=wp.int32), jtype: wp.array(dtype=wp.int32), qadr: wp.array(dtype=wp.int32), dadr: wp.array(dtype=wp.int32), stiffness: wp.array(dtype=wp.float64), spring: wp.array(dtype=wp.float64), damping: wp.array(dtype=wp.float64), out: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32), nv: int, nq: int, njnt: int):
+def joint_passive_count(qpos: wp.array(dtype=scalar.wp_real, ndim=2), qvel: wp.array(dtype=scalar.wp_real, ndim=2), active: wp.array(dtype=wp.int32), jtype: wp.array(dtype=wp.int32), qadr: wp.array(dtype=wp.int32), dadr: wp.array(dtype=wp.int32), stiffness: wp.array(dtype=scalar.wp_real), spring: wp.array(dtype=scalar.wp_real), damping: wp.array(dtype=scalar.wp_real), out: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32), nv: int, nq: int, njnt: int):
     w = wp.tid()
     status[w] = 0
     for k in range(nv):
-        out[w, k] = wp.float64(0.0)
+        out[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -48,24 +49,24 @@ def joint_passive_count(qpos: wp.array(dtype=wp.float64, ndim=2), qvel: wp.array
         out[w, k] = out[w, k] - damping[k] * qvel[w, k]
 
 @wp.func
-def _cross(a: wp.vec3d, b: wp.vec3d):
-    return wp.vec3d(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+def _cross(a: scalar.vec3_real, b: scalar.vec3_real):
+    return scalar.vec3_real(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 @wp.func
-def _rot(m: wp.array(dtype=wp.float64, ndim=3), w: int, body: int, v: wp.vec3d):
-    return wp.vec3d(m[w, body, 0] * v[0] + m[w, body, 1] * v[1] + m[w, body, 2] * v[2], m[w, body, 3] * v[0] + m[w, body, 4] * v[1] + m[w, body, 5] * v[2], m[w, body, 6] * v[0] + m[w, body, 7] * v[1] + m[w, body, 8] * v[2])
+def _rot(m: wp.array(dtype=scalar.wp_real, ndim=3), w: int, body: int, v: scalar.vec3_real):
+    return scalar.vec3_real(m[w, body, 0] * v[0] + m[w, body, 1] * v[1] + m[w, body, 2] * v[2], m[w, body, 3] * v[0] + m[w, body, 4] * v[1] + m[w, body, 5] * v[2], m[w, body, 6] * v[0] + m[w, body, 7] * v[1] + m[w, body, 8] * v[2])
 
 @wp.func
-def _rot_t(m: wp.array(dtype=wp.float64, ndim=3), w: int, body: int, v: wp.vec3d):
-    return wp.vec3d(m[w, body, 0] * v[0] + m[w, body, 3] * v[1] + m[w, body, 6] * v[2], m[w, body, 1] * v[0] + m[w, body, 4] * v[1] + m[w, body, 7] * v[2], m[w, body, 2] * v[0] + m[w, body, 5] * v[1] + m[w, body, 8] * v[2])
+def _rot_t(m: wp.array(dtype=scalar.wp_real, ndim=3), w: int, body: int, v: scalar.vec3_real):
+    return scalar.vec3_real(m[w, body, 0] * v[0] + m[w, body, 3] * v[1] + m[w, body, 6] * v[2], m[w, body, 1] * v[0] + m[w, body, 4] * v[1] + m[w, body, 7] * v[2], m[w, body, 2] * v[0] + m[w, body, 5] * v[1] + m[w, body, 8] * v[2])
 
 @wp.kernel(enable_backward=False)
-def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(dtype=wp.float64, ndim=3), xipos: wp.array(dtype=wp.float64, ndim=3), ximat: wp.array(dtype=wp.float64, ndim=3), cdof: wp.array(dtype=wp.float64, ndim=3), active: wp.array(dtype=wp.int32), rootid: wp.array(dtype=wp.int32), mass: wp.array(dtype=wp.float64), box: wp.array(dtype=wp.float64, ndim=2), ancestor: wp.array(dtype=wp.int32, ndim=2), wind: wp.array(dtype=wp.float64), opt: wp.array(dtype=wp.float64), passive_disabled: int, diagnostic: int, stages: wp.array(dtype=wp.float64, ndim=3), qfrc: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32), nbody: int, nv: int):
+def fluid_count(cvel: wp.array(dtype=scalar.wp_real, ndim=3), subtree_com: wp.array(dtype=scalar.wp_real, ndim=3), xipos: wp.array(dtype=scalar.wp_real, ndim=3), ximat: wp.array(dtype=scalar.wp_real, ndim=3), cdof: wp.array(dtype=scalar.wp_real, ndim=3), active: wp.array(dtype=wp.int32), rootid: wp.array(dtype=wp.int32), mass: wp.array(dtype=scalar.wp_real), box: wp.array(dtype=scalar.wp_real, ndim=2), ancestor: wp.array(dtype=wp.int32, ndim=2), wind: wp.array(dtype=scalar.wp_real), opt: wp.array(dtype=scalar.wp_real), passive_disabled: int, diagnostic: int, stages: wp.array(dtype=scalar.wp_real, ndim=3), qfrc: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32), nbody: int, nv: int):
     w = wp.tid()
     if diagnostic != 0:
         for body in range(nbody):
             for k in range(33 + 7 * nv):
-                stages[w, body, k] = wp.float64(0.0)
+                stages[w, body, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if status[w] != 0:
@@ -94,18 +95,18 @@ def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(
                 return
     if passive_disabled != 0:
         return
-    if opt[0] <= wp.float64(0.0) and opt[1] <= wp.float64(0.0):
+    if opt[0] <= scalar.wp_real(0.0) and opt[1] <= scalar.wp_real(0.0):
         return
     for body in range(1, nbody):
-        if mass[body] < wp.float64(1e-15):
+        if mass[body] < scalar.wp_real(1e-15):
             continue
         root = rootid[body]
-        offset = wp.vec3d(xipos[w, body, 0] - subtree_com[w, root, 0], xipos[w, body, 1] - subtree_com[w, root, 1], xipos[w, body, 2] - subtree_com[w, root, 2])
-        ang = wp.vec3d(cvel[w, body, 0], cvel[w, body, 1], cvel[w, body, 2])
-        lin = wp.vec3d(cvel[w, body, 3], cvel[w, body, 4], cvel[w, body, 5])
+        offset = scalar.vec3_real(xipos[w, body, 0] - subtree_com[w, root, 0], xipos[w, body, 1] - subtree_com[w, root, 1], xipos[w, body, 2] - subtree_com[w, root, 2])
+        ang = scalar.vec3_real(cvel[w, body, 0], cvel[w, body, 1], cvel[w, body, 2])
+        lin = scalar.vec3_real(cvel[w, body, 3], cvel[w, body, 4], cvel[w, body, 5])
         local_ang = _rot_t(ximat, w, body, ang)
         object_lin = _rot_t(ximat, w, body, lin - _cross(offset, ang))
-        local_wind = _rot_t(ximat, w, body, wp.vec3d(wind[0], wind[1], wind[2]))
+        local_wind = _rot_t(ximat, w, body, scalar.vec3_real(wind[0], wind[1], wind[2]))
         local_lin = object_lin - local_wind
         for r in range(3):
             if not wp.isfinite(offset[r]) or not wp.isfinite(local_ang[r]) or (not wp.isfinite(object_lin[r])) or (not wp.isfinite(local_wind[r])) or (not wp.isfinite(local_lin[r])):
@@ -116,27 +117,27 @@ def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(
                 stages[w, body, r] = box[body, r]
                 stages[w, body, 3 + r] = local_ang[r]
                 stages[w, body, 6 + r] = object_lin[r]
-                stages[w, body, 9 + r] = wp.float64(0.0)
+                stages[w, body, 9 + r] = scalar.wp_real(0.0)
                 stages[w, body, 12 + r] = local_wind[r]
                 stages[w, body, 15 + r] = local_ang[r]
                 stages[w, body, 18 + r] = local_lin[r]
         (x, y, z) = (box[body, 0], box[body, 1], box[body, 2])
         (visc, density) = (opt[0], opt[1])
-        torque = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-        force = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-        if visc > wp.float64(0.0):
-            diam = (x + y + z) / wp.float64(3.0)
+        torque = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+        force = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+        if visc > scalar.wp_real(0.0):
+            diam = (x + y + z) / scalar.wp_real(3.0)
             ang_scl = -PI * diam * diam * diam * visc
-            lin_scl = -wp.float64(3.0) * PI * diam * visc
+            lin_scl = -scalar.wp_real(3.0) * PI * diam * visc
             torque = local_ang * ang_scl
             force = local_lin * lin_scl
-        if density > wp.float64(0.0):
-            force[0] = force[0] - wp.float64(0.5) * density * y * z * wp.abs(local_lin[0]) * local_lin[0]
-            force[1] = force[1] - wp.float64(0.5) * density * x * z * wp.abs(local_lin[1]) * local_lin[1]
-            force[2] = force[2] - wp.float64(0.5) * density * x * y * wp.abs(local_lin[2]) * local_lin[2]
-            torque[0] = torque[0] - density * x * (y * y * y * y + z * z * z * z) * wp.abs(local_ang[0]) * local_ang[0] / wp.float64(64.0)
-            torque[1] = torque[1] - density * y * (x * x * x * x + z * z * z * z) * wp.abs(local_ang[1]) * local_ang[1] / wp.float64(64.0)
-            torque[2] = torque[2] - density * z * (x * x * x * x + y * y * y * y) * wp.abs(local_ang[2]) * local_ang[2] / wp.float64(64.0)
+        if density > scalar.wp_real(0.0):
+            force[0] = force[0] - scalar.wp_real(0.5) * density * y * z * wp.abs(local_lin[0]) * local_lin[0]
+            force[1] = force[1] - scalar.wp_real(0.5) * density * x * z * wp.abs(local_lin[1]) * local_lin[1]
+            force[2] = force[2] - scalar.wp_real(0.5) * density * x * y * wp.abs(local_lin[2]) * local_lin[2]
+            torque[0] = torque[0] - density * x * (y * y * y * y + z * z * z * z) * wp.abs(local_ang[0]) * local_ang[0] / scalar.wp_real(64.0)
+            torque[1] = torque[1] - density * y * (x * x * x * x + z * z * z * z) * wp.abs(local_ang[1]) * local_ang[1] / scalar.wp_real(64.0)
+            torque[2] = torque[2] - density * z * (x * x * x * x + y * y * y * y) * wp.abs(local_ang[2]) * local_ang[2] / scalar.wp_real(64.0)
         world_torque = _rot(ximat, w, body, torque)
         world_force = _rot(ximat, w, body, force)
         for r in range(3):
@@ -150,11 +151,11 @@ def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(
                 stages[w, body, 27 + r] = world_torque[r]
                 stages[w, body, 30 + r] = world_force[r]
         for j in range(nv):
-            jp = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-            jr = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+            jp = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
+            jr = scalar.vec3_real(scalar.wp_real(0.0), scalar.wp_real(0.0), scalar.wp_real(0.0))
             if ancestor[body, j] != 0:
-                jr = wp.vec3d(cdof[w, j, 0], cdof[w, j, 1], cdof[w, j, 2])
-                jp = wp.vec3d(cdof[w, j, 3], cdof[w, j, 4], cdof[w, j, 5]) + _cross(jr, offset)
+                jr = scalar.vec3_real(cdof[w, j, 0], cdof[w, j, 1], cdof[w, j, 2])
+                jp = scalar.vec3_real(cdof[w, j, 3], cdof[w, j, 4], cdof[w, j, 5]) + _cross(jr, offset)
             for r in range(3):
                 if not wp.isfinite(jp[r]) or not wp.isfinite(jr[r]):
                     status[w] = 2
@@ -163,14 +164,14 @@ def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(
                 for r in range(3):
                     stages[w, body, 33 + nv * r + j] = jp[r]
                     stages[w, body, 33 + 3 * nv + nv * r + j] = jr[r]
-            qforce = wp.float64(0.0)
+            qforce = scalar.wp_real(0.0)
             for r in range(3):
-                if world_force[r] != wp.float64(0.0):
+                if world_force[r] != scalar.wp_real(0.0):
                     qforce = qforce + jp[r] * world_force[r]
             qfrc[w, j] = qfrc[w, j] + qforce
-            qtorque = wp.float64(0.0)
+            qtorque = scalar.wp_real(0.0)
             for r in range(3):
-                if world_torque[r] != wp.float64(0.0):
+                if world_torque[r] != scalar.wp_real(0.0):
                     qtorque = qtorque + jr[r] * world_torque[r]
             qfrc[w, j] = qfrc[w, j] + qtorque
             if not wp.isfinite(qfrc[w, j]):
@@ -180,17 +181,17 @@ def fluid_count(cvel: wp.array(dtype=wp.float64, ndim=3), subtree_com: wp.array(
                 stages[w, body, 33 + 6 * nv + j] = qfrc[w, j]
 
 @wp.kernel(enable_backward=False)
-def actuation_count(length: wp.array(dtype=wp.float64, ndim=2), moment: wp.array(dtype=wp.float64, ndim=3), velocity: wp.array(dtype=wp.float64, ndim=2), ctrl: wp.array(dtype=wp.float64, ndim=2), active: wp.array(dtype=wp.int32), vel_status: wp.array(dtype=wp.int32), gain: wp.array(dtype=wp.float64), bias0: wp.array(dtype=wp.float64), bias1: wp.array(dtype=wp.float64), bias2: wp.array(dtype=wp.float64), bias_type: wp.array(dtype=wp.int32), ctrl_lo: wp.array(dtype=wp.float64), ctrl_hi: wp.array(dtype=wp.float64), force_lo: wp.array(dtype=wp.float64), force_hi: wp.array(dtype=wp.float64), force_limited: wp.array(dtype=wp.int32), disable_flags: wp.int32, force: wp.array(dtype=wp.float64, ndim=2), force_pre: wp.array(dtype=wp.float64, ndim=2), ctrl_used: wp.array(dtype=wp.float64, ndim=2), ctrl_route: wp.array(dtype=wp.int32, ndim=2), force_route: wp.array(dtype=wp.int32, ndim=2), qfrc_actuator: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32), warn_badctrl_count: wp.array(dtype=wp.int32), warn_badctrl_lastinfo: wp.array(dtype=wp.int32), warning_number: wp.array(dtype=wp.int32), warning_lastinfo: wp.array(dtype=wp.int32), nv: int, nu: int):
+def actuation_count(length: wp.array(dtype=scalar.wp_real, ndim=2), moment: wp.array(dtype=scalar.wp_real, ndim=3), velocity: wp.array(dtype=scalar.wp_real, ndim=2), ctrl: wp.array(dtype=scalar.wp_real, ndim=2), active: wp.array(dtype=wp.int32), vel_status: wp.array(dtype=wp.int32), gain: wp.array(dtype=scalar.wp_real), bias0: wp.array(dtype=scalar.wp_real), bias1: wp.array(dtype=scalar.wp_real), bias2: wp.array(dtype=scalar.wp_real), bias_type: wp.array(dtype=wp.int32), ctrl_lo: wp.array(dtype=scalar.wp_real), ctrl_hi: wp.array(dtype=scalar.wp_real), force_lo: wp.array(dtype=scalar.wp_real), force_hi: wp.array(dtype=scalar.wp_real), force_limited: wp.array(dtype=wp.int32), disable_flags: wp.int32, force: wp.array(dtype=scalar.wp_real, ndim=2), force_pre: wp.array(dtype=scalar.wp_real, ndim=2), ctrl_used: wp.array(dtype=scalar.wp_real, ndim=2), ctrl_route: wp.array(dtype=wp.int32, ndim=2), force_route: wp.array(dtype=wp.int32, ndim=2), qfrc_actuator: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32), warn_badctrl_count: wp.array(dtype=wp.int32), warn_badctrl_lastinfo: wp.array(dtype=wp.int32), warning_number: wp.array(dtype=wp.int32), warning_lastinfo: wp.array(dtype=wp.int32), nv: int, nu: int):
     w = wp.tid()
     status[w] = STATUS_OK
     warn_badctrl_count[w] = 0
     warn_badctrl_lastinfo[w] = -1
     for j in range(nv):
-        qfrc_actuator[w, j] = wp.float64(0.0)
+        qfrc_actuator[w, j] = scalar.wp_real(0.0)
     for i in range(nu):
-        force[w, i] = wp.float64(0.0)
-        force_pre[w, i] = wp.float64(0.0)
-        ctrl_used[w, i] = wp.float64(0.0)
+        force[w, i] = scalar.wp_real(0.0)
+        force_pre[w, i] = scalar.wp_real(0.0)
+        ctrl_used[w, i] = scalar.wp_real(0.0)
         ctrl_route[w, i] = 0
         force_route[w, i] = 0
     if active[w] == 0:
@@ -213,7 +214,7 @@ def actuation_count(length: wp.array(dtype=wp.float64, ndim=2), moment: wp.array
             elif u > ctrl_hi[i]:
                 u = ctrl_hi[i]
                 ctrl_route[w, i] = 1
-        if bad_index < 0 and (u != u or u > wp.float64(10000000000.0) or u < wp.float64(-10000000000.0)):
+        if bad_index < 0 and (u != u or u > scalar.wp_real(10000000000.0) or u < scalar.wp_real(-10000000000.0)):
             bad_index = i
     if bad_index >= 0:
         warn_badctrl_count[w] = 1
@@ -221,7 +222,7 @@ def actuation_count(length: wp.array(dtype=wp.float64, ndim=2), moment: wp.array
         warning_number[w] = warning_number[w] + 1
         warning_lastinfo[w] = bad_index
     for i in range(nu):
-        u = wp.float64(0.0)
+        u = scalar.wp_real(0.0)
         if bad_index < 0:
             u = ctrl[w, i]
             if ctrl_route[w, i] == -1:
@@ -243,7 +244,7 @@ def actuation_count(length: wp.array(dtype=wp.float64, ndim=2), moment: wp.array
         force[w, i] = f
     for i in range(nu):
         f = force[w, i]
-        if f != wp.float64(0.0):
+        if f != scalar.wp_real(0.0):
             for j in range(nv):
                 qfrc_actuator[w, j] = qfrc_actuator[w, j] + moment[w, i, j] * f
     for j in range(nv):
@@ -252,19 +253,19 @@ def actuation_count(length: wp.array(dtype=wp.float64, ndim=2), moment: wp.array
             return
 
 @wp.func
-def _dofmul(a: wp.array2d(dtype=wp.float64), q: wp.array2d(dtype=wp.float64), w: int, adr: int, count: int, k: int) -> wp.float64:
+def _dofmul(a: wp.array2d(dtype=scalar.wp_real), q: wp.array2d(dtype=scalar.wp_real), w: int, adr: int, count: int, k: int) -> scalar.wp_real:
     if count == 1:
         return a[w, 6 * adr + k] * q[w, adr]
-    out = wp.float64(0.0)
+    out = scalar.wp_real(0.0)
     if count > 1:
         for i in range(count):
             scale = q[w, adr + i]
-            if scale != wp.float64(0.0):
+            if scale != scalar.wp_real(0.0):
                 out += a[w, 6 * (adr + i) + k] * scale
     return out
 
 @wp.func
-def _inert(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64), w: int, body: int) -> V6:
+def _inert(i: wp.array2d(dtype=scalar.wp_real), v: wp.array2d(dtype=scalar.wp_real), w: int, body: int) -> V6:
     b = 10 * body
     a = 6 * body
     (v0, v1, v2) = (v[w, a], v[w, a + 1], v[w, a + 2])
@@ -278,21 +279,21 @@ def _inert(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64), w: 
     return V6(f0, f1, f2, f3, f4, f5)
 
 @wp.func
-def _inert_acc(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64), w: int, body: int) -> V6:
+def _inert_acc(i: wp.array2d(dtype=scalar.wp_real), v: wp.array2d(dtype=scalar.wp_real), w: int, body: int) -> V6:
     return _inert(i, v, w, body)
 
 @wp.kernel(enable_backward=False)
-def post_count(active: wp.array(dtype=wp.int32), qvel: wp.array2d(dtype=wp.float64), qacc: wp.array2d(dtype=wp.float64), cinert: wp.array2d(dtype=wp.float64), cvel: wp.array2d(dtype=wp.float64), cdof: wp.array2d(dtype=wp.float64), cdof_dot: wp.array2d(dtype=wp.float64), xipos: wp.array3d(dtype=wp.float64), com: wp.array3d(dtype=wp.float64), site_pos: wp.array3d(dtype=wp.float64), site_mat: wp.array3d(dtype=wp.float64), xfrc: wp.array2d(dtype=wp.float64), efc: wp.array2d(dtype=wp.float64), ncon: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), nequal: wp.array(dtype=wp.int32), cdim: wp.array2d(dtype=wp.int32), caddr: wp.array2d(dtype=wp.int32), cgeom1: wp.array2d(dtype=wp.int32), cgeom2: wp.array2d(dtype=wp.int32), cframe: wp.array2d(dtype=wp.float64), cpos: wp.array2d(dtype=wp.float64), parent: wp.array(dtype=wp.int32), dofadr: wp.array(dtype=wp.int32), dofnum: wp.array(dtype=wp.int32), root: wp.array(dtype=wp.int32), geom_body: wp.array(dtype=wp.int32), gravity: wp.array(dtype=wp.float64), ccap: int, ecap: int, cacc: wp.array2d(dtype=wp.float64), ext: wp.array2d(dtype=wp.float64), internal: wp.array3d(dtype=wp.float64), decoded: wp.array3d(dtype=wp.float64), status: wp.array(dtype=wp.int32), nbody: int, nv: int, nsite: int, ngeom: int):
+def post_count(active: wp.array(dtype=wp.int32), qvel: wp.array2d(dtype=scalar.wp_real), qacc: wp.array2d(dtype=scalar.wp_real), cinert: wp.array2d(dtype=scalar.wp_real), cvel: wp.array2d(dtype=scalar.wp_real), cdof: wp.array2d(dtype=scalar.wp_real), cdof_dot: wp.array2d(dtype=scalar.wp_real), xipos: wp.array3d(dtype=scalar.wp_real), com: wp.array3d(dtype=scalar.wp_real), site_pos: wp.array3d(dtype=scalar.wp_real), site_mat: wp.array3d(dtype=scalar.wp_real), xfrc: wp.array2d(dtype=scalar.wp_real), efc: wp.array2d(dtype=scalar.wp_real), ncon: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32), nequal: wp.array(dtype=wp.int32), cdim: wp.array2d(dtype=wp.int32), caddr: wp.array2d(dtype=wp.int32), cgeom1: wp.array2d(dtype=wp.int32), cgeom2: wp.array2d(dtype=wp.int32), cframe: wp.array2d(dtype=scalar.wp_real), cpos: wp.array2d(dtype=scalar.wp_real), parent: wp.array(dtype=wp.int32), dofadr: wp.array(dtype=wp.int32), dofnum: wp.array(dtype=wp.int32), root: wp.array(dtype=wp.int32), geom_body: wp.array(dtype=wp.int32), gravity: wp.array(dtype=scalar.wp_real), ccap: int, ecap: int, cacc: wp.array2d(dtype=scalar.wp_real), ext: wp.array2d(dtype=scalar.wp_real), internal: wp.array3d(dtype=scalar.wp_real), decoded: wp.array3d(dtype=scalar.wp_real), status: wp.array(dtype=wp.int32), nbody: int, nv: int, nsite: int, ngeom: int):
     w = wp.tid()
     status[w] = 0
     for j in range(nbody):
         for k in range(6):
-            cacc[w, 6 * j + k] = wp.float64(0.0)
-            ext[w, 6 * j + k] = wp.float64(0.0)
-            internal[w, j, k] = wp.float64(0.0)
+            cacc[w, 6 * j + k] = scalar.wp_real(0.0)
+            ext[w, 6 * j + k] = scalar.wp_real(0.0)
+            internal[w, j, k] = scalar.wp_real(0.0)
     for j in range(ccap):
         for k in range(6):
-            decoded[w, j, k] = wp.float64(0.0)
+            decoded[w, j, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -358,11 +359,11 @@ def post_count(active: wp.array(dtype=wp.int32), qvel: wp.array2d(dtype=wp.float
                     status[w] = 4
                     return
     for k in range(3):
-        cacc[w, 3 + k] = gravity[k] * wp.float64(-1.0)
+        cacc[w, 3 + k] = gravity[k] * scalar.wp_real(-1.0)
     for j in range(1, nbody):
         nonzero = False
         for k in range(6):
-            if xfrc[w, 6 * j + k] != wp.float64(0.0):
+            if xfrc[w, 6 * j + k] != scalar.wp_real(0.0):
                 nonzero = True
         if nonzero:
             dx = com[w, root[j], 0] - xipos[w, j, 0]
@@ -448,16 +449,16 @@ def post_count(active: wp.array(dtype=wp.int32), qvel: wp.array2d(dtype=wp.float
     if status[w] == 5:
         for j in range(nbody):
             for k in range(6):
-                cacc[w, 6 * j + k] = wp.float64(0.0)
-                ext[w, 6 * j + k] = wp.float64(0.0)
-                internal[w, j, k] = wp.float64(0.0)
+                cacc[w, 6 * j + k] = scalar.wp_real(0.0)
+                ext[w, 6 * j + k] = scalar.wp_real(0.0)
+                internal[w, j, k] = scalar.wp_real(0.0)
 
 @wp.kernel(enable_backward=False)
-def force_sensor_count(cfrc: wp.array(dtype=wp.float64, ndim=3), com: wp.array(dtype=wp.float64, ndim=3), site_pos: wp.array(dtype=wp.float64, ndim=3), site_mat: wp.array(dtype=wp.float64, ndim=3), active: wp.array(dtype=wp.int32), sensor_type: wp.array(dtype=wp.int32), sensor_site: wp.array(dtype=wp.int32), sensor_adr: wp.array(dtype=wp.int32), site_body: wp.array(dtype=wp.int32), body_root: wp.array(dtype=wp.int32), result: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32), nbody: int, nsite: int):
+def force_sensor_count(cfrc: wp.array(dtype=scalar.wp_real, ndim=3), com: wp.array(dtype=scalar.wp_real, ndim=3), site_pos: wp.array(dtype=scalar.wp_real, ndim=3), site_mat: wp.array(dtype=scalar.wp_real, ndim=3), active: wp.array(dtype=wp.int32), sensor_type: wp.array(dtype=wp.int32), sensor_site: wp.array(dtype=wp.int32), sensor_adr: wp.array(dtype=wp.int32), site_body: wp.array(dtype=wp.int32), body_root: wp.array(dtype=wp.int32), result: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32), nbody: int, nsite: int):
     w = wp.tid()
     status[w] = 0
     for k in range(6):
-        result[w, k] = wp.float64(0.0)
+        result[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:

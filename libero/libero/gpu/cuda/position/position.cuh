@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #ifdef LIBERO_POSITION_DATAFLOW
 #define LIBERO_POSITION_STAGE_INLINE __forceinline__
@@ -15,29 +16,29 @@ constexpr bool body_diagnostics = LIBERO_POSITION_BODY_DIAGNOSTICS != 0;
 // Fixed local vectors must remain scalar expressions: converting their
 // addresses to integers for overlap/alignment tests can materialize them in
 // thread-local memory. Small copies keep the original forward-copy order.
-__device__ __forceinline__ void copy(double *d, const double *s, int n) {
+__device__ __forceinline__ void copy(real_t *d, const real_t *s, int n) {
   if (n <= 16) {
     for (int i = 0; i < n; ++i)
       d[i] = s[i];
     return;
   }
   const uintptr_t db = reinterpret_cast<uintptr_t>(d), sb = reinterpret_cast<uintptr_t>(s);
-  const size_t bytes = size_t(n) * sizeof(double);
+  const size_t bytes = size_t(n) * sizeof(real_t);
   if (db != sb && (db > sb ? db - sb : sb - db) < bytes) {
     for (int i = 0; i < n; ++i)
       d[i] = s[i];
   } else
     libero_vec::copy_serial(s, d, n);
 }
-__device__ __forceinline__ void zero(double *d, int n) {
+__device__ __forceinline__ void zero(real_t *d, int n) {
   if (n <= 16) {
     for (int i = 0; i < n; ++i)
-      d[i] = 0.0;
+      d[i] = REAL_C(0.0);
     return;
   }
-  libero_vec::fill_serial(d, n, 0.0);
+  libero_vec::fill_serial(d, n, REAL_C(0.0));
 }
-__device__ __forceinline__ bool finite(const double *d, int n) {
+__device__ __forceinline__ bool finite(const real_t *d, int n) {
   if (n <= 16) {
     bool ok = true;
     for (int i = 0; i < n; ++i)
@@ -46,10 +47,10 @@ __device__ __forceinline__ bool finite(const double *d, int n) {
   }
   return !libero_vec::any_nonfinite_lane(d, n, 0, 1);
 }
-__device__ __forceinline__ bool identity(const double *q) {
+__device__ __forceinline__ bool identity(const real_t *q) {
   return q[0] == 1 && q[1] == 0 && q[2] == 0 && q[3] == 0;
 }
-__device__ __forceinline__ double norm(const double *q) {
+__device__ __forceinline__ real_t norm(const real_t *q) {
   return sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
 }
 // CPU mju_normalize4 uses one reciprocal. Preserve the tiny-norm fallback.
@@ -57,8 +58,8 @@ __device__ __forceinline__ double norm(const double *q) {
 // Its end-state force/pose error is sensitive to reciprocal multiplication;
 // retain the previous GPU division order there. Other families preprocess to
 // the same arithmetic as before this compatibility qualification.
-__device__ __forceinline__ void normalize(double *q, double n) {
-  if (n < 1e-15) {
+__device__ __forceinline__ void normalize(real_t *q, real_t n) {
+  if (n < REAL_C(1e-15)) {
     q[0] = 1;
     q[1] = q[2] = q[3] = 0;
   }
@@ -71,53 +72,53 @@ __device__ __forceinline__ void normalize(double *q, double n) {
   else if constexpr (body_diagnostics) {
     for (int k = 0; k < 4; ++k)
       q[k] /= n;
-  } else if (n != 1.0) {
-    const double scale = 1.0 / n;
+  } else if (n != REAL_C(1.0)) {
+    const real_t scale = REAL_C(1.0) / n;
     for (int k = 0; k < 4; ++k)
       q[k] *= scale;
   }
 #endif
 }
-__device__ __forceinline__ void mulquat(const double *a, const double *b, double *c) {
-  const double aw = a[0], ax = a[1], ay = a[2], az = a[3];
-  const double bw = b[0], bx = b[1], by = b[2], bz = b[3];
-  const double w = aw * bw - ax * bx - ay * by - az * bz;
-  const double x = aw * bx + ax * bw + ay * bz - az * by;
-  const double y = aw * by + ay * bw + az * bx - ax * bz;
-  const double z = aw * bz + az * bw + ax * by - ay * bx;
+__device__ __forceinline__ void mulquat(const real_t *a, const real_t *b, real_t *c) {
+  const real_t aw = a[0], ax = a[1], ay = a[2], az = a[3];
+  const real_t bw = b[0], bx = b[1], by = b[2], bz = b[3];
+  const real_t w = aw * bw - ax * bx - ay * by - az * bz;
+  const real_t x = aw * bx + ax * bw + ay * bz - az * by;
+  const real_t y = aw * by + ay * bw + az * bx - ax * bz;
+  const real_t z = aw * bz + az * bw + ax * by - ay * bx;
   c[0] = w;
   c[1] = x;
   c[2] = y;
   c[3] = z;
 }
-__device__ inline void rotquat(const double *v, const double *q, double *o) {
+__device__ inline void rotquat(const real_t *v, const real_t *q, real_t *o) {
   if (identity(q)) {
     copy(o, v, 3);
     return;
   }
-  double t[3] = {q[0] * v[0] + q[2] * v[2] - q[3] * v[1], q[0] * v[1] + q[3] * v[0] - q[1] * v[2],
+  real_t t[3] = {q[0] * v[0] + q[2] * v[2] - q[3] * v[1], q[0] * v[1] + q[3] * v[0] - q[1] * v[2],
                  q[0] * v[2] + q[1] * v[1] - q[2] * v[0]};
-  double r[3] = {v[0] + 2 * (q[2] * t[2] - q[3] * t[1]), v[1] + 2 * (q[3] * t[0] - q[1] * t[2]),
+  real_t r[3] = {v[0] + 2 * (q[2] * t[2] - q[3] * t[1]), v[1] + 2 * (q[3] * t[0] - q[1] * t[2]),
                  v[2] + 2 * (q[1] * t[1] - q[2] * t[0])};
   copy(o, r, 3);
 }
 
-__device__ __forceinline__ void rotmat(const double *a, const double *v, double *o) {
-  const double x = v[0], y = v[1], z = v[2];
-  const double r0 = a[0] * x + a[1] * y + a[2] * z;
-  const double r1 = a[3] * x + a[4] * y + a[5] * z;
-  const double r2 = a[6] * x + a[7] * y + a[8] * z;
+__device__ __forceinline__ void rotmat(const real_t *a, const real_t *v, real_t *o) {
+  const real_t x = v[0], y = v[1], z = v[2];
+  const real_t r0 = a[0] * x + a[1] * y + a[2] * z;
+  const real_t r1 = a[3] * x + a[4] * y + a[5] * z;
+  const real_t r2 = a[6] * x + a[7] * y + a[8] * z;
   o[0] = r0;
   o[1] = r1;
   o[2] = r2;
 }
-__device__ __forceinline__ void quatmat(const double *q, double *a) {
+__device__ __forceinline__ void quatmat(const real_t *q, real_t *a) {
   if (identity(q)) {
     zero(a, 9);
     a[0] = a[4] = a[8] = 1;
     return;
   }
-  const double w = q[0], x = q[1], y = q[2], z = q[3];
+  const real_t w = q[0], x = q[1], y = q[2], z = q[3];
   a[0] = w * w + x * x - y * y - z * z;
   a[4] = w * w - x * x + y * y - z * z;
   a[8] = w * w - x * x - y * y + z * z;
@@ -129,14 +130,14 @@ __device__ __forceinline__ void quatmat(const double *q, double *a) {
   a[7] = 2 * (y * z + w * x);
 }
 struct BodyInputs {
-  double *qpos0;
-  double *bpos;
-  double *bquat;
-  double *jaxis;
-  double *jpos;
-  double *qtmp;
-  double *mqtmp;
-  double *mocap_pos;
+  real_t *qpos0;
+  real_t *bpos;
+  real_t *bquat;
+  real_t *jaxis;
+  real_t *jpos;
+  real_t *qtmp;
+  real_t *mqtmp;
+  real_t *mocap_pos;
 
   int *parent;
   int *jnum;
@@ -146,19 +147,19 @@ struct BodyInputs {
   int *qadr;
 };
 struct BodyOutputs {
-  double *xpos;
-  double *xquat;
-  double *xmat;
-  double *xanchor;
-  double *xaxis;
-  double *pre_pos;
-  double *pre_quat;
-  double *joint_pos;
-  double *joint_quat;
-  double *body_norm_before;
-  double *trig_arg;
-  double *trig_sin;
-  double *trig_cos;
+  real_t *xpos;
+  real_t *xquat;
+  real_t *xmat;
+  real_t *xanchor;
+  real_t *xaxis;
+  real_t *pre_pos;
+  real_t *pre_quat;
+  real_t *joint_pos;
+  real_t *joint_quat;
+  real_t *body_norm_before;
+  real_t *trig_arg;
+  real_t *trig_sin;
+  real_t *trig_cos;
 
   int *body_route;
   int *joint_route;
@@ -169,33 +170,33 @@ struct BodyOutputs {
   int *body_norm_branch;
 };
 __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyOutputs &out) {
-  double *qpos0 = in.qpos0;
-  double *bpos = in.bpos;
-  double *bquat = in.bquat;
-  double *jaxis = in.jaxis;
-  double *jpos = in.jpos;
-  double *qtmp = in.qtmp;
-  double *mqtmp = in.mqtmp;
-  double *mocap_pos = in.mocap_pos;
+  real_t *qpos0 = in.qpos0;
+  real_t *bpos = in.bpos;
+  real_t *bquat = in.bquat;
+  real_t *jaxis = in.jaxis;
+  real_t *jpos = in.jpos;
+  real_t *qtmp = in.qtmp;
+  real_t *mqtmp = in.mqtmp;
+  real_t *mocap_pos = in.mocap_pos;
   int *parent = in.parent;
   int *jnum = in.jnum;
   int *jadr = in.jadr;
   int *mocapid = in.mocapid;
   int *jtype = in.jtype;
   int *qadr = in.qadr;
-  double *xpos = out.xpos;
-  double *xquat = out.xquat;
-  double *xmat = out.xmat;
-  double *xanchor = out.xanchor;
-  double *xaxis = out.xaxis;
-  double *pre_pos = out.pre_pos;
-  double *pre_quat = out.pre_quat;
-  double *joint_pos = out.joint_pos;
-  double *joint_quat = out.joint_quat;
-  double *body_norm_before = out.body_norm_before;
-  double *trig_arg = out.trig_arg;
-  double *trig_sin = out.trig_sin;
-  double *trig_cos = out.trig_cos;
+  real_t *xpos = out.xpos;
+  real_t *xquat = out.xquat;
+  real_t *xmat = out.xmat;
+  real_t *xanchor = out.xanchor;
+  real_t *xaxis = out.xaxis;
+  real_t *pre_pos = out.pre_pos;
+  real_t *pre_quat = out.pre_quat;
+  real_t *joint_pos = out.joint_pos;
+  real_t *joint_quat = out.joint_quat;
+  real_t *body_norm_before = out.body_norm_before;
+  real_t *trig_arg = out.trig_arg;
+  real_t *trig_sin = out.trig_sin;
+  real_t *trig_cos = out.trig_cos;
   int *body_route = out.body_route;
   int *joint_route = out.joint_route;
   int *body_mat_identity = out.body_mat_identity;
@@ -203,7 +204,7 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
   int *hinge_zero = out.hinge_zero;
   int *offcenter_rot_identity = out.offcenter_rot_identity;
   int *body_norm_branch = out.body_norm_branch;
-  double p[3], q[4];
+  real_t p[3], q[4];
   int a = jadr[b];
   if (jnum[b] == 1 && jtype[a] == 0) {
     int qa = qadr[a];
@@ -222,8 +223,8 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
     }
   } else {
     int pid = parent[b], mi = mocapid[b];
-    const double *bp = mi >= 0 ? mocap_pos + 3 * mi : bpos + 3 * b;
-    const double *bq = mi >= 0 ? mqtmp + 4 * mi : bquat + 4 * b;
+    const real_t *bp = mi >= 0 ? mocap_pos + 3 * mi : bpos + 3 * b;
+    const real_t *bq = mi >= 0 ? mqtmp + 4 * mi : bquat + 4 * b;
     if (body_diagnostics && mi >= 0)
       body_route[b] = 2;
     rotmat(xmat + 9 * pid, bp, p);
@@ -236,7 +237,7 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
     }
     for (int j = a; j < a + jnum[b]; ++j) {
       int t = jtype[j], qa = qadr[j];
-      double axis[3], anchor[3], v[3];
+      real_t axis[3], anchor[3], v[3];
       if constexpr (body_diagnostics)
         joint_rot_identity[j] = identity(q);
       rotquat(jaxis + 3 * j, q, axis);
@@ -247,26 +248,26 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
         return 5;
       }
       if (t == 2) {
-        double d = qtmp[qa] - qpos0[qa];
+        real_t d = qtmp[qa] - qpos0[qa];
         for (int k = 0; k < 3; ++k)
           p[k] += axis[k] * d;
       } else if (t == 1 || t == 3) {
-        double local[4];
+        real_t local[4];
         if (t == 1)
           copy(local, qtmp + qa, 4);
         else {
-          double angle = qtmp[qa] - qpos0[qa];
+          real_t angle = qtmp[qa] - qpos0[qa];
           if (angle == 0) {
             if constexpr (body_diagnostics)
               hinge_zero[j] = 1;
             local[0] = 1;
             local[1] = local[2] = local[3] = 0;
           } else {
-            double z = angle * .5;
+            real_t z = angle * REAL_C(.5);
             if (!isfinite(z)) {
               return 2;
             }
-            double sn = sin(z), cs = cos(z);
+            real_t sn = sin(z), cs = cos(z);
             if (!isfinite(sn) || !isfinite(cs)) {
               return 5;
             }
@@ -301,13 +302,13 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
       }
     }
   }
-  double n = norm(q);
+  real_t n = norm(q);
   if (!finite(p, 3) || !isfinite(n)) {
     return 5;
   }
   if constexpr (body_diagnostics)
     body_norm_before[b] = n;
-  body_norm_branch[b] = (n < 1e-15);
+  body_norm_branch[b] = (n < REAL_C(1e-15));
   normalize(q, n);
   copy(xpos + 3 * b, p, 3);
   copy(xquat + 4 * b, q, 4);
@@ -322,15 +323,15 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
 
 // Scalar ordered body entry retained as fallback/reference.
 __device__ LIBERO_POSITION_STAGE_INLINE void
-body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, double *bpos,
-     double *bquat, int *jtype, int *qadr, double *jaxis, double *jpos, int nq, int nb, int nj,
-     int nm, int *active, double *qpos, double *mocap_pos, double *mocap_quat, double *qtmp,
-     double *mqtmp, double *xpos, double *xquat, double *xmat, double *xanchor, double *xaxis,
-     double *world_xipos, double *world_ximat, int *status, double *norm_before,
-     double *mocap_before, double *pre_pos, double *pre_quat, double *joint_pos, double *joint_quat,
-     double *body_norm_before, int *body_route, int *joint_route, int *body_mat_identity,
-     int *joint_rot_identity, int *hinge_zero, int *offcenter_rot_identity, double *trig_arg,
-     double *trig_sin, double *trig_cos, int *norm_branch, int *mocap_branch, int *body_norm_branch,
+body(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, real_t *bpos,
+     real_t *bquat, int *jtype, int *qadr, real_t *jaxis, real_t *jpos, int nq, int nb, int nj,
+     int nm, int *active, real_t *qpos, real_t *mocap_pos, real_t *mocap_quat, real_t *qtmp,
+     real_t *mqtmp, real_t *xpos, real_t *xquat, real_t *xmat, real_t *xanchor, real_t *xaxis,
+     real_t *world_xipos, real_t *world_ximat, int *status, real_t *norm_before,
+     real_t *mocap_before, real_t *pre_pos, real_t *pre_quat, real_t *joint_pos, real_t *joint_quat,
+     real_t *body_norm_before, int *body_route, int *joint_route, int *body_mat_identity,
+     int *joint_rot_identity, int *hinge_zero, int *offcenter_rot_identity, real_t *trig_arg,
+     real_t *trig_sin, real_t *trig_cos, int *norm_branch, int *mocap_branch, int *body_norm_branch,
      bool initialize_only = false) {
   qpos += w * nq;
   qtmp += w * nq;
@@ -410,7 +411,7 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
     return;
   }
   for (int j = 0; j < nj; ++j)
-    if (jtype[j] == 3 && !isfinite((qpos[qadr[j]] - qpos0[qadr[j]]) * .5)) {
+    if (jtype[j] == 3 && !isfinite((qpos[qadr[j]] - qpos0[qadr[j]]) * REAL_C(.5))) {
       status[w] = 2;
       return;
     }
@@ -422,33 +423,33 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
   for (int j = 0; j < nj; ++j)
     if (jtype[j] == 0 || jtype[j] == 1) {
       int a = qadr[j] + (jtype[j] == 0 ? 3 : 0);
-      double n = norm(qtmp + a);
+      real_t n = norm(qtmp + a);
       if (!isfinite(n)) {
         status[w] = 5;
         return;
       }
       if constexpr (body_diagnostics) {
         norm_before[j] = n;
-        norm_branch[j] = (n < 1e-15);
+        norm_branch[j] = (n < REAL_C(1e-15));
       }
       normalize(qtmp + a, n);
     }
   for (int i = 0; i < nm; ++i) {
-    double n = norm(mqtmp + 4 * i);
+    real_t n = norm(mqtmp + 4 * i);
     if (!isfinite(n)) {
       status[w] = 5;
       return;
     }
     if constexpr (body_diagnostics) {
       mocap_before[i] = n;
-      mocap_branch[i] = (n < 1e-15);
+      mocap_branch[i] = (n < REAL_C(1e-15));
     }
     normalize(mqtmp + 4 * i, n);
   }
   if (initialize_only)
     return;
   for (int b = 1; b < nb; ++b) {
-    double p[3], q[4];
+    real_t p[3], q[4];
     int a = jadr[b];
     if (jnum[b] == 1 && jtype[a] == 0) {
       int qa = qadr[a];
@@ -467,8 +468,8 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
       }
     } else {
       int pid = parent[b], mi = mocapid[b];
-      const double *bp = mi >= 0 ? mocap_pos + 3 * mi : bpos + 3 * b;
-      const double *bq = mi >= 0 ? mqtmp + 4 * mi : bquat + 4 * b;
+      const real_t *bp = mi >= 0 ? mocap_pos + 3 * mi : bpos + 3 * b;
+      const real_t *bq = mi >= 0 ? mqtmp + 4 * mi : bquat + 4 * b;
       if (body_diagnostics && mi >= 0)
         body_route[b] = 2;
       rotmat(xmat + 9 * pid, bp, p);
@@ -481,7 +482,7 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
       }
       for (int j = a; j < a + jnum[b]; ++j) {
         int t = jtype[j], qa = qadr[j];
-        double axis[3], anchor[3], v[3];
+        real_t axis[3], anchor[3], v[3];
         if constexpr (body_diagnostics)
           joint_rot_identity[j] = identity(q);
         rotquat(jaxis + 3 * j, q, axis);
@@ -493,27 +494,27 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
           return;
         }
         if (t == 2) {
-          double d = qtmp[qa] - qpos0[qa];
+          real_t d = qtmp[qa] - qpos0[qa];
           for (int k = 0; k < 3; ++k)
             p[k] += axis[k] * d;
         } else if (t == 1 || t == 3) {
-          double local[4];
+          real_t local[4];
           if (t == 1)
             copy(local, qtmp + qa, 4);
           else {
-            double angle = qtmp[qa] - qpos0[qa];
+            real_t angle = qtmp[qa] - qpos0[qa];
             if (angle == 0) {
               if constexpr (body_diagnostics)
                 hinge_zero[j] = 1;
               local[0] = 1;
               local[1] = local[2] = local[3] = 0;
             } else {
-              double z = angle * .5;
+              real_t z = angle * REAL_C(.5);
               if (!isfinite(z)) {
                 status[w] = 2;
                 return;
               }
-              double sn = sin(z), cs = cos(z);
+              real_t sn = sin(z), cs = cos(z);
               if (!isfinite(sn) || !isfinite(cs)) {
                 status[w] = 5;
                 return;
@@ -551,14 +552,14 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
         }
       }
     }
-    double n = norm(q);
+    real_t n = norm(q);
     if (!finite(p, 3) || !isfinite(n)) {
       status[w] = 5;
       return;
     }
     if constexpr (body_diagnostics)
       body_norm_before[b] = n;
-    body_norm_branch[b] = (n < 1e-15);
+    body_norm_branch[b] = (n < REAL_C(1e-15));
     normalize(q, n);
     copy(xpos + 3 * b, p, 3);
     copy(xquat + 4 * b, q, 4);
@@ -572,15 +573,15 @@ body(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, doub
   }
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-body_block(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, double *bpos,
-           double *bquat, int *jtype, int *qadr, double *jaxis, double *jpos, int nq, int nb,
-           int nj, int nm, int *active, double *qpos, double *mocap_pos, double *mocap_quat,
-           double *qtmp, double *mqtmp, double *xpos, double *xquat, double *xmat, double *xanchor,
-           double *xaxis, double *world_xipos, double *world_ximat, int *status,
-           double *norm_before, double *mocap_before, double *pre_pos, double *pre_quat,
-           double *joint_pos, double *joint_quat, double *body_norm_before, int *body_route,
+body_block(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, real_t *bpos,
+           real_t *bquat, int *jtype, int *qadr, real_t *jaxis, real_t *jpos, int nq, int nb,
+           int nj, int nm, int *active, real_t *qpos, real_t *mocap_pos, real_t *mocap_quat,
+           real_t *qtmp, real_t *mqtmp, real_t *xpos, real_t *xquat, real_t *xmat, real_t *xanchor,
+           real_t *xaxis, real_t *world_xipos, real_t *world_ximat, int *status,
+           real_t *norm_before, real_t *mocap_before, real_t *pre_pos, real_t *pre_quat,
+           real_t *joint_pos, real_t *joint_quat, real_t *body_norm_before, int *body_route,
            int *joint_route, int *body_mat_identity, int *joint_rot_identity, int *hinge_zero,
-           int *offcenter_rot_identity, double *trig_arg, double *trig_sin, double *trig_cos,
+           int *offcenter_rot_identity, real_t *trig_arg, real_t *trig_sin, real_t *trig_cos,
            int *norm_branch, int *mocap_branch, int *body_norm_branch, const int *level_offsets,
            const int *level_bodies, int level_count) {
   if (threadIdx.x == 0)
@@ -652,11 +653,11 @@ body_block(int w, double *qpos0, int *parent, int *jnum, int *jadr, int *mocapid
   __syncthreads();
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-commit(int w, int nq, int nb, int nj, int nm, int *active, int *status, double *qpos, double *mq,
-       double *qt, double *mqt, double *xp, double *xq, double *xm, double *anchor, double *axis,
-       double *wip, double *wim, double *njnorm, double *mnorm, double *pp, double *pq, double *jp,
-       double *jq, double *bnorm, int *br, int *jr, int *bm, int *ji, int *hz, int *oi, double *ta,
-       double *ts, double *tc, int *nbch, int *mbch, int *bbch) {
+commit(int w, int nq, int nb, int nj, int nm, int *active, int *status, real_t *qpos, real_t *mq,
+       real_t *qt, real_t *mqt, real_t *xp, real_t *xq, real_t *xm, real_t *anchor, real_t *axis,
+       real_t *wip, real_t *wim, real_t *njnorm, real_t *mnorm, real_t *pp, real_t *pq, real_t *jp,
+       real_t *jq, real_t *bnorm, int *br, int *jr, int *bm, int *ji, int *hz, int *oi, real_t *ta,
+       real_t *ts, real_t *tc, int *nbch, int *mbch, int *bbch) {
   if (status[w] == 0) {
     if (active[w] == 1) {
       copy(qpos + w * nq, qt + w * nq, nq);
@@ -703,18 +704,18 @@ __device__ LIBERO_POSITION_STAGE_INLINE void after_body(int w, int *active, int 
 __device__ LIBERO_POSITION_STAGE_INLINE void frame_status(int w, int *active, int *status) {
   status[w] = (active[w] != 0 && active[w] != 1);
 }
-__device__ inline void frame(const double *bp, const double *bq, const double *bm, const double *lp,
-                             const double *lq, double *p, double *m, double *tmp) {
+__device__ inline void frame(const real_t *bp, const real_t *bq, const real_t *bm, const real_t *lp,
+                             const real_t *lq, real_t *p, real_t *m, real_t *tmp) {
   rotmat(bm, lp, p);
   for (int k = 0; k < 3; ++k)
     p[k] += bp[k];
   mulquat(bq, lq, tmp);
   quatmat(tmp, m);
 }
-__device__ LIBERO_POSITION_STAGE_INLINE void frames_body(int w, int *active, double *bp, double *bq,
-                                                         double *bm, double *ip, double *iq,
-                                                         int *same, double *op, double *om,
-                                                         double *tmp, int nb) {
+__device__ LIBERO_POSITION_STAGE_INLINE void frames_body(int w, int *active, real_t *bp, real_t *bq,
+                                                         real_t *bm, real_t *ip, real_t *iq,
+                                                         int *same, real_t *op, real_t *om,
+                                                         real_t *tmp, int nb) {
   for (int b = threadIdx.x; b < nb; b += blockDim.x) {
     int id = w * nb + b;
     zero(tmp + 4 * id, 4);
@@ -732,8 +733,8 @@ __device__ LIBERO_POSITION_STAGE_INLINE void frames_body(int w, int *active, dou
   }
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-frames_objects(int w, int *active, double *bp, double *bq, double *bm, double *ip, double *im,
-               int *body, double *lp, double *lq, int *same, double *op, double *om, double *tmp,
+frames_objects(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *im,
+               int *body, real_t *lp, real_t *lq, int *same, real_t *op, real_t *om, real_t *tmp,
                int nb, int no) {
   for (int i = threadIdx.x; i < no; i += blockDim.x) {
     int id = w * no + i, b = w * nb + body[i];
@@ -751,13 +752,13 @@ frames_objects(int w, int *active, double *bp, double *bq, double *bm, double *i
   }
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-check_frames(int w, int *active, int *status, double *ip, double *im, double *gp, double *gm,
-             double *sp, double *sm, double *bt, double *gt, double *st, int nb, int ng, int ns) {
+check_frames(int w, int *active, int *status, real_t *ip, real_t *im, real_t *gp, real_t *gm,
+             real_t *sp, real_t *sm, real_t *bt, real_t *gt, real_t *st, int nb, int ng, int ns) {
   // Whole-block entry: world-level admission is uniform across all lanes.
   if (active[w] != 1 || status[w] != 0)
     return;
   bool bad = false;
-  const double *arrays[9] = {ip + w * nb * 3, im + w * nb * 9, gp + w * ng * 3,
+  const real_t *arrays[9] = {ip + w * nb * 3, im + w * nb * 9, gp + w * ng * 3,
                              gm + w * ng * 9, sp + w * ns * 3, sm + w * ns * 9,
                              bt + w * nb * 4, gt + w * ng * 4, st + w * ns * 4};
   const int sizes[9] = {nb * 3, nb * 9, ng * 3, ng * 9, ns * 3, ns * 9, nb * 4, ng * 4, ns * 4};
@@ -822,9 +823,9 @@ __device__ LIBERO_POSITION_STAGE_INLINE void dynamics_finish(int w, int *gate, i
   written[w] = epoch[w];
   valid[w] = 1;
 }
-__device__ LIBERO_POSITION_STAGE_INLINE void transmission(int w, double *q, int *active, int *qa,
-                                                          int *da, double *gear, double *length,
-                                                          double *moment, int *status, int nq,
+__device__ LIBERO_POSITION_STAGE_INLINE void transmission(int w, real_t *q, int *active, int *qa,
+                                                          int *da, real_t *gear, real_t *length,
+                                                          real_t *moment, int *status, int nq,
                                                           int nv, int nu) {
   q += w * nq;
   length += w * nu;
@@ -847,7 +848,7 @@ __device__ LIBERO_POSITION_STAGE_INLINE void transmission(int w, double *q, int 
       status[w] = 3;
       return;
     }
-    double v = q[qa[i]] * gear[i];
+    real_t v = q[qa[i]] * gear[i];
     if (!isfinite(v)) {
       status[w] = 4;
       return;
@@ -869,18 +870,18 @@ __device__ LIBERO_POSITION_STAGE_INLINE void dynamics_status(int w, int *kind, i
 #define LIBERO_POSITION_GEOM_HOOK(world, geom, position, matrix) ((void)0)
 #endif
 namespace libero_position {
-__device__ __forceinline__ void copy_block(double *destination, const double *source, int n) {
+__device__ __forceinline__ void copy_block(real_t *destination, const real_t *source, int n) {
   libero_vec::copy_block(source, destination, n);
 }
 __device__ __forceinline__ void
-frames_objects_dataflow(int w, int *active, double *bp, double *bq, double *bm, double *ip,
-                        double *im, int *body, double *lp, double *lq, int *same, double *op,
-                        double *om, double *tmp, int nb, int no, int geometry, int logical_world,
-                        double *local_geom_positions = nullptr, bool local_geom_planes = false) {
+frames_objects_dataflow(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip,
+                        real_t *im, int *body, real_t *lp, real_t *lq, int *same, real_t *op,
+                        real_t *om, real_t *tmp, int nb, int no, int geometry, int logical_world,
+                        real_t *local_geom_positions = nullptr, bool local_geom_planes = false) {
   for (int i = threadIdx.x; i < no; i += blockDim.x) {
     const int id = w * no + i, b = w * nb + body[i];
     // These small arrays are thread-local and expire after one object.
-    double position[3] = {}, matrix[9] = {}, quaternion[4] = {};
+    real_t position[3] = {}, matrix[9] = {}, quaternion[4] = {};
     if (active[w] == 1) {
       if (same[i] == 0)
         frame(bp + 3 * b, bq + 4 * b, bm + 9 * b, lp + 3 * i, lq + 4 * i, position, matrix,
@@ -903,13 +904,13 @@ frames_objects_dataflow(int w, int *active, double *bp, double *bq, double *bm, 
 
 template <int Mode>
 __device__ __forceinline__ void
-frame_bucket(int w, int *active, double *bp, double *bq, double *bm, double *ip, double *im,
-             int *body, double *lp, double *lq, double *op, double *om, double *tmp, int nb, int no,
-             int geometry, int logical_world, double *local_geom_positions, const int *ids,
+frame_bucket(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *im,
+             int *body, real_t *lp, real_t *lq, real_t *op, real_t *om, real_t *tmp, int nb, int no,
+             int geometry, int logical_world, real_t *local_geom_positions, const int *ids,
              int begin, int end, bool local_geom_planes) {
   for (int at = begin + threadIdx.x; at < end; at += blockDim.x) {
     const int i = ids[at], id = w * no + i, b = w * nb + body[i];
-    double position[3] = {}, matrix[9] = {}, quaternion[4] = {};
+    real_t position[3] = {}, matrix[9] = {}, quaternion[4] = {};
     if (active[w] == 1) {
       if constexpr (Mode == 0)
         frame(bp + 3 * b, bq + 4 * b, bm + 9 * b, lp + 3 * i, lq + 4 * i, position, matrix,
@@ -930,9 +931,9 @@ frame_bucket(int w, int *active, double *bp, double *bq, double *bm, double *ip,
   }
 }
 __device__ __forceinline__ void frames_objects_dataflow_typed(
-    int w, int *active, double *bp, double *bq, double *bm, double *ip, double *im, int *body,
-    double *lp, double *lq, int *same, double *op, double *om, double *tmp, int nb, int no,
-    int geometry, int logical_world, double *local_geom_positions, const int *frame_offsets,
+    int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *im, int *body,
+    real_t *lp, real_t *lq, int *same, real_t *op, real_t *om, real_t *tmp, int nb, int no,
+    int geometry, int logical_world, real_t *local_geom_positions, const int *frame_offsets,
     const int *frame_indices, bool local_geom_planes = false) {
   frame_bucket<0>(w, active, bp, bq, bm, ip, im, body, lp, lq, op, om, tmp, nb, no, geometry,
                   logical_world, local_geom_positions, frame_indices, frame_offsets[0],
@@ -945,17 +946,17 @@ __device__ __forceinline__ void frames_objects_dataflow_typed(
                   frame_offsets[3], local_geom_planes);
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-frames_objects_typed(int w, int *active, double *bp, double *bq, double *bm, double *ip, double *im,
-                     int *body, double *lp, double *lq, int *same, double *op, double *om,
-                     double *tmp, int nb, int no, const int *frame_offsets,
+frames_objects_typed(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *im,
+                     int *body, real_t *lp, real_t *lq, int *same, real_t *op, real_t *om,
+                     real_t *tmp, int nb, int no, const int *frame_offsets,
                      const int *frame_indices) {
   frames_objects_dataflow_typed(w, active, bp, bq, bm, ip, im, body, lp, lq, same, op, om, tmp, nb,
                                 no, 0, w, nullptr, frame_offsets, frame_indices);
 }
 template <bool Copy>
 __device__ __forceinline__ void
-body_frame_bucket(int w, int *active, double *bp, double *bq, double *bm, double *ip, double *iq,
-                  double *op, double *om, double *tmp, int nb, const int *ids, int begin, int end) {
+body_frame_bucket(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *iq,
+                  real_t *op, real_t *om, real_t *tmp, int nb, const int *ids, int begin, int end) {
   for (int at = begin + threadIdx.x; at < end; at += blockDim.x) {
     const int b = ids[at], id = w * nb + b;
     zero(tmp + 4 * id, 4);
@@ -973,8 +974,8 @@ body_frame_bucket(int w, int *active, double *bp, double *bq, double *bm, double
   }
 }
 __device__ LIBERO_POSITION_STAGE_INLINE void
-frames_body_typed(int w, int *active, double *bp, double *bq, double *bm, double *ip, double *iq,
-                  int *same, double *op, double *om, double *tmp, int nb, const int *frame_offsets,
+frames_body_typed(int w, int *active, real_t *bp, real_t *bq, real_t *bm, real_t *ip, real_t *iq,
+                  int *same, real_t *op, real_t *om, real_t *tmp, int nb, const int *frame_offsets,
                   const int *frame_indices) {
   body_frame_bucket<false>(w, active, bp, bq, bm, ip, iq, op, om, tmp, nb, frame_indices,
                            frame_offsets[0], frame_offsets[1]);

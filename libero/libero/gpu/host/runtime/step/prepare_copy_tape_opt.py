@@ -1,3 +1,4 @@
+import libero.gpu.precision as scalar
 from .copy_factory import prepare_copy_collision
 """Fixed-model cold assembly; only model data and reset state cross H2D."""
 from types import SimpleNamespace
@@ -55,7 +56,7 @@ def prepare_fixed_copy_tape_physics(pack, *, state, device='cuda:0', stream=None
             mocap_pos=np.zeros((W,0,3),np.float64),mocap_quat=np.zeros((W,0,4),np.float64),
             rhs=np.zeros((W,4,43),np.float64),count=np.ones(W,np.int32),
             qfrc_applied=state['qfrc_applied'],xfrc_applied=state['xfrc_applied'])
-        ctrl = wp.array(state['ctrl'],dtype=wp.float64,device=device)
+        ctrl = wp.array(state['ctrl'],dtype=scalar.wp_real,device=device)
         ctrl_valid = state_valid  # valid external ctrl input at the reset boundary
         independent_forward = wp.zeros(W,dtype=wp.int64,device=device)
         source_records = [{'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -91,7 +92,7 @@ def prepare_fixed_copy_tape_physics(pack, *, state, device='cuda:0', stream=None
         n = FixedNewtonRuntimeAdapter(nw,rules=load_rules(pack.mjb_path))
         reshape = lambda a,shape:a.reshape(shape)
         qm = pos.mass.mass.qm.reshape((W,153))
-        warm = wp.array(state['qacc_warmstart'],dtype=wp.float64,device=device)
+        warm = wp.array(state['qacc_warmstart'],dtype=scalar.wp_real,device=device)
         n.bind_inputs(dict(J=reshape(sw.efc_J,(W,R,43)),aref=reshape(sw.efc_aref,(W,R)),
             D=reshape(sw.efc_D,(W,R)),R=reshape(sw.efc_R,(W,R)),loss=reshape(sw.efc_frictionloss,(W,R)),
             efc_type=reshape(sw.efc_type,(W,R)),efc_id=reshape(sw.efc_id,(W,R)),qM=qm,
@@ -146,7 +147,7 @@ def prepare_fixed_copy_tape_physics(pack, *, state, device='cuda:0', stream=None
         e = EulerWorkspace(model,W,device=device)
         # Persistent state aliases: Euler commits are the next D inputs.
         e.qpos,e.qvel = d.qpos,d.qvel
-        e.time = wp.array(state['time'],dtype=wp.float64,device=device)
+        e.time = wp.array(state['time'],dtype=scalar.wp_real,device=device)
         e.qM,e.qfrc_smooth = qm,d.public['qfrc_smooth']
         e.qacc,e.qfrc_constraint = public['qacc'],public['qfrc_constraint']
         e.ctrl,e.qacc_warmstart = physics.ctrl,public['qacc_warmstart']

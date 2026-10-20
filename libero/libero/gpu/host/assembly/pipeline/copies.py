@@ -1,4 +1,5 @@
 """Cold typed history/tape copy plans; original sampling boundaries retained."""
+import libero.gpu.precision as scalar
 import types
 import warp as wp
 from libero.gpu.host.assembly.compose.backup import MultiFieldCopyPlan, _overlap
@@ -16,7 +17,7 @@ class MaskedRestorePlan:
         self.fallback |= any(_overlap(t, u) for i, t in enumerate(targets) for u in targets[i+1:])
         args = ['mask: wp.array(dtype=wp.int32)']
         body = ['    w = wp.tid()', '    if mask[w] != 0: return']
-        names = {wp.float64:'float64', wp.int32:'int32', wp.int64:'int64'}
+        names = {scalar.wp_real:scalar.name, wp.int32:'int32', wp.int64:'int64'}
         for i, (s, t) in enumerate(self.pairs):
             if s.shape != t.shape or s.shape[0] != capacity or s.dtype != t.dtype:
                 raise ValueError('restore schema changed')
@@ -92,7 +93,7 @@ class TapeCopyPlan:
         self.fallback |= any(_overlap(t,u) for i,t in enumerate(targets) for u in targets[i+1:])
         args=['index: wp.array(dtype=wp.int32)']
         body=['    i=wp.tid()','    row=index[0]',f'    if row < 0 or row >= {tape.capacity}: return']
-        names={wp.float64:'float64',wp.int32:'int32',wp.int64:'int64'}
+        names={scalar.wp_real:scalar.name,wp.int32:'int32',wp.int64:'int64'}
         for j,(s,t) in enumerate(pairs):
             dtype=names[s.dtype]
             args += [f's{j}: wp.array(dtype=wp.{dtype})',f't{j}: wp.array(dtype=wp.{dtype},ndim=2)']

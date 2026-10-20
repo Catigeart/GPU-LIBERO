@@ -6,6 +6,29 @@ from unittest.mock import patch
 
 
 class SubstepBuildTests(unittest.TestCase):
+    def test_single_solve_candidate_has_separate_admission_but_reuses_products(self):
+        from libero.gpu.host.build import substep_native
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'project/kernel.cu'
+            source.parent.mkdir()
+            source.write_text('// fixture\n')
+            (source.parent / 'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.24)\n')
+            with patch.object(substep_native, 'nvcc_path', return_value=str(root / 'nvcc')):
+                with patch.object(substep_native.scalar, 'bits', 32):
+                    normal = substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
+                    single = substep_native.prepare(source, root / 'cache', root / 'sdk', 80,
+                                                   single_solve=True)
+                    self.assertEqual(normal['config']['solves_per_substep'], 3)
+                    self.assertEqual(single['config']['solves_per_substep'], 1)
+                    self.assertNotEqual(normal['identity'], single['identity'])
+                    self.assertEqual(normal['library'], single['library'])
+                    self.assertEqual(normal['commands'], single['commands'])
+                with patch.object(substep_native.scalar, 'bits', 64):
+                    with self.assertRaisesRegex(ValueError, 'FP32 candidate'):
+                        substep_native.prepare(source, root / 'cache', root / 'sdk', 80,
+                                               single_solve=True)
+
     def test_wheel_sources_find_the_packaged_cmake_entry_without_compiling(self):
         from libero.gpu.host.build import substep_native
         with tempfile.TemporaryDirectory() as directory:
@@ -25,6 +48,32 @@ class SubstepBuildTests(unittest.TestCase):
                 with self.assertRaisesRegex(FileNotFoundError, 'No maintained CMake project'):
                     substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
                 execute.assert_not_called()
+
+    def test_thread_configuration_changes_identity_and_rejects_old_manifest(self):
+        from libero.gpu.host.build import substep_native
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'project/kernel.cu'
+            source.parent.mkdir()
+            source.write_text('// fixture\n')
+            (source.parent / 'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.24)\n')
+            with patch.object(substep_native, 'nvcc_path', return_value=str(root / 'nvcc')):
+                first = substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
+                cache = Path(first['folder']) / 'CMakeCache.txt'
+                entries = [f'CMAKE_HOME_DIRECTORY:STRING={source.parent}']
+                entries += [arg[2:].split('=', 1)[0] + ':STRING=' + arg.split('=', 1)[1]
+                            for arg in first['commands'][0] if arg.startswith('-D')]
+                cache.write_text('\n'.join(entries) + '\n')
+                self.assertTrue(substep_native._configured(first))
+                cache.write_text(cache.read_text().replace('FLASH_SUBSTEP_THREADS:STRING=64',
+                                                          'FLASH_SUBSTEP_THREADS:STRING=128'))
+                self.assertFalse(substep_native._configured(first))
+                second = substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
+                self.assertEqual(second['config']['threads_per_world'], 128)
+                self.assertIn('-DFLASH_SUBSTEP_THREADS=128', second['commands'][0])
+                self.assertNotEqual(first['identity'], second['identity'])
+                self.assertEqual(first['folder'], second['folder'])
+                self.assertTrue(substep_native._configured(second))
 
     def test_source_edits_keep_the_cmake_build_tree_and_runtime_is_load_only(self):
         from libero.gpu.host.build import substep_native

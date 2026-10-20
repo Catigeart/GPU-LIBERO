@@ -4,6 +4,7 @@ All numerical stages are explicit source-qualified enqueue callbacks supplied by
 assembly. Missing reset/step1/parameter support is rejected before mutation.
 Only boundary transfers occur here; no CPU forward, solve or controller math.
 """
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 from threading import RLock
 import numpy as np
@@ -154,7 +155,7 @@ class ResidentPhysicsFacadeRuntime:
                 raise UnsupportedGpuOperation(f'flat-state write not declared: {name}')
             field=self.fields[name]
             if not field.world_axis:raise ValueError('state field must be per-world')
-            if field.array.dtype!=self.wp.float64:raise ValueError('FP64 state owner required')
+            if field.array.dtype!=scalar.wp_real:raise ValueError('FP64 state owner required')
             value=np.asarray(value,dtype=np.float64)
             if value.shape!=field.shape or not np.isfinite(value).all():
                 raise ValueError(f'invalid state write: {name}')
@@ -167,7 +168,7 @@ class ResidentPhysicsFacadeRuntime:
             payload=self._prepare_write(values)
             # Allocate all host-source transfers before any actual root copy.
             with self.wp.ScopedStream(self.stream):
-                sources={name:self.wp.array(value,dtype=self.wp.float64,device=self.stream.device)
+                sources={name:self.wp.array(value,dtype=scalar.wp_real,device=self.stream.device)
                          for name,value in payload.items()}
             self._pending_uploads.extend(sources.values())
             try:
@@ -187,7 +188,7 @@ class ResidentPhysicsFacadeRuntime:
             if not 0<=start<stop<=field.size or value.shape!=(stop-start,) or not np.isfinite(value).all():
                 raise ValueError('invalid joint qpos slice')
             with self.wp.ScopedStream(self.stream):
-                source=self.wp.array(value,dtype=self.wp.float64,device=self.stream.device)
+                source=self.wp.array(value,dtype=scalar.wp_real,device=self.stream.device)
             self._pending_uploads.append(source)
             try:
                 self.wp.copy(field.array,source,dest_offset=self.world*field.size+start,count=stop-start,stream=self.stream)

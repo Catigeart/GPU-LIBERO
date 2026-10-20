@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Collective world detector: parallel convex queries, ordered public commit.
 #pragma once
 #include <stdint.h>
@@ -6,15 +7,15 @@
 namespace libero_collision_cuda {
 struct Params {
  const int *call_g1,*call_g2,*call_type1,*call_type2;
- const double* call_margin; const int *call_count,*active;
- const double *xpos,*xmat,*geom_size,*geom_rbound;
+ const real_t* call_margin; const int *call_count,*active;
+ const real_t *xpos,*xmat,*geom_size,*geom_rbound;
  const int* geom_dataid; const float* mesh_vert;
  const int *mesh_vertadr,*mesh_vertnum,*mesh_graphadr,*mesh_graph,*route_id;
- double* raw; int *raw_count,*det_status,*scratch_i;
- double* native_raw; int *native_count,*native_status,*native_diag;
- double* native_frame0; int *native_framewritten,*fe_stage,*fe_code,*fe_item;
+ real_t* raw; int *raw_count,*det_status,*scratch_i;
+ real_t* native_raw; int *native_count,*native_status,*native_diag;
+ real_t* native_frame0; int *native_framewritten,*fe_stage,*fe_code,*fe_item;
  int64_t* cuda_detector_execution_count;
- double* primitive_raw; int *primitive_count,*primitive_status;
+ real_t* primitive_raw; int *primitive_count,*primitive_status;
  int *query_order,*query_tmp,*bucket_offsets;
  int *task_bucket,*task_start,*task_count;
  const int* mesh_edge_end;
@@ -23,7 +24,7 @@ struct Params {
  int diagnostic_profile;
  int query_subgroup_width;
  int box_private_capacity; // Reserved cold ABI; producer must admit exactly50.
- double mpr_tolerance;
+ real_t mpr_tolerance;
 };
 // BoxBox's clipping/control body is scalar. A lane owns the whole query in
 // production; compatibility retains the historical collective diagnostics.
@@ -34,18 +35,18 @@ __device__ __forceinline__ bool detect_collective(const Params& p,int bucket) {
 __device__ void error(Params& p,int w,int j,int status,int code) {
  p.det_status[w*p.pairs+j]=status;p.fe_stage[w]=6;p.fe_code[w]=code;p.fe_item[w]=j;
 }
-template<int Capacity> __device__ __forceinline__ void contact_load_n(mjContact* con,const double* raw) {
+template<int Capacity> __device__ __forceinline__ void contact_load_n(mjContact* con,const real_t* raw) {
  for(int k=0;k<Capacity;k++) {
   // Five complete pairs belong to this raw10 record; no capacity tail read.
-  const double2 a=libero_vec::load_pair(raw+10*k);
-  const double2 b=libero_vec::load_pair(raw+10*k+2);
+  const real2_t a=libero_vec::load_pair(raw+10*k);
+  const real2_t b=libero_vec::load_pair(raw+10*k+2);
   con[k].dist=a.x;con[k].pos[0]=a.y;con[k].pos[1]=b.x;con[k].pos[2]=b.y;
-  for(int h=0;h<6;h+=2){const double2 v=libero_vec::load_pair(raw+10*k+4+h);con[k].frame[h]=v.x;con[k].frame[h+1]=v.y;}
+  for(int h=0;h<6;h+=2){const real2_t v=libero_vec::load_pair(raw+10*k+4+h);con[k].frame[h]=v.x;con[k].frame[h+1]=v.y;}
   for(int h=6;h<9;h++)con[k].frame[h]=0;
  }
 }
-__device__ __forceinline__ void contact_load(mjContact* con,const double* raw) {contact_load_n<50>(con,raw);}
-__device__ void contact_store(double* raw,const mjContact* con,int n) {
+__device__ __forceinline__ void contact_load(mjContact* con,const real_t* raw) {contact_load_n<50>(con,raw);}
+__device__ void contact_store(real_t* raw,const mjContact* con,int n) {
  for(int k=0;k<n;k++) {
   libero_vec::store_pair(raw+10*k,con[k].dist,con[k].pos[0]);
   libero_vec::store_pair(raw+10*k+2,con[k].pos[1],con[k].pos[2]);
@@ -53,7 +54,7 @@ __device__ void contact_store(double* raw,const mjContact* con,int n) {
  }
 }
 __device__ bool prepare_query(Params& p,int w,int slot,mjModel& m,mjData& d,
- double* sz,double* rb,int* types,int* ids,double* pos,double* mat,
+ real_t* sz,real_t* rb,int* types,int* ids,real_t* pos,real_t* mat,
  int* err,int* trace,int* fw) {
  int a=p.call_g1[slot],b=p.call_g2[slot];
  if(a<0||b<0||a>=p.ngeom||b>=p.ngeom||a==b){*err=4;return false;}
@@ -62,11 +63,11 @@ __device__ bool prepare_query(Params& p,int w,int slot,mjModel& m,mjData& d,
  rb[0]=p.geom_rbound[a];rb[1]=p.geom_rbound[b];
  for(int i=0;i<2;++i){
   const int g=i?b:a;
-  const double2 size01=libero_vec::load_pair(p.geom_size+3*g);
+  const real2_t size01=libero_vec::load_pair(p.geom_size+3*g);
   sz[3*i]=size01.x;sz[3*i+1]=size01.y;sz[3*i+2]=p.geom_size[3*g+2];
-  const double2 pos01=libero_vec::load_pair(p.xpos+3*(w*p.ngeom+g));
+  const real2_t pos01=libero_vec::load_pair(p.xpos+3*(w*p.ngeom+g));
   pos[3*i]=pos01.x;pos[3*i+1]=pos01.y;pos[3*i+2]=p.xpos[3*(w*p.ngeom+g)+2];
-  for(int k=0;k<8;k+=2){const double2 v=libero_vec::load_pair(p.xmat+9*(w*p.ngeom+g)+k);mat[9*i+k]=v.x;mat[9*i+k+1]=v.y;}
+  for(int k=0;k<8;k+=2){const real2_t v=libero_vec::load_pair(p.xmat+9*(w*p.ngeom+g)+k);mat[9*i+k]=v.x;mat[9*i+k+1]=v.y;}
   mat[9*i+8]=p.xmat[9*(w*p.ngeom+g)+8];
  }
  for(int k=0;k<6;k++)if(!isfinite(sz[k])||!isfinite(pos[k])){*err=5;return false;}
@@ -85,9 +86,9 @@ __device__ bool prepare_query(Params& p,int w,int slot,mjModel& m,mjData& d,
 }
 template<int Capacity,int FixedRoute=0> __device__ __noinline__ void native_query(Params& p,int w,int slot,int route) {
  if constexpr(FixedRoute!=0)route=FixedRoute;
- double* out=p.native_raw+(size_t)slot*500;
- const double* prior=p.raw+(size_t)slot*500;
- double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
+ real_t* out=p.native_raw+(size_t)slot*500;
+ const real_t* prior=p.raw+(size_t)slot*500;
+ real_t sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
  if(!prepare_query(p,w,slot,m,d,sz,rb,types,ids,pos,mat,&err,trace,&fw)){p.native_status[slot]=err;return;}
  for(int k=0;k<2;k++)if(types[k]==7&&ids[k]<0){p.native_status[slot]=7;return;}
@@ -119,8 +120,8 @@ template<int Capacity,int FixedRoute=0> __device__ __noinline__ void native_quer
 __device__ bool detect_native_init(Params& p,int w,int j,bool copy_raw=true) {
  if(p.diagnostic_profile!=0&&(p.fe_code[w]||p.active[w]!=1||
     p.call_count[w]<0||p.call_count[w]>p.pairs||j>=p.call_count[w]))return false;
- int slot=w*p.pairs+j;double* out=p.native_raw+(size_t)slot*500;
- const double* prior=p.raw+(size_t)slot*500;
+ int slot=w*p.pairs+j;real_t* out=p.native_raw+(size_t)slot*500;
+ const real_t* prior=p.raw+(size_t)slot*500;
  // Compatibility exposes the complete native mirror, including unused slots.
  // Fast diagnostics expose only detected prefixes; public physics raw is unchanged.
  if(copy_raw&&p.diagnostic_profile==0)
@@ -225,7 +226,7 @@ __device__ void detect_prepare_compact(Params& p,int w) {
 // Split their small stack frame from the native convex work state.
 template<int Capacity> __device__ __noinline__ void primitive_query(
  Params& p,int w,int slot,int route) {
- double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
+ real_t sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
  if(!prepare_query(p,w,slot,m,d,sz,rb,types,ids,pos,mat,&err,trace,&fw)) {
   p.primitive_status[slot]=10+err;return;
@@ -233,7 +234,7 @@ template<int Capacity> __device__ __noinline__ void primitive_query(
  // Every successful primitive contact defines dist, pos[3], frame[6].
  // Zero-contact partial frame writes are not published by the primitive ABI.
  mjContact con[Capacity];
- int n=0;double margin=p.call_margin[slot];
+ int n=0;real_t margin=p.call_margin[slot];
  switch(route) {
   case 1:n=mjc_PlaneSphere(&m,&d,con,0,1,margin);break;
   case 2:n=mjc_PlaneCapsule(&m,&d,con,0,1,margin);break;
@@ -267,7 +268,7 @@ template<int Capacity,int FixedRoute=0> __device__ __noinline__ void native_quer
  Params& p,int w,int slot,int route) {
  if constexpr(FixedRoute!=0)route=FixedRoute;
  const bool leader=(threadIdx.x&31)==0;
- double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
+ real_t sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
  if(!prepare_query(p,w,slot,m,d,sz,rb,types,ids,pos,mat,&err,trace,&fw)){
   if(leader)p.native_status[slot]=err;return;
@@ -298,7 +299,7 @@ __device__ __noinline__ void primitive_query_warp(Params& p,int w,int slot) {
  const int a=p.call_g1[slot],b=p.call_g2[slot];
  if(a<0||b<0||a>=p.ngeom||b>=p.ngeom)return;
  if(leader){p.primitive_count[slot]=0;p.primitive_status[slot]=0;}
- double sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
+ real_t sz[6],rb[2],pos[6],mat[18];int types[2],ids[2],err=0,fw=0,trace[16]={0};
  mjModel m;mjData d;
  if(!prepare_query(p,w,slot,m,d,sz,rb,types,ids,pos,mat,&err,trace,&fw)){
   if(leader)p.primitive_status[slot]=10+err;return;
@@ -434,16 +435,16 @@ __device__ void detect_commit_world(Params& p,int w) {
  for(int j=worker;j<accepted;j+=workers) {
   const int slot=w*p.pairs+j,n=p.raw_count[slot];
   const int route=p.route_id[8*p.call_type1[slot]+p.call_type2[slot]];
-  uint64_t* raw=(uint64_t*)(p.raw+(size_t)slot*500);
+  real_bits_t* raw=(real_bits_t*)(p.raw+(size_t)slot*500);
   if(route>=11&&route<=13) {
-   const uint64_t* source=(const uint64_t*)(p.native_raw+(size_t)slot*500);
+   const real_bits_t* source=(const real_bits_t*)(p.native_raw+(size_t)slot*500);
    for(int k=lane;k<n*10;k+=width)raw[k]=source[k];
    if(n==0&&p.native_framewritten[slot]) {
-    const uint64_t* frame=(const uint64_t*)(p.native_frame0+6*slot);
+    const real_bits_t* frame=(const real_bits_t*)(p.native_frame0+6*slot);
     for(int k=lane;k<6;k+=width)raw[4+k]=frame[k];
    }
   } else {
-   const uint64_t* source=(const uint64_t*)(p.primitive_raw+(size_t)slot*80);
+   const real_bits_t* source=(const real_bits_t*)(p.primitive_raw+(size_t)slot*80);
    for(int k=lane;k<n*10;k+=width)raw[k]=source[k];
   }
  }

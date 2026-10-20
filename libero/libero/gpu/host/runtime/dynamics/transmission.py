@@ -11,6 +11,7 @@ gear: length[i] = qpos[qadr[i]] * gear[i]; moment[i, dof[i]] = gear[i]; the
 velocity reduction keeps the accepted mju_dot four-lane order.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -25,20 +26,20 @@ STATUS_ARITHMETIC = 4
 
 
 @wp.kernel(enable_backward=False)
-def _transmission_position(qpos: wp.array(dtype=wp.float64, ndim=2),
+def _transmission_position(qpos: wp.array(dtype=scalar.wp_real, ndim=2),
                            active: wp.array(dtype=wp.int32),
                            qadr: wp.array(dtype=wp.int32),
                            dadr: wp.array(dtype=wp.int32),
-                           gear: wp.array(dtype=wp.float64),
-                           length: wp.array(dtype=wp.float64, ndim=2),
-                           moment: wp.array(dtype=wp.float64, ndim=3),
+                           gear: wp.array(dtype=scalar.wp_real),
+                           length: wp.array(dtype=scalar.wp_real, ndim=2),
+                           moment: wp.array(dtype=scalar.wp_real, ndim=3),
                            status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = STATUS_OK
     for i in range(9):
-        length[w, i] = wp.float64(0.0)
+        length[w, i] = scalar.wp_real(0.0)
         for j in range(43):
-            moment[w, i, j] = wp.float64(0.0)
+            moment[w, i, j] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -63,16 +64,16 @@ def _transmission_position(qpos: wp.array(dtype=wp.float64, ndim=2),
 
 
 @wp.kernel(enable_backward=False)
-def _transmission_velocity(moment: wp.array(dtype=wp.float64, ndim=3),
-                           qvel: wp.array(dtype=wp.float64, ndim=2),
+def _transmission_velocity(moment: wp.array(dtype=scalar.wp_real, ndim=3),
+                           qvel: wp.array(dtype=scalar.wp_real, ndim=2),
                            active: wp.array(dtype=wp.int32),
                            pos_status: wp.array(dtype=wp.int32),
-                           velocity: wp.array(dtype=wp.float64, ndim=2),
+                           velocity: wp.array(dtype=scalar.wp_real, ndim=2),
                            status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = STATUS_OK
     for i in range(9):
-        velocity[w, i] = wp.float64(0.0)
+        velocity[w, i] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -88,10 +89,10 @@ def _transmission_velocity(moment: wp.array(dtype=wp.float64, ndim=3),
     for i in range(9):
         # mju_dot's four independent lanes and final three-element tail,
         # matching the accepted fused actuation kernel exactly.
-        s0 = wp.float64(0.0)
-        s1 = wp.float64(0.0)
-        s2 = wp.float64(0.0)
-        s3 = wp.float64(0.0)
+        s0 = scalar.wp_real(0.0)
+        s1 = scalar.wp_real(0.0)
+        s2 = scalar.wp_real(0.0)
+        s3 = scalar.wp_real(0.0)
         for k in range(10):
             j = 4 * k
             s0 = s0 + moment[w, i, j] * qvel[w, j]
@@ -139,14 +140,14 @@ class TransmissionWorkspace:
         self.dadr = wp.array(np.ascontiguousarray(dadr, dtype=np.int32),
                              dtype=wp.int32, device=device)
         self.gear = wp.array(np.ascontiguousarray(gear, dtype=np.float64),
-                             dtype=wp.float64, device=device)
-        self.qpos = wp.zeros((capacity, 48), dtype=wp.float64, device=device)
-        self.qvel = wp.zeros((capacity, 43), dtype=wp.float64, device=device)
+                             dtype=scalar.wp_real, device=device)
+        self.qpos = wp.zeros((capacity, 48), dtype=scalar.wp_real, device=device)
+        self.qvel = wp.zeros((capacity, 43), dtype=scalar.wp_real, device=device)
         self.position_active = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.velocity_active = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.length = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
-        self.moment = wp.zeros((capacity, 9, 43), dtype=wp.float64, device=device)
-        self.velocity = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
+        self.length = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
+        self.moment = wp.zeros((capacity, 9, 43), dtype=scalar.wp_real, device=device)
+        self.velocity = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
         self.position_status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.velocity_status = wp.zeros(capacity, dtype=wp.int32, device=device)
 

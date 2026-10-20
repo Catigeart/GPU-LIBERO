@@ -5,6 +5,7 @@ the block; live BVH stages traverse independent body pairs in parallel, then
 publish the original request order. Diagnostic traversal retains its owner.
 The native detector retains a separate pair-parallel kernel launch boundary.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ast
 import inspect
@@ -41,7 +42,7 @@ _NAMES = {
     '_restore_failed_contacts_kernel': ('cf_restore_contacts','block'),
     '_body_counters_kernel': ('cf_body_counters_block','block'),
 }
-_SUFFIX={wp.int32:'i32',wp.float64:'f64',wp.float32:'f32'}
+_SUFFIX={wp.int32:'i32',scalar.wp_real:'f64',wp.float32:'f32'}
 
 
 def _body(method):
@@ -116,7 +117,7 @@ def _dataflow_storage(ws):
         # A retained private owner is outside the immutable public ABI
         # inventory. NativePlan validates each arena pointer independently.
         ws._cuda_collision_dataflow_storage=UserDict({
-            'contact_f':wp.empty(n*fields,dtype=wp.float64,device=ws.device),
+            'contact_f':wp.empty(n*fields,dtype=scalar.wp_real,device=ws.device),
             'contact_i':wp.empty(n*5,dtype=wp.int32,device=ws.device),
             'order':wp.empty(n,dtype=wp.int32,device=ws.device),
             'order_scratch':wp.empty(n,dtype=wp.int32,device=ws.device),
@@ -139,7 +140,7 @@ def _pair_parameter_cache(ws,params,storage):
     if root is None or not immutable or not 0<ngeom*ngeom<=131072:
         return [storage['contact_f'],storage['contact_i'],0]
     if not hasattr(ws,'_cuda_collision_pair_parameter_cache'):
-        f=wp.empty(ngeom*ngeom*16,dtype=wp.float64,device=ws.device)
+        f=wp.empty(ngeom*ngeom*16,dtype=scalar.wp_real,device=ws.device)
         i=wp.empty(ngeom*ngeom*2,dtype=wp.int32,device=ws.device)
         plan=NativePlan('collision_pair_parameters',
             [GPU_ROOT/'cuda/collision/collision_params.cuh'],
@@ -168,7 +169,7 @@ def prepare_bounds_cache(ws,dynamics):
     if not hasattr(ws,'_cuda_collision_bounds_cache'):
         ws._cuda_collision_bounds_cache=UserDict({name:wp.empty(ws.nworld*width,dtype=dtype,device=ws.device)
             for name,width,dtype in (
-                ('aabb',ws.nbody*6,wp.float64),('frame',9,wp.float64),('scratch',34,wp.float64),
+                ('aabb',ws.nbody*6,scalar.wp_real),('frame',9,scalar.wp_real),('scratch',34,scalar.wp_real),
                 ('entered',1,wp.int32),('count',1,wp.int32),('status',1,wp.int32),('options',4,wp.int32))})
         ws._cuda_collision_bounds_cache['epoch']=wp.full(ws.nworld,-1,dtype=wp.int64,device=ws.device)
         for name in ('prepare_count','hit_count','fallback_count'):
@@ -363,7 +364,7 @@ def _guard_inactive(ws,stages):
     """
     if getattr(ws,'_cuda_collision_dataflow_profile','compatible')!='fast':return stages,''
     mapped=[];source=['namespace collision_cuda {']
-    types={wp.int32:'int32_t*',wp.uint32:'uint32_t*',wp.int64:'int64_t*',wp.float32:'float*',wp.float64:'double*'}
+    types={wp.int32:'int32_t*',wp.uint32:'uint32_t*',wp.int64:'int64_t*',wp.float32:'float*',scalar.wp_real:'real_t*'}
     for index,stage in enumerate(stages):
         if stage is None or stage[0] in ('collision_cuda::cf_effective',
                 'collision_cuda::cf_commit_contacts_transport',
@@ -372,7 +373,7 @@ def _guard_inactive(ws,stages):
         fn,args,mode=stage[:3];specs=stage[3] if len(stage)>3 else None
         c_types=[(specs[i] if specs else None) or
                  (types[value.dtype] if isinstance(value,wp.array) else
-                  ('double' if isinstance(value,(float,np.floating)) else 'int32_t'))
+                  ('real_t' if isinstance(value,(float,np.floating)) else 'int32_t'))
                  for i,value in enumerate(args)]
         name='cf_requested_stage_'+str(index)
         declarations=', '.join(t+' a'+str(i) for i,t in enumerate(c_types))

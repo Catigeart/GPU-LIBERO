@@ -3,6 +3,7 @@
 No solver math changes. Cold derived class inserts private copies around the
 original factor_update launch. Overflow invalidates packet completeness.
 """
+import libero.gpu.precision as scalar
 import ast
 import hashlib
 import inspect
@@ -30,7 +31,7 @@ def _select(active:wp.array(dtype=wp.int32),status:wp.array(dtype=wp.int32),
         ordinal[k*nworld+w]=attempts[w]
 
 @wp.kernel(enable_backward=False)
-def _copy_f64(src:wp.array(dtype=wp.float64),dst:wp.array(dtype=wp.float64),
+def _copy_f64(src:wp.array(dtype=scalar.wp_real),dst:wp.array(dtype=scalar.wp_real),
               slot:wp.array(dtype=wp.int32),stride:int,nworld:int):
     tid=wp.tid();w=tid//stride;k=slot[w]
     if k>=0:dst[(k*nworld+w)*stride+tid%stride]=src[tid]
@@ -81,7 +82,7 @@ class FactorCapture:
             local=solver._H_local_flat,ltj=solver._H_ltj_flat,vec=solver._H_vec_flat,status=ws.status,route=ws.route)
         total=0
         for name,src in self.sources.items():
-            if src.dtype not in (wp.int32,wp.float64) or src.device!=self.device:raise ValueError('typed capture source mismatch')
+            if src.dtype not in (wp.int32,scalar.wp_real) or src.device!=self.device:raise ValueError('typed capture source mismatch')
             if not src.is_contiguous:raise ValueError('noncontiguous source')
             if name not in STATIC and (src.size%n or capacity*src.size>=2**31):raise ValueError('perworld source layout overflow')
             total+=(src.size if name in STATIC else capacity*src.size)*(4 if src.dtype==wp.int32 else 8)

@@ -15,6 +15,7 @@ pairs return the standard cleared outputs and never read their raw payload.
 """
 
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -27,13 +28,13 @@ FIELDS = 10
 
 @wp.kernel(enable_backward=False)
 def dedup_contacts(
-    raw: wp.array4d(dtype=wp.float64),
+    raw: wp.array4d(dtype=scalar.wp_real),
     raw_count: wp.array2d(dtype=wp.int32),
     pair_count: wp.array(dtype=wp.int32),
     active_world: wp.array(dtype=wp.int32),
     keep_mask: wp.array3d(dtype=wp.int32),
     keep_indices: wp.array3d(dtype=wp.int32),
-    compact: wp.array4d(dtype=wp.float64),
+    compact: wp.array4d(dtype=scalar.wp_real),
     compact_count: wp.array2d(dtype=wp.int32),
     status: wp.array2d(dtype=wp.int32),
     npair: int,
@@ -50,7 +51,7 @@ def dedup_contacts(
         keep_mask[world, pair, i] = 0
         keep_indices[world, pair, i] = -1
         for k in range(FIELDS):
-            compact[world, pair, i, k] = wp.float64(0.0)
+            compact[world, pair, i, k] = scalar.wp_real(0.0)
 
     active = active_world[world]
     if active == 0:
@@ -113,13 +114,13 @@ class ContactDedupWorkspace:
         self.nworld = nworld
         self.npair = npair
         n, p = nworld, npair
-        self.raw = wp.empty((n, p, MAX_CONTACTS, FIELDS), dtype=wp.float64, device=self.device)
+        self.raw = wp.empty((n, p, MAX_CONTACTS, FIELDS), dtype=scalar.wp_real, device=self.device)
         self.raw_count = wp.empty((n, p), dtype=wp.int32, device=self.device)
         self.pair_count = wp.empty((n,), dtype=wp.int32, device=self.device)
         self.active_world = wp.empty((n,), dtype=wp.int32, device=self.device)
         self.keep_mask = wp.empty((n, p, MAX_CONTACTS), dtype=wp.int32, device=self.device)
         self.keep_indices = wp.empty((n, p, MAX_CONTACTS), dtype=wp.int32, device=self.device)
-        self.compact = wp.empty((n, p, MAX_CONTACTS, FIELDS), dtype=wp.float64, device=self.device)
+        self.compact = wp.empty((n, p, MAX_CONTACTS, FIELDS), dtype=scalar.wp_real, device=self.device)
         self.compact_count = wp.empty((n, p), dtype=wp.int32, device=self.device)
         self.status = wp.empty((n, p), dtype=wp.int32, device=self.device)
 

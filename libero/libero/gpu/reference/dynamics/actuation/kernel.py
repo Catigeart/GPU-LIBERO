@@ -6,6 +6,7 @@ joint/constant-gain subset is expressed in Warp; no MuJoCo C is copied.
 """
 
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -87,33 +88,33 @@ def _validate_fixed_model(model):
 
 @wp.kernel(enable_backward=False)
 def _actuate(
-    qpos: wp.array(dtype=wp.float64, ndim=2),
-    qvel: wp.array(dtype=wp.float64, ndim=2),
-    ctrl: wp.array(dtype=wp.float64, ndim=2),
+    qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+    qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+    ctrl: wp.array(dtype=scalar.wp_real, ndim=2),
     active: wp.array(dtype=wp.int32),
     qadr: wp.array(dtype=wp.int32),
     dadr: wp.array(dtype=wp.int32),
-    gear: wp.array(dtype=wp.float64),
-    gain: wp.array(dtype=wp.float64),
-    bias0: wp.array(dtype=wp.float64),
-    bias1: wp.array(dtype=wp.float64),
-    bias2: wp.array(dtype=wp.float64),
-    ctrl_lo: wp.array(dtype=wp.float64),
-    ctrl_hi: wp.array(dtype=wp.float64),
-    force_lo: wp.array(dtype=wp.float64),
-    force_hi: wp.array(dtype=wp.float64),
+    gear: wp.array(dtype=scalar.wp_real),
+    gain: wp.array(dtype=scalar.wp_real),
+    bias0: wp.array(dtype=scalar.wp_real),
+    bias1: wp.array(dtype=scalar.wp_real),
+    bias2: wp.array(dtype=scalar.wp_real),
+    ctrl_lo: wp.array(dtype=scalar.wp_real),
+    ctrl_hi: wp.array(dtype=scalar.wp_real),
+    force_lo: wp.array(dtype=scalar.wp_real),
+    force_hi: wp.array(dtype=scalar.wp_real),
     force_limited: wp.array(dtype=wp.int32),
     bias_type: wp.array(dtype=wp.int32),
     disable_flags: wp.int32,
-    length: wp.array(dtype=wp.float64, ndim=2),
-    moment: wp.array(dtype=wp.float64, ndim=3),
-    velocity: wp.array(dtype=wp.float64, ndim=2),
-    force: wp.array(dtype=wp.float64, ndim=2),
-    force_pre: wp.array(dtype=wp.float64, ndim=2),
-    ctrl_used: wp.array(dtype=wp.float64, ndim=2),
+    length: wp.array(dtype=scalar.wp_real, ndim=2),
+    moment: wp.array(dtype=scalar.wp_real, ndim=3),
+    velocity: wp.array(dtype=scalar.wp_real, ndim=2),
+    force: wp.array(dtype=scalar.wp_real, ndim=2),
+    force_pre: wp.array(dtype=scalar.wp_real, ndim=2),
+    ctrl_used: wp.array(dtype=scalar.wp_real, ndim=2),
     ctrl_route: wp.array(dtype=wp.int32, ndim=2),
     force_route: wp.array(dtype=wp.int32, ndim=2),
-    qfrc: wp.array(dtype=wp.float64, ndim=2),
+    qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
     status: wp.array(dtype=wp.int32),
     warn_badctrl_count: wp.array(dtype=wp.int32),
     warn_badctrl_lastinfo: wp.array(dtype=wp.int32),
@@ -123,17 +124,17 @@ def _actuate(
     warn_badctrl_count[w] = 0
     warn_badctrl_lastinfo[w] = -1
     for j in range(43):
-        qfrc[w, j] = wp.float64(0.0)
+        qfrc[w, j] = scalar.wp_real(0.0)
     for i in range(9):
-        length[w, i] = wp.float64(0.0)
-        velocity[w, i] = wp.float64(0.0)
-        force[w, i] = wp.float64(0.0)
-        force_pre[w, i] = wp.float64(0.0)
-        ctrl_used[w, i] = wp.float64(0.0)
+        length[w, i] = scalar.wp_real(0.0)
+        velocity[w, i] = scalar.wp_real(0.0)
+        force[w, i] = scalar.wp_real(0.0)
+        force_pre[w, i] = scalar.wp_real(0.0)
+        ctrl_used[w, i] = scalar.wp_real(0.0)
         ctrl_route[w, i] = 0
         force_route[w, i] = 0
         for j in range(43):
-            moment[w, i, j] = wp.float64(0.0)
+            moment[w, i, j] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -159,10 +160,10 @@ def _actuate(
         moment[w, i, b] = g
 
         # mju_dot's four independent lanes and final three-element tail.
-        s0 = wp.float64(0.0)
-        s1 = wp.float64(0.0)
-        s2 = wp.float64(0.0)
-        s3 = wp.float64(0.0)
+        s0 = scalar.wp_real(0.0)
+        s1 = scalar.wp_real(0.0)
+        s2 = scalar.wp_real(0.0)
+        s3 = scalar.wp_real(0.0)
         for k in range(10):
             j = 4 * k
             s0 = s0 + moment[w, i, j] * qvel[w, j]
@@ -190,7 +191,7 @@ def _actuate(
             elif u > ctrl_hi[i]:
                 u = ctrl_hi[i]
                 ctrl_route[w, i] = 1
-        if bad_index < 0 and (u != u or u > wp.float64(1.0e10) or u < wp.float64(-1.0e10)):
+        if bad_index < 0 and (u != u or u > scalar.wp_real(1.0e10) or u < scalar.wp_real(-1.0e10)):
             bad_index = i
     if bad_index >= 0:
         warn_badctrl_count[w] = 1
@@ -198,7 +199,7 @@ def _actuate(
 
     # fwdActuation: local ctrl clamp, fixed gain, affine or zero bias.
     for i in range(9):
-        u = wp.float64(0.0)
+        u = scalar.wp_real(0.0)
         if bad_index < 0:
             u = ctrl[w, i]
             if ctrl_route[w, i] == -1:
@@ -222,7 +223,7 @@ def _actuate(
     # mju_mulMatTVec: row order, skip exactly-zero force rows.
     for i in range(9):
         f = force[w, i]
-        if f != wp.float64(0.0):
+        if f != scalar.wp_real(0.0):
             for j in range(43):
                 qfrc[w, j] = qfrc[w, j] + moment[w, i, j] * f
 
@@ -238,19 +239,19 @@ class ActuationWorkspace:
             raise ValueError("capacity must be positive")
         self.capacity = capacity
         self.device = device
-        self.qpos = wp.zeros((capacity, 48), dtype=wp.float64, device=device)
-        self.qvel = wp.zeros((capacity, 43), dtype=wp.float64, device=device)
-        self.ctrl = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
+        self.qpos = wp.zeros((capacity, 48), dtype=scalar.wp_real, device=device)
+        self.qvel = wp.zeros((capacity, 43), dtype=scalar.wp_real, device=device)
+        self.ctrl = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
         self.active = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.length = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
-        self.moment = wp.zeros((capacity, 9, 43), dtype=wp.float64, device=device)
-        self.velocity = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
-        self.force = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
-        self.force_pre = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
-        self.ctrl_used = wp.zeros((capacity, 9), dtype=wp.float64, device=device)
+        self.length = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
+        self.moment = wp.zeros((capacity, 9, 43), dtype=scalar.wp_real, device=device)
+        self.velocity = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
+        self.force = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
+        self.force_pre = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
+        self.ctrl_used = wp.zeros((capacity, 9), dtype=scalar.wp_real, device=device)
         self.ctrl_route = wp.zeros((capacity, 9), dtype=wp.int32, device=device)
         self.force_route = wp.zeros((capacity, 9), dtype=wp.int32, device=device)
-        self.qfrc = wp.zeros((capacity, 43), dtype=wp.float64, device=device)
+        self.qfrc = wp.zeros((capacity, 43), dtype=scalar.wp_real, device=device)
         self.status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.warn_badctrl_count = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.warn_badctrl_lastinfo = wp.zeros(capacity, dtype=wp.int32, device=device)
@@ -270,7 +271,7 @@ class ActuationWorkspace:
             "bias_type": np.asarray(model.actuator_biastype, np.int32),
         }
         for name, arr in arrays.items():
-            setattr(self, name, wp.array(np.ascontiguousarray(arr), dtype=wp.int32 if arr.dtype == np.int32 else wp.float64, device=device))
+            setattr(self, name, wp.array(np.ascontiguousarray(arr), dtype=wp.int32 if arr.dtype == np.int32 else scalar.wp_real, device=device))
 
     def launch(self, stream=None):
         wp.launch(_actuate, dim=self.capacity,

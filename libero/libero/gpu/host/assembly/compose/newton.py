@@ -3,6 +3,7 @@
 The solver, warmstart selection, line search and iteration order are untouched.
 The public/work separation and all full-capacity tails are retained.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 from libero.gpu.host.runtime.newton import runtime_adapter as original
 from libero.gpu.host.runtime.step.newton_final_event import FinalEventAdapter
@@ -43,13 +44,13 @@ def _initialization_kernel():
     args = ["enabled: wp.array(dtype=wp.int32)"]
     body = ["w = wp.tid()"]
     for name in original.RESET_INT + original.RESET_FLOAT:
-        dtype = "int32" if name in original.RESET_INT else "float64"
+        dtype = "int32" if name in original.RESET_INT else scalar.name
         args.append(f"r_{name}: wp.array(dtype=wp.{dtype})")
         body.append(f"r_{name}[w] = wp.{dtype}(0)")
     args.extend(["error_item: wp.array(dtype=wp.int32)", "stage: wp.array(dtype=wp.int32)",
         "maxiter_arr: wp.array(dtype=wp.int32)", "solver_iter_base: wp.array(dtype=wp.int32)",
-        "maxiter: int", "model: wp.array(dtype=wp.float64)",
-        "tolerance: wp.array(dtype=wp.float64)", "meaninertia: wp.array(dtype=wp.float64)",
+        "maxiter: int", "model: wp.array(dtype=scalar.wp_real)",
+        "tolerance: wp.array(dtype=scalar.wp_real)", "meaninertia: wp.array(dtype=scalar.wp_real)",
         "upstream: wp.array(dtype=wp.int32)", "nefc: wp.array(dtype=wp.int32)",
         "empty: wp.array(dtype=wp.int32)", "newton_world: wp.array(dtype=wp.int32)",
         "active: wp.array(dtype=wp.int32)", "count: wp.array(dtype=wp.int32)",
@@ -74,7 +75,7 @@ def _copy_kernel(commit):
     if commit:
         args += ["valid: wp.array(dtype=wp.int32)"]
     for field in original.PUBLIC_FIELDS:
-        dtype = "int32" if field in ("state", "solver_iter", "solver_nnz", "solver_stats_i") else "float64"
+        dtype = "int32" if field in ("state", "solver_iter", "solver_nnz", "solver_stats_i") else scalar.name
         args += [f"src_{field}: wp.array(dtype=wp.{dtype})",
                  f"dst_{field}: wp.array(dtype=wp.{dtype})", f"stride_{field}: int"]
     body = ["i = wp.tid()", "w = i // span", "cell = i - w * span"]

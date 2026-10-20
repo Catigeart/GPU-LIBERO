@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <math.h>
 
@@ -5,29 +6,29 @@
 // one world's request sequence; untouched output slots retain their contents.
 namespace collision_cuda {
 
-__device__ __forceinline__ double cd_max(double a, double b) {
+__device__ __forceinline__ real_t cd_max(real_t a, real_t b) {
     return a >= b ? a : b;
 }
-__device__ __forceinline__ bool cd_admitted(double a) {
-    return a == a && fabs(a) <= 1e100;
+__device__ __forceinline__ bool cd_admitted(real_t a) {
+    return a == a && fabs(a) <= REAL_SAFE_MAGNITUDE;
 }
 __device__ __forceinline__ bool cd_positions_ok(
-    const double* xpos, int p1, int p2) {
+    const real_t* xpos, int p1, int p2) {
     for (int k = 0; k < 3; ++k)
         if (!cd_admitted(xpos[p1+k]) || !cd_admitted(xpos[p2+k]))
             return false;
     return true;
 }
-__device__ __forceinline__ bool cd_plane_ok(const double* xmat, int m) {
+__device__ __forceinline__ bool cd_plane_ok(const real_t* xmat, int m) {
     for (int k = 0; k < 3; ++k)
         if (!cd_admitted(xmat[m+2+3*k])) return false;
     return true;
 }
-__device__ __forceinline__ double cd_plane_distance(
-    const double* xpos, const double* xmat, int p1, int p2, int m) {
-    const double dx = xpos[p2]-xpos[p1];
-    const double dy = xpos[p2+1]-xpos[p1+1];
-    const double dz = xpos[p2+2]-xpos[p1+2];
+__device__ __forceinline__ real_t cd_plane_distance(
+    const real_t* xpos, const real_t* xmat, int p1, int p2, int m) {
+    const real_t dx = xpos[p2]-xpos[p1];
+    const real_t dy = xpos[p2+1]-xpos[p1+1];
+    const real_t dz = xpos[p2+2]-xpos[p1+2];
     return dx*xmat[m+2] + dy*xmat[m+5] + dz*xmat[m+8];
 }
 __device__ __forceinline__ bool cd_route_changed_lane(int lane,int ngeom,
@@ -48,16 +49,16 @@ __device__ __forceinline__ bool cd_route_changed_lane(int lane,int ngeom,
 }
 
 __device__ void cf_dispatch(
-    int w, const int* raw, const double* usermargin,
-    const double* xpos, const double* xmat, const int* active,
+    int w, const int* raw, const real_t* usermargin,
+    const real_t* xpos, const real_t* xmat, const int* active,
     const int* counts, const int* geom_type, const int* geom_contype,
     const int* geom_conaffinity, const int* geom_priority,
-    const int* geom_condim, const double* geom_margin,
-    const double* geom_gap, const double* geom_rbound,
+    const int* geom_condim, const real_t* geom_margin,
+    const real_t* geom_gap, const real_t* geom_rbound,
     const int* pair_geom1, const int* pair_geom2, const int* pair_dim,
-    const double* pair_margin, const double* pair_gap,
-    const int* override_enabled, const double* o_margin, const int* present,
-    int* out_i, double* out_f, int* call_index, int* call_count,
+    const real_t* pair_margin, const real_t* pair_gap,
+    const int* override_enabled, const real_t* o_margin, const int* present,
+    int* out_i, real_t* out_f, int* call_index, int* call_count,
     int* mid_count, int* status, int* error_index,
     int slots, int capacity, int ngeom, int npair) {
     if (threadIdx.x != 0) return;
@@ -108,7 +109,7 @@ __device__ void cf_dispatch(
             !(geom_contype[g2]&geom_conaffinity[g1])) {
             out_i[b] = 2; continue;
         }
-        double margin = 0.0, gap = 0.0;
+        real_t margin = REAL_C(0.0), gap = REAL_C(0.0);
         int dim = 0;
         if (ipair < 0) {
             margin = cd_max(geom_margin[g1], geom_margin[g2]);
@@ -128,20 +129,20 @@ __device__ void cf_dispatch(
         else if (override_enabled[0]) margin = o_margin[0];
         out_i[b+6] = dim; out_i[b+10] = 1;
         out_f[t*2] = margin; out_f[t*2+1] = gap;
-        const double r1 = geom_rbound[g1], r2 = geom_rbound[g2];
+        const real_t r1 = geom_rbound[g1], r2 = geom_rbound[g2];
         bool rejected = false;
-        if (r1 > 0.0 && r2 > 0.0) {
-            const double bound = r1+r2+margin;
+        if (r1 > REAL_C(0.0) && r2 > REAL_C(0.0)) {
+            const real_t bound = r1+r2+margin;
             const int p1 = (w*ngeom+g1)*3, p2 = (w*ngeom+g2)*3;
             if (!cd_positions_ok(xpos, p1, p2)) {
                 status[w] = 5; error_index[w] = q; return;
             }
-            const double dx = xpos[p1]-xpos[p2];
-            const double dy = xpos[p1+1]-xpos[p2+1];
-            const double dz = xpos[p1+2]-xpos[p2+2];
+            const real_t dx = xpos[p1]-xpos[p2];
+            const real_t dy = xpos[p1+1]-xpos[p2+1];
+            const real_t dz = xpos[p1+2]-xpos[p2+2];
             rejected = dx*dx+dy*dy+dz*dz > bound*bound;
         }
-        if (!rejected && type1 == 0 && r2 > 0.0) {
+        if (!rejected && type1 == 0 && r2 > REAL_C(0.0)) {
             const int p1 = (w*ngeom+g1)*3, p2 = (w*ngeom+g2)*3;
             const int m = (w*ngeom+g1)*9;
             if (!cd_positions_ok(xpos,p1,p2) || !cd_plane_ok(xmat,m)) {
@@ -149,7 +150,7 @@ __device__ void cf_dispatch(
             }
             rejected = cd_plane_distance(xpos,xmat,p1,p2,m) > margin+r2;
         }
-        if (!rejected && type2 == 0 && r1 > 0.0) {
+        if (!rejected && type2 == 0 && r1 > REAL_C(0.0)) {
             const int p1 = (w*ngeom+g2)*3, p2 = (w*ngeom+g1)*3;
             const int m = (w*ngeom+g2)*9;
             if (!cd_positions_ok(xpos,p1,p2) || !cd_plane_ok(xmat,m)) {
@@ -175,18 +176,18 @@ __device__ void cf_dispatch(
 // A numeric error has a partially initialized row; a metadata error has none.
 struct cd_dispatch_row {
     int i[12]; unsigned written; int error; bool callable, floats;
-    double margin, gap;
+    real_t margin, gap;
     __device__ void put(int k, int v) { i[k]=v; written |= 1u << k; }
 };
 __device__ __forceinline__ void cd_classify_request(
-    int w, const int* raw, const double* usermargin,
-    const double* xpos, const double* xmat, const int* geom_type, const int* geom_contype,
+    int w, const int* raw, const real_t* usermargin,
+    const real_t* xpos, const real_t* xmat, const int* geom_type, const int* geom_contype,
     const int* geom_conaffinity, const int* geom_priority,
-    const int* geom_condim, const double* geom_margin,
-    const double* geom_gap, const double* geom_rbound,
+    const int* geom_condim, const real_t* geom_margin,
+    const real_t* geom_gap, const real_t* geom_rbound,
     const int* pair_geom1, const int* pair_geom2, const int* pair_dim,
-    const double* pair_margin, const double* pair_gap,
-    const int* override_enabled, const double* o_margin, const int* present,
+    const real_t* pair_margin, const real_t* pair_gap,
+    const int* override_enabled, const real_t* o_margin, const int* present,
     int slots, int ngeom, int npair, int q, cd_dispatch_row& r,
     const unsigned* geom_pair_route=nullptr) {
     r.written=0; r.error=0; r.callable=false; r.floats=false;
@@ -236,7 +237,7 @@ __device__ __forceinline__ void cd_classify_request(
                  (geom_contype[g2]&geom_conaffinity[g1])))) {
             r.put(0, 2); return;
         }
-        double margin = 0.0, gap = 0.0;
+        real_t margin = REAL_C(0.0), gap = REAL_C(0.0);
         int dim = 0;
         if (ipair < 0) {
             margin = cd_max(geom_margin[g1], geom_margin[g2]);
@@ -257,20 +258,20 @@ __device__ __forceinline__ void cd_classify_request(
         else if (override_enabled[0]) margin = o_margin[0];
         r.put(6, dim); r.put(10, 1);
         r.margin = margin; r.gap = gap; r.floats = true;
-        const double r1 = geom_rbound[g1], r2 = geom_rbound[g2];
+        const real_t r1 = geom_rbound[g1], r2 = geom_rbound[g2];
         bool rejected = false;
-        if (r1 > 0.0 && r2 > 0.0) {
-            const double bound = r1+r2+margin;
+        if (r1 > REAL_C(0.0) && r2 > REAL_C(0.0)) {
+            const real_t bound = r1+r2+margin;
             const int p1 = (w*ngeom+g1)*3, p2 = (w*ngeom+g2)*3;
             if (!cd_positions_ok(xpos, p1, p2)) {
                 r.error = 5; return;
             }
-            const double dx = xpos[p1]-xpos[p2];
-            const double dy = xpos[p1+1]-xpos[p2+1];
-            const double dz = xpos[p1+2]-xpos[p2+2];
+            const real_t dx = xpos[p1]-xpos[p2];
+            const real_t dy = xpos[p1+1]-xpos[p2+1];
+            const real_t dz = xpos[p1+2]-xpos[p2+2];
             rejected = dx*dx+dy*dy+dz*dz > bound*bound;
         }
-        if (!rejected && type1 == 0 && r2 > 0.0) {
+        if (!rejected && type1 == 0 && r2 > REAL_C(0.0)) {
             const int p1 = (w*ngeom+g1)*3, p2 = (w*ngeom+g2)*3;
             const int m = (w*ngeom+g1)*9;
             if (!cd_positions_ok(xpos,p1,p2) || !cd_plane_ok(xmat,m)) {
@@ -278,7 +279,7 @@ __device__ __forceinline__ void cd_classify_request(
             }
             rejected = cd_plane_distance(xpos,xmat,p1,p2,m) > margin+r2;
         }
-        if (!rejected && type2 == 0 && r1 > 0.0) {
+        if (!rejected && type2 == 0 && r1 > REAL_C(0.0)) {
             const int p1 = (w*ngeom+g2)*3, p2 = (w*ngeom+g1)*3;
             const int m = (w*ngeom+g2)*9;
             if (!cd_positions_ok(xpos,p1,p2) || !cd_plane_ok(xmat,m)) {
@@ -290,16 +291,16 @@ __device__ __forceinline__ void cd_classify_request(
     r.callable=true;
 }
 __device__ void cf_dispatch_block(
-    int w, const int* raw, const double* usermargin,
-    const double* xpos, const double* xmat, const int* active,
+    int w, const int* raw, const real_t* usermargin,
+    const real_t* xpos, const real_t* xmat, const int* active,
     const int* counts, const int* geom_type, const int* geom_contype,
     const int* geom_conaffinity, const int* geom_priority,
-    const int* geom_condim, const double* geom_margin,
-    const double* geom_gap, const double* geom_rbound,
+    const int* geom_condim, const real_t* geom_margin,
+    const real_t* geom_gap, const real_t* geom_rbound,
     const int* pair_geom1, const int* pair_geom2, const int* pair_dim,
-    const double* pair_margin, const double* pair_gap,
-    const int* override_enabled, const double* o_margin, const int* present,
-    int* out_i, double* out_f, int* call_index, int* call_count,
+    const real_t* pair_margin, const real_t* pair_gap,
+    const int* override_enabled, const real_t* o_margin, const int* present,
+    int* out_i, real_t* out_f, int* call_index, int* call_count,
     int* mid_count, int* status, int* error_index,
     int slots, int capacity, int ngeom, int npair,
     const unsigned* geom_pair_route=nullptr,const int* route_shadow=nullptr) {

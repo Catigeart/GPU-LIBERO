@@ -6,6 +6,7 @@ Only the one-dimensional tid is supplied by the fused caller. No arithmetic,
 checks, array writes, or floating-point options are rewritten.
 """
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
+import libero.gpu.precision as scalar
 import ast
 import copy
 import hashlib
@@ -22,7 +23,8 @@ _CACHE = {}
 
 
 def _load(name, source, namespace, *, warp_module=True):
-    digest = hashlib.sha256(source.encode()).hexdigest()
+    namespace = dict(namespace, scalar=scalar)
+    digest = hashlib.sha256((source+'|real='+str(scalar.bits)).encode()).hexdigest()
     module_name = __name__ + "._" + name + "_" + digest[:16]
     if module_name in sys.modules:
         return sys.modules[module_name]

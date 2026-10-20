@@ -1,4 +1,5 @@
 """One physical substep per CUDA kernel, with explicit prefix continuations."""
+import libero.gpu.precision as scalar
 import ctypes as ct
 
 import numpy as np
@@ -17,9 +18,14 @@ class FusedSubstep:
     CONTROLLER_POSITION = 1
     PHYSICS_POSITION = 2
     ACCELERATION_RESET = 3
+    POSITION_CHECKS = 5
 
     def __init__(self, runtime, build_root, *, allow_build=False,
-                 fast_compile=False, device_lto=False, profile_newton=False, atomic_reductions=None):
+                 fast_compile=False, device_lto=False, profile_newton=False, atomic_reductions=None,
+                 single_solve=False):
+        if type(single_solve) is not bool or single_solve and scalar.bits != 32:
+            raise ValueError('single_solve requires an explicit FP32 candidate')
+        self.single_solve = single_solve
         self.runtime = runtime
         self.stream = runtime.stream
         self.worlds = runtime.euler.capacity
@@ -30,19 +36,28 @@ class FusedSubstep:
             nu=euler.ctrl.shape[1],rows=runtime.forward.n.ws.rows,contacts=runtime.forward.n.ws.contacts)
         self.continuation = wp.zeros(self.worlds, dtype=wp.int32, device=self.stream.device)
         self.predicate = wp.zeros(1, dtype=wp.int32, device=self.stream.device)
-        self.arguments, self.owners, core = bind(runtime, self.continuation)
+        self.arguments, self.owners, core = bind(runtime, self.continuation, single_solve=single_solve)
         data = np.frombuffer(bytes(self.arguments), dtype=np.uint8).copy()
         self.device_arguments = wp.array(data, dtype=wp.uint8, device=self.stream.device)
         self.manifest = substep_native.prepare(GPU_ROOT / "cuda/step/fused_substep.cu",
             build_root, core.manifest["mathdx_root"], self.stream.device.arch,
             fast_compile=fast_compile, device_lto=device_lto, profile_newton=profile_newton,
-            nv=self.variant.nv, atomic_reductions=atomic_reductions)
+            nv=self.variant.nv, atomic_reductions=atomic_reductions, single_solve=single_solve)
         self._graphs = {}
         self.load(allow_build=allow_build)
 
     def load(self, *, allow_build=False):
         self.manifest = substep_native.finish(self.manifest, allow_build=allow_build)
         self.library = ct.CDLL(self.manifest["library"])
+        scalar_size = self.library.flash_libero_scalar_bytes
+        scalar_size.argtypes = []; scalar_size.restype = ct.c_int
+        if scalar_size() != scalar.itemsize:
+            raise RuntimeError('loaded substep precision differs from its buffer owners')
+        prefix = 'flash_libero_substep_single' if self.single_solve else 'flash_libero_substep'
+        solve_count = getattr(self.library, prefix + '_solves_per_substep')
+        solve_count.argtypes = []; solve_count.restype = ct.c_int
+        if solve_count() != self.manifest['config']['solves_per_substep']:
+            raise RuntimeError('loaded substep uses a different physical schedule')
         for suffix, kind in (("arguments", NewtonArguments), ("world", NewtonWorldData),
                              ("model", NewtonModelData), ("post", NewtonPostData)):
             try:
@@ -76,7 +91,7 @@ class FusedSubstep:
             raise RuntimeError("loaded Newton reduction mode differs from the requested build")
         if workspace_size() != device_workspace_bytes(v.nv, v.rows):
             raise RuntimeError("loaded Newton device workspace pitch differs")
-        configure = self.library.flash_libero_substep_configure
+        configure = getattr(self.library, prefix + '_configure')
         configure.argtypes = [ct.POINTER(ct.c_int), ct.POINTER(ct.c_int)]
         configure.restype = ct.c_int
         registers, shared = ct.c_int(), ct.c_int()
@@ -85,15 +100,18 @@ class FusedSubstep:
         shared_bytes = self.library.flash_libero_substep_shared_bytes
         shared_bytes.argtypes = []
         shared_bytes.restype = ct.c_size_t
-        self.resources = dict(registers=registers.value, static_shared_bytes=shared.value,
+        self.resources = dict(real_bits=scalar.bits, registers=registers.value, static_shared_bytes=shared.value,
+                              schedule=self.manifest['config']['schedule'],
+                              solves_per_substep=solve_count(),
                               dynamic_shared_bytes=shared_bytes(), threads_per_world=dimension(7),
                               nv=v.nv,hessian_tile_rows=v.hessian_tile_rows,
                               atomic_reductions=bool(reduction_mode()),
                               newton_device_workspace_bytes_per_world=workspace_size())
-        self.launch_entry = self.library.flash_libero_launch_substep
+        launch_prefix = 'flash_libero_launch_substep' + ('_single' if self.single_solve else '')
+        self.launch_entry = getattr(self.library, launch_prefix)
         self.launch_entry.argtypes = [ct.c_void_p, ct.c_int, ct.c_int, ct.c_int, ct.c_void_p]
         self.launch_entry.restype = ct.c_int
-        self.launch_post_entry = getattr(self.library, 'flash_libero_launch_substep_with_post', None)
+        self.launch_post_entry = getattr(self.library, launch_prefix + '_with_post', None)
         if self.launch_post_entry is not None:
             self.launch_post_entry.argtypes = [ct.c_void_p, ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_void_p]
             self.launch_post_entry.restype = ct.c_int
@@ -142,6 +160,9 @@ class FusedSubstep:
         forward = runtime.forward
         runtime._recovery_validate()
 
+        if self.single_solve:
+            self._launch(policy_step, self.POSITION_CHECKS, publish_post)
+
         # The first forward's admission and position/collision prefix remain
         # the accepted multi-CTA implementation. Its suffix starts in CUDA.
         wp.copy(forward.mask, runtime.intent, stream=self.stream)
@@ -156,15 +177,17 @@ class FusedSubstep:
             self._refresh_position()
             self._launch(policy_step, self.CONTROLLER_POSITION, publish_post)
 
-        self._select(self.CONTROLLER_POSITION)
-        wp.capture_if(self.predicate, on_true=resume_controller, stream=self.stream)
+        if not self.single_solve:
+            self._select(self.CONTROLLER_POSITION)
+            wp.capture_if(self.predicate, on_true=resume_controller, stream=self.stream)
 
         def resume_physics():
             self._refresh_position()
             self._launch(policy_step, self.PHYSICS_POSITION, publish_post)
 
-        self._select(self.PHYSICS_POSITION)
-        wp.capture_if(self.predicate, on_true=resume_physics, stream=self.stream)
+        if not self.single_solve:
+            self._select(self.PHYSICS_POSITION)
+            wp.capture_if(self.predicate, on_true=resume_physics, stream=self.stream)
 
         # mj_checkAcc requires a real reset-only full forward before Euler.
         # The original callback owns mixed-world save/restore and Post work.

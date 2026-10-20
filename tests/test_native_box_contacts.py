@@ -4,6 +4,7 @@ Only the device entry is adapted to a small host ABI. MuJoCo supplies the
 double-precision vector helpers. GPU subgroup execution is checked separately.
 """
 import ctypes as ct
+import csv
 import importlib.util
 import json
 from pathlib import Path
@@ -48,6 +49,8 @@ def host_probe_source():
 #define __device__
 #define __forceinline__ inline
 #define mju_abs fabs
+using real_t = double;
+#define REAL_C(value) double(value)
 struct { int x; } threadIdx = {0};
 static unsigned native_query_mask(int) { return ~0u; }
 template<class T> T __shfl_sync(unsigned, T x, int, int) { return x; }
@@ -77,15 +80,23 @@ extern "C" int run(const double* size, const double* pos, const double* mat,
 
 
 class BoxContactGenerationTests(unittest.TestCase):
-    def test_derivation_retains_the_maintained_contact_correction(self):
-        path = ROOT / 'libero/libero/gpu/host/build/box_contact_source.py'
+    def test_derivation_covers_edge_tail_and_first_vertex_clip(self):
+        path = ROOT / 'tests/support/box_contact_source.py'
         spec = importlib.util.spec_from_file_location('derive_box_contacts', path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        generated = module.correct_boxbox_edge_contacts(
-            function_body(ORIGINAL.read_text(), 'mjc_BoxBox')).split('edgeedge:', 1)[1]
-        maintained = function_body(HEADER.read_text(), 'mjc_BoxBox').split('edgeedge:', 1)[1]
+        generated_body = module.correct_boxbox_contacts(function_body(ORIGINAL.read_text(), 'mjc_BoxBox'))
+        # This provenance check covers the corrected edge tail. Face clipping
+        # is checked separately below; FP32 SAT behavior has geometric fixtures.
+        generated = generated_body.split('edgeedge:', 1)[1]
+        maintained_body = function_body(HEADER.read_text(), 'mjc_BoxBox')
+        maintained = maintained_body.split('edgeedge:', 1)[1]
+        for axis, half in ((0, 'lx'), (1, 'ly')):
+            clip = f'if (i ? (tmp1[{axis}] <= -{half} || tmp1[{axis}] >= {half}) : (tmp1[{axis}] < -{half} || tmp1[{axis}] > {half}))'
+            self.assertIn(clip, generated_body)
+            self.assertIn(clip, maintained_body)
         maintained = maintained.replace('  *M->adapter_frame0=1;\n', '')
+        maintained = re.sub(r'REAL_C\(([^()]*)\)', r'\1', maintained)
         self.assertEqual(generated, maintained)
 
 
@@ -178,6 +189,21 @@ class NativeBoxContactTests(unittest.TestCase):
                                                atol=1e-15, rtol=0)
                 if z < 2:
                     np.testing.assert_array_equal(new, old)
+
+    def test_first_incident_vertex_must_belong_to_reference_face(self):
+        with (FIXTURE.parent / 'boxbox_first_face_vertex.csv').open() as stream:
+            rows = [np.array([float(x) for x in row]) for row in csv.reader(stream)]
+        size, pos, mat = (a.reshape(shape) for a, shape in
+                          zip(rows, ((2, 3), (2, 3), (2, 3, 3))))
+        for swap in (False, True):
+            s, p, r = (a[::-1] if swap else a for a in (size, pos, mat))
+            contacts, _ = self.probe(s, p, r)
+            self.assertEqual(len(contacts), 4)
+            for box in range(2):
+                local = (contacts[:, 1:4] - p[box]) @ r[box]
+                # The captured matrices were rounded to FP32 before capture.
+                self.assertLessEqual(float(np.max(np.abs(local) - s[box])),
+                                     16 * np.finfo(np.float32).eps)
 
     def test_projection_determinant_is_not_overwritten_by_first_corner(self):
         f = json.loads((FIXTURE.parent / 'boxbox_edge_projection.json').read_text())

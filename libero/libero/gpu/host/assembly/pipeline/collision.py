@@ -1,4 +1,5 @@
 """Cold opt-in collision fusion. Native and parallel-row boundaries are retained."""
+import libero.gpu.precision as scalar
 import ast
 import copy
 import hashlib
@@ -28,7 +29,7 @@ class _OutputCopies:
         self.fallback |= restore and any(_overlap(dst, ws.active) for dst in destinations)
         args = ['active: wp.array(dtype=wp.int32)'] if restore else []
         body = ['    cell = wp.tid()']
-        types = {wp.float64:'float64', wp.float32:'float32', wp.int32:'int32'}
+        types = {scalar.wp_real:scalar.name, wp.float32:'float32', wp.int32:'int32'}
         self.inputs = [ws.active] if restore else []
         for i, (source, target) in enumerate(self.pairs):
             if not source.is_contiguous or not target.is_contiguous or source.size != target.size:
@@ -59,7 +60,7 @@ class _OutputCopies:
             for source,target in self.pairs:
                 if not self.restore: wp.copy(target,source,stream=stream)
                 else:
-                    kernel={wp.int32:chain._restore_inactive_i32,wp.float64:chain._restore_inactive_f64,wp.float32:chain._restore_inactive_f32}[target.dtype]
+                    kernel={wp.int32:chain._restore_inactive_i32,scalar.wp_real:chain._restore_inactive_f64,wp.float32:chain._restore_inactive_f32}[target.dtype]
                     wp.launch(kernel,target.size,inputs=[self.ws.active,source,target,target.size//self.ws.nworld],device=self.ws.device,stream=stream)
 
 

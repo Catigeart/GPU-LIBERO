@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <stdint.h>
 #include <math.h>
@@ -28,15 +29,15 @@ template<class T> __device__ void cf_copy(int w,T* src,T* dst,int stride){
     if(stride>0)libero_vec::copy_block(src+w*stride,dst+w*stride,(size_t)stride);
 }
 __device__ void cf_copy_i32(int w,int* s,int* d,int n){cf_copy(w,s,d,n);}
-__device__ void cf_copy_f64(int w,double* s,double* d,int n){cf_copy(w,s,d,n);}
+__device__ void cf_copy_f64(int w,real_t* s,real_t* d,int n){cf_copy(w,s,d,n);}
 __device__ void cf_copy_f32(int w,float* s,float* d,int n){cf_copy(w,s,d,n);}
 template<class T> __device__ void cf_restore(int w,int* active,T* src,T* dst,int stride){
     if(active[w]==0)cf_copy(w,src,dst,stride);
 }
 __device__ void cf_restore_i32(int w,int* a,int* s,int* d,int n){cf_restore(w,a,s,d,n);}
-__device__ void cf_restore_f64(int w,int* a,double* s,double* d,int n){cf_restore(w,a,s,d,n);}
+__device__ void cf_restore_f64(int w,int* a,real_t* s,real_t* d,int n){cf_restore(w,a,s,d,n);}
 __device__ void cf_restore_f32(int w,int* a,float* s,float* d,int n){cf_restore(w,a,s,d,n);}
-__device__ void cf_req_dispatch(int w,int* requests,int* count,int* active,int* raw,double* usermargin,
+__device__ void cf_req_dispatch(int w,int* requests,int* count,int* active,int* raw,real_t* usermargin,
         int* counts,int* dispatch_active,int* origin,int* segments,int* pair_start,int* pair_end,
         int* geom_stage,int* trailing_start,int* trailing_end,int* pair1,int* pair2,
         int req_slots,int slots,int npair,int stage_slots){
@@ -69,7 +70,7 @@ __device__ void cf_req_dispatch(int w,int* requests,int* count,int* active,int* 
 
 // Tree traversal emits requests in nondecreasing stage order. Preserve a
 // fallback for unusual standalone inputs instead of changing their domain.
-__device__ void cf_req_dispatch_ordered(int w,int* requests,int* count,int* active,int* raw,double* usermargin,
+__device__ void cf_req_dispatch_ordered(int w,int* requests,int* count,int* active,int* raw,real_t* usermargin,
         int* counts,int* dispatch_active,int* origin,int* segments,int* pair_start,int* pair_end,
         int* geom_stage,int* trailing_start,int* trailing_end,int* pair1,int* pair2,
         int req_slots,int slots,int npair,int stage_slots){
@@ -118,7 +119,7 @@ __device__ void cf_req_dispatch_ordered(int w,int* requests,int* count,int* acti
 // are transposed only at the compatible AoS write boundary; no mirror is kept.
 // All lanes execute every shuffle, including a partial final tile.
 __device__ __forceinline__ void cf_dispatch_tile(int w,int slots,int first,int valid,
-        int g1,int g2,int o0,int o1,int* raw,double* margin,int* origin){
+        int g1,int g2,int o0,int o1,int* raw,real_t* margin,int* origin){
     const int lane=threadIdx.x&31;
     for(int tile=0;tile<3;++tile){
         const int x=32*tile+lane,row=x/3,field=x%3;
@@ -136,7 +137,7 @@ __device__ __forceinline__ void cf_dispatch_tile(int w,int slots,int first,int v
 }
 // Collective entry: one complete warp generates ordered segments; every block
 // thread participates in the validation and final publication barrier.
-__device__ void cf_req_dispatch_ordered_block(int w,int* requests,int* count,int* active,int* raw,double* usermargin,
+__device__ void cf_req_dispatch_ordered_block(int w,int* requests,int* count,int* active,int* raw,real_t* usermargin,
         int* counts,int* dispatch_active,int* origin,int* segments,int* pair_start,int* pair_end,
         int* geom_stage,int* trailing_start,int* trailing_end,int* pair1,int* pair2,
         int req_slots,int slots,int npair,int stage_slots){
@@ -258,9 +259,9 @@ __device__ void cf_req_dispatch_ordered_block(int w,int* requests,int* count,int
     }
     __syncthreads();
 }
-__device__ void cf_dispatch_calls(int w,int* out_i,double* out_f,int* index,int* count,int* active,
+__device__ void cf_dispatch_calls(int w,int* out_i,real_t* out_f,int* index,int* count,int* active,
         int* status,int* origin,int* route,int stage_slots,int* g1,int* g2,int* t1,int* t2,
-        double* margin,int* ipair,int* user,int* segment,int* sort,int* route_slot,int* ccount,
+        real_t* margin,int* ipair,int* user,int* segment,int* sort,int* route_slot,int* ccount,
         int pairs,int slots){
     ccount[w]=0;if(!active[w])return;
     int n=count[w];if(status[w]||n<0||n>pairs){ccount[w]=-1;return;}ccount[w]=n;
@@ -275,12 +276,12 @@ __device__ void cf_dispatch_calls(int w,int* out_i,double* out_f,int* index,int*
 
 struct CandidatePair {
     int geom1,geom2,type1,type2,pair,segment,sort,route_slot;
-    double margin;
+    real_t margin;
 };
 
-__device__ void cf_dispatch_calls_block(int w,int* out_i,double* out_f,int* index,int* count,int* active,
+__device__ void cf_dispatch_calls_block(int w,int* out_i,real_t* out_f,int* index,int* count,int* active,
         int* status,int* origin,int* route,int stage_slots,int* g1,int* g2,int* t1,int* t2,
-        double* margin,int* ipair,int* user,int* segment,int* sort,int* route_slot,int* ccount,
+        real_t* margin,int* ipair,int* user,int* segment,int* sort,int* route_slot,int* ccount,
         int pairs,int slots){
     const int n=count[w];
     if(threadIdx.x==0)ccount[w]=!active[w]?0:(status[w]||n<0||n>pairs?-1:n);
@@ -378,8 +379,8 @@ __device__ void cf_chain_error(int w,int* bounds,int* broad,int* build,int* tree
     if(s){stage[w]=s;code[w]=c;item[w]=s==6?detect_item[w]:0;ncon[w]=0;
         if(s!=7 || c==3)status[w]=c;}
 }
-__device__ void cf_restore_contacts(int w,int* active,int* code,double* before_f,int* before_i,
-        double* out_f,int* out_i,int capacity){
+__device__ void cf_restore_contacts(int w,int* active,int* code,real_t* before_f,int* before_i,
+        real_t* out_f,int* out_i,int capacity){
     if(!active[w]||code[w]){
         cf_copy(w,before_f,out_f,capacity*65);cf_copy(w,before_i,out_i,capacity*5);
     }

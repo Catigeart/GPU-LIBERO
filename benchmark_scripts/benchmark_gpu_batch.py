@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--precision', choices=('fp64', 'fp32'), default=None)
+    parser.add_argument('--physics-engine', choices=('auto', 'native', 'mjwarp'), default='auto')
+    parser.add_argument('--fast-compile', action='store_true', help='select an existing MJWarp dev-controller profile')
     parser.add_argument('--camera', action='store_true', help='two RGB cameras at 128x128')
     parser.add_argument('--memory-limit-gib', type=float)
     parser.add_argument('--build-root', type=Path,
@@ -41,6 +44,12 @@ def main():
         temporary = args.progress_output.with_suffix('.'+str(os.getpid())+'.tmp')
         temporary.write_text(json.dumps(value, indent=2)+'\n')
         temporary.replace(args.progress_output)
+    from libero.gpu import precision as scalar
+    from libero.gpu.host.backends.selection import resolve_engine
+    engine = resolve_engine(args.physics_engine, args.precision)
+    selected_precision = scalar.select(args.precision or ('fp32' if engine == 'mjwarp' else None))
+    if engine == 'mjwarp' and args.memory_limit_gib is not None:
+        parser.error('MJWarp profiles use nconmax/njmax capacity budgets; --memory-limit-gib is native-only')
     from libero.libero import benchmark
     from libero.libero.envs import GpuBatchEnv
     suite = benchmark.get_benchmark(args.suite)()
@@ -53,6 +62,7 @@ def main():
                   warmup=args.warmup, repeats=args.repeats, seed=args.seed,
                   use_camera_obs=args.camera, device=args.device, build_only=args.build_only,
                   allow_compile=False, debug=False,
+                  precision=selected_precision, physics_engine=engine,
                   timing='Continuous step blocks; setup, reset, warmup and progress IO excluded',
                   tasks=[])
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +74,9 @@ def main():
         try:
             env = GpuBatchEnv(suite.get_task_bddl_file_path(task_id), args.num_envs,
                               init_states=suite.get_task_init_states(task_id), seed=args.seed,
-                              device=args.device, memory_budget=policy,
+                              device=args.device, memory_budget=policy or None,
+                              precision=selected_precision, physics_engine=engine,
+                              **({'mjwarp_options': {'fast_compile': args.fast_compile}} if engine == 'mjwarp' else {}),
                               build_root=args.build_root, initialize=False,
                               allow_compile=False, debug=False,
                               use_camera_obs=args.camera, ignore_done=True)
@@ -85,7 +97,9 @@ def main():
                     env._physics.prepare_control_graph()
                 graph_capture_seconds = time.perf_counter() - graph_start
             setup = time.perf_counter() - start
-            build = env.build_report
+            build = dict(env.build_report)
+            if engine == 'mjwarp':
+                build['directory'] = str(env.build_root / 'mjwarp')
             compiler_invocations = sum(len(e['commands_executed']) for e in build['events']
                                        if e['kind'] != 'constraint-source')
             if compiler_invocations:

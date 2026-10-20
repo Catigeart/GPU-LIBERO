@@ -1,4 +1,5 @@
 """Cold variable-impedance OSC storage and original action prefix boundary."""
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 from libero.gpu.host.assembly.pipeline.osc import FusedRuntimeControllerAdapter
@@ -20,9 +21,9 @@ def prepare_variable_osc(c,cfg):
     c.WIDTHS=dict(c.WIDTHS)
     c.WIDTHS.update(current_gains=12,phys_action=c.raw_action_dim,phys_impedance_limits=24,phys_initial_gains=12)
     c.current_gains=c.gains
-    c.phys_action=wp.zeros((c.nworld,c.raw_action_dim),dtype=wp.float64,device=c.device)
-    c.phys_impedance_limits=wp.array(np.concatenate([*kp,*damping]),dtype=wp.float64,device=c.device)
-    c.phys_initial_gains=wp.array(c.gains.numpy()[0],dtype=wp.float64,device=c.device)
+    c.phys_action=wp.zeros((c.nworld,c.raw_action_dim),dtype=scalar.wp_real,device=c.device)
+    c.phys_impedance_limits=wp.array(np.concatenate([*kp,*damping]),dtype=scalar.wp_real,device=c.device)
+    c.phys_initial_gains=wp.array(c.gains.numpy()[0],dtype=scalar.wp_real,device=c.device)
     lo,hi=(np.r_[kp[0],-np.ones(delta)],np.r_[kp[1],np.ones(delta)])
     if mode==2:lo,hi=np.r_[damping[0],lo],np.r_[damping[1],hi]
     c.control_limits=(lo,hi)

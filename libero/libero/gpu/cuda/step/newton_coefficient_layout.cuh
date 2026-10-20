@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +18,7 @@ struct NewtonCoefficientLayout {
   static constexpr std::size_t layout_valid = 16;
   static constexpr std::size_t layout_counts = 20; // nefc, ne, nf, ncon
   static constexpr std::size_t row_bytes =
-      (flash_libero::SubstepShape::rows * sizeof(double) + alignment - 1) / alignment * alignment;
+      (flash_libero::SubstepShape::rows * sizeof(real_t) + alignment - 1) / alignment * alignment;
   static constexpr std::size_t sqrt_d = alignment;
   static constexpr std::size_t friction_limit = sqrt_d + row_bytes;
   static constexpr std::size_t cone_dm = friction_limit + row_bytes;
@@ -31,7 +32,7 @@ struct NewtonDeviceWorkspaceLayout {
   static constexpr std::size_t atomic_cells =
       flash_libero::SubstepShape::nv * (flash_libero::SubstepShape::nv + 1) / 2;
   static constexpr std::size_t jacobian =
-      (atomic + atomic_cells * sizeof(double) + NewtonCoefficientLayout::alignment - 1) /
+      (atomic + atomic_cells * sizeof(real_t) + NewtonCoefficientLayout::alignment - 1) /
       NewtonCoefficientLayout::alignment * NewtonCoefficientLayout::alignment;
   static constexpr std::size_t bytes = jacobian + NewtonJacobianLayout::bytes(
       flash_libero::SubstepShape::rows, flash_libero::SubstepShape::nv);

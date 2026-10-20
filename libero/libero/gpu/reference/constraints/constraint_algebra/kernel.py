@@ -1,5 +1,6 @@
 """Independent N09 A/B MuJoCo constraint algebra kernels for the fixed dense model."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import hashlib
 import numpy as np
 import warp as wp
@@ -11,11 +12,11 @@ wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False}
 def _diag(count:wp.array(dtype=wp.int32),ncon:wp.array(dtype=wp.int32),active:wp.array(dtype=wp.int32),
           efc_type:wp.array(dtype=wp.int32),efc_id:wp.array(dtype=wp.int32),
           cgeom:wp.array(dtype=wp.int32),geom_body:wp.array(dtype=wp.int32),
-          body_inv:wp.array(dtype=wp.float64),dof_inv:wp.array(dtype=wp.float64),jnt_dof:wp.array(dtype=wp.int32),
-          out:wp.array(dtype=wp.float64),status:wp.array(dtype=wp.int32),
+          body_inv:wp.array(dtype=scalar.wp_real),dof_inv:wp.array(dtype=scalar.wp_real),jnt_dof:wp.array(dtype=wp.int32),
+          out:wp.array(dtype=scalar.wp_real),status:wp.array(dtype=wp.int32),
           rows:int,contacts:int,ngeom:int,nbody:int,nv:int,njnt:int):
     tid=wp.tid();w=tid//rows;r=tid-w*rows
-    out[tid]=wp.float64(0.0);status[tid]=0
+    out[tid]=scalar.wp_real(0.0);status[tid]=0
     if active[w]==0:return
     if active[w]!=1:status[tid]=7;return
     if count[w]<0 or count[w]>rows or ncon[w]<0 or ncon[w]>contacts:
@@ -62,13 +63,13 @@ def _diag(count:wp.array(dtype=wp.int32),ncon:wp.array(dtype=wp.int32),active:wp
 @wp.kernel(enable_backward=False)
 def _reference(count:wp.array(dtype=wp.int32),active:wp.array(dtype=wp.int32),
                rownnz:wp.array(dtype=wp.int32),rowadr:wp.array(dtype=wp.int32),
-               colind:wp.array(dtype=wp.int32),J:wp.array(dtype=wp.float64),
-               qvel:wp.array(dtype=wp.float64),kbip:wp.array(dtype=wp.float64),
-               epos:wp.array(dtype=wp.float64),margin:wp.array(dtype=wp.float64),
-               vel:wp.array(dtype=wp.float64),aref:wp.array(dtype=wp.float64),status:wp.array(dtype=wp.int32),
+               colind:wp.array(dtype=wp.int32),J:wp.array(dtype=scalar.wp_real),
+               qvel:wp.array(dtype=scalar.wp_real),kbip:wp.array(dtype=scalar.wp_real),
+               epos:wp.array(dtype=scalar.wp_real),margin:wp.array(dtype=scalar.wp_real),
+               vel:wp.array(dtype=scalar.wp_real),aref:wp.array(dtype=scalar.wp_real),status:wp.array(dtype=wp.int32),
                rows:int,nnzcap:int,nv:int):
     tid=wp.tid();w=tid//rows;r=tid-w*rows
-    vel[tid]=wp.float64(0.0);aref[tid]=wp.float64(0.0);status[tid]=0
+    vel[tid]=scalar.wp_real(0.0);aref[tid]=scalar.wp_real(0.0);status[tid]=0
     if active[w]==0:return
     if active[w]!=1:status[tid]=4;return
     if count[w]<0 or count[w]>rows:status[tid]=1;return
@@ -76,7 +77,7 @@ def _reference(count:wp.array(dtype=wp.int32),active:wp.array(dtype=wp.int32),
     nnz=rownnz[tid];adr=rowadr[tid]
     if nnz!=43 or adr!=r*43 or adr+43>nnzcap:status[tid]=2;return
     base=w*nnzcap
-    acc0=wp.float64(0.0);acc1=wp.float64(0.0);acc2=wp.float64(0.0);acc3=wp.float64(0.0)
+    acc0=scalar.wp_real(0.0);acc1=scalar.wp_real(0.0);acc2=scalar.wp_real(0.0);acc3=scalar.wp_real(0.0)
     if nnz>=4:
         c0=colind[base+adr];c1=colind[base+adr+1];c2=colind[base+adr+2];c3=colind[base+adr+3]
         if c0!=0 or c1!=1 or c2!=2 or c3!=3:
@@ -154,12 +155,12 @@ class DiagApproxWorkspace:
         for key,array in static.items():
             a=np.asarray(array)
             if a.dtype not in (np.dtype('int32'),np.dtype('float64')):raise ValueError('static dtype')
-            self.static[key]=wp.array(np.ascontiguousarray(a).ravel(),dtype=wp.int32 if a.dtype==np.int32 else wp.float64,device=device)
+            self.static[key]=wp.array(np.ascontiguousarray(a).ravel(),dtype=wp.int32 if a.dtype==np.int32 else scalar.wp_real,device=device)
         self.count=wp.zeros(nworld,dtype=wp.int32,device=device);self.ncon=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.efc_type=wp.zeros(nworld*rows,dtype=wp.int32,device=device);self.efc_id=wp.zeros(nworld*rows,dtype=wp.int32,device=device)
         self.cgeom=wp.zeros(nworld*contacts*3,dtype=wp.int32,device=device)
-        self.out=wp.zeros(nworld*rows,dtype=wp.float64,device=device);self.status=wp.zeros(nworld*rows,dtype=wp.int32,device=device)
+        self.out=wp.zeros(nworld*rows,dtype=scalar.wp_real,device=device);self.status=wp.zeros(nworld*rows,dtype=wp.int32,device=device)
 
     def upload(self,count,ncon,active,efc_type,efc_id,cgeom):
         if not np.all((np.asarray(active)==0)|(np.asarray(active)==1)):raise ValueError('active mask')
@@ -181,10 +182,10 @@ class ReferenceWorkspace:
         self.nworld=nworld;self.rows=rows;self.nnzcap=nnzcap;self.nv=nv;self.device=device
         self.count=wp.zeros(nworld,dtype=wp.int32,device=device);self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.rownnz=wp.zeros(nworld*rows,dtype=wp.int32,device=device);self.rowadr=wp.zeros(nworld*rows,dtype=wp.int32,device=device)
-        self.colind=wp.zeros(nworld*nnzcap,dtype=wp.int32,device=device);self.J=wp.zeros(nworld*nnzcap,dtype=wp.float64,device=device)
-        self.qvel=wp.zeros(nworld*nv,dtype=wp.float64,device=device);self.kbip=wp.zeros(nworld*rows*4,dtype=wp.float64,device=device)
-        self.epos=wp.zeros(nworld*rows,dtype=wp.float64,device=device);self.margin=wp.zeros(nworld*rows,dtype=wp.float64,device=device)
-        self.vel=wp.zeros(nworld*rows,dtype=wp.float64,device=device);self.aref=wp.zeros(nworld*rows,dtype=wp.float64,device=device)
+        self.colind=wp.zeros(nworld*nnzcap,dtype=wp.int32,device=device);self.J=wp.zeros(nworld*nnzcap,dtype=scalar.wp_real,device=device)
+        self.qvel=wp.zeros(nworld*nv,dtype=scalar.wp_real,device=device);self.kbip=wp.zeros(nworld*rows*4,dtype=scalar.wp_real,device=device)
+        self.epos=wp.zeros(nworld*rows,dtype=scalar.wp_real,device=device);self.margin=wp.zeros(nworld*rows,dtype=scalar.wp_real,device=device)
+        self.vel=wp.zeros(nworld*rows,dtype=scalar.wp_real,device=device);self.aref=wp.zeros(nworld*rows,dtype=scalar.wp_real,device=device)
         self.status=wp.zeros(nworld*rows,dtype=wp.int32,device=device)
 
     def upload(self,count,active,rownnz,rowadr,colind,J,qvel,kbip,epos,margin):

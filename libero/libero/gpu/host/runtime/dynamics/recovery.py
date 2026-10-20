@@ -4,6 +4,7 @@ This module does not run forward/Euler, alter model placement, clear runtime
 first errors, or reset controller/host environment state. The scheduler must
 rebuild derived data with a real forward before using it after a reset.
 """
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 import hashlib
 import numpy as np
@@ -22,7 +23,7 @@ ROOT_WIDTHS = {
 
 
 @wp.kernel
-def _check(values:wp.array(dtype=wp.float64,ndim=2), active:wp.array(dtype=wp.int32),
+def _check(values:wp.array(dtype=scalar.wp_real,ndim=2), active:wp.array(dtype=wp.int32),
            reset:wp.array(dtype=wp.int32), reason:wp.array(dtype=wp.int32),
            index:wp.array(dtype=wp.int32), source_error:wp.array(dtype=wp.int32),
            width:int, warning:int):
@@ -36,7 +37,7 @@ def _check(values:wp.array(dtype=wp.float64,ndim=2), active:wp.array(dtype=wp.in
         return
     for i in range(width):
         value = values[w,i]
-        if wp.isnan(value) or value > wp.float64(1.0e10) or value < wp.float64(-1.0e10):
+        if wp.isnan(value) or value > scalar.wp_real(1.0e10) or value < scalar.wp_real(-1.0e10):
             reset[w] = 1
             reason[w] = warning
             index[w] = i
@@ -44,7 +45,7 @@ def _check(values:wp.array(dtype=wp.float64,ndim=2), active:wp.array(dtype=wp.in
 
 
 @wp.kernel
-def _reset_f64(dst:wp.array(dtype=wp.float64,ndim=2), defaults:wp.array(dtype=wp.float64),
+def _reset_f64(dst:wp.array(dtype=scalar.wp_real,ndim=2), defaults:wp.array(dtype=scalar.wp_real),
                reset:wp.array(dtype=wp.int32), width:int):
     w, i = wp.tid()
     if reset[w] == 1:
@@ -108,7 +109,8 @@ def model_root_defaults(dimensions, *, qpos0, body_mocapid, body_pos, body_quat)
         if identifier >= 0:
             defaults['mocap_pos'].reshape(-1,3)[identifier] = pos[body]
             defaults['mocap_quat'].reshape(-1,4)[identifier] = quat[body]
-    return defaults
+    # Host model readsets stay FP64; device reset defaults follow their owners.
+    return {key: value.astype(scalar.name) for key, value in defaults.items()}
 
 
 def _token(array):
@@ -167,9 +169,9 @@ class DataRecoveryWorkspace:
             width = array.size // self.N
             if not width or data.shape != (width,):
                 raise ValueError('exact per-world default shape required: '+name)
-            mapping = {wp.float64:np.dtype('float64'),wp.int32:np.dtype('int32'),wp.int64:np.dtype('int64')}
+            mapping = {scalar.wp_real:np.dtype(scalar.name),wp.int32:np.dtype('int32'),wp.int64:np.dtype('int64')}
             if array.dtype not in mapping or data.dtype != mapping[array.dtype]:
-                raise ValueError('explicit native FP64/int32/int64 defaults required: '+name)
+                raise ValueError('explicit native scalar/int32/int64 defaults required: '+name)
             if name in required:
                 expected = np.asarray(root_defaults[name])
                 if expected.shape != data.shape or expected.dtype != data.dtype or expected.tobytes() != data.tobytes():
@@ -214,7 +216,7 @@ class DataRecoveryWorkspace:
         wp.launch(_check,self.N,inputs=[self.views[field],self.active,self.reset_mask,
                   self.reason,self.bad_index,self.source_error,self.catalog[field]['width'],warning],
                   device=self.device,stream=stream)
-        kernels = {wp.float64:_reset_f64,wp.int32:_reset_i32,wp.int64:_reset_i64}
+        kernels = {scalar.wp_real:_reset_f64,wp.int32:_reset_i32,wp.int64:_reset_i64}
         for name,view in self.views.items():
             width = self.catalog[name]['width']
             wp.launch(kernels[view.dtype],(self.N,width),inputs=[view,self.defaults[name],self.reset_mask,width],device=self.device,stream=stream)

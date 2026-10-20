@@ -1,0 +1,4 @@
+# Install in an isolated backend environment; native/CPU retain MuJoCo 2.3.7.
+mujoco==3.16.0
+warp-lang==1.18.0
+mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp.git@c384ac51df67eb92ab7657cc472ff7494dc036bf

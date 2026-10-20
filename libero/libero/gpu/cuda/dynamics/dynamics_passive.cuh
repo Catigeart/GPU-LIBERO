@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <math.h>
 
@@ -24,14 +25,14 @@ __device__ inline bool bad(bool value) {
     return first_bad(value ? 0 : libero_warp::no_index)!=libero_warp::no_index;
 }
 }
-__device__ inline void d_joint_passive_count(int w, double* qpos, double* qvel,
-    int* active, int* jtype, int* qadr, int* dadr, double* stiffness,
-    double* spring, double* damping, double* out, int* status,
+__device__ inline void d_joint_passive_count(int w, real_t* qpos, real_t* qvel,
+    int* active, int* jtype, int* qadr, int* dadr, real_t* stiffness,
+    real_t* spring, real_t* damping, real_t* out, int* status,
     int nv, int nq, int njnt, int joint_disjoint=0,
     const int*joint_type_offsets=nullptr,const int*joint_type_indices=nullptr) {
     qpos += (long long)w*nq; qvel += (long long)w*nv; out += (long long)w*nv;
     if(threadIdx.x==0) status[w]=active[w]!=0 && active[w]!=1 ? 1 : 0;
-    libero_vec::fill_block(out,nv,0.0);
+    libero_vec::fill_block(out,nv,REAL_C(0.0));
     __syncthreads();
     if(active[w]!=1) return;
     bool invalid=false;
@@ -48,11 +49,11 @@ __device__ inline void d_joint_passive_count(int w, double* qpos, double* qvel,
             if(type==1)continue;
             for(int k=joint_type_offsets[type]+threadIdx.x;k<joint_type_offsets[type+1];k+=blockDim.x) {
                 const int i=joint_type_indices[k],q=qadr[i],d=dadr[i];
-                const double v=stiffness[i];
+                const real_t v=stiffness[i];
                 if(type==0) {
                     // Two elements belong to this free joint; never cross a joint mask.
-                    const double2 qp=libero_vec::load_pair(qpos+q),sp=libero_vec::load_pair(spring+q);
-                    const double2 old=libero_vec::load_pair(out+d);
+                    const real2_t qp=libero_vec::load_pair(qpos+q),sp=libero_vec::load_pair(spring+q);
+                    const real2_t old=libero_vec::load_pair(out+d);
                     libero_vec::store_pair(out+d,old.x-v*(qp.x-sp.x),old.y-v*(qp.y-sp.y));
                     out[d+2]-=v*(qpos[q+2]-spring[q+2]);
                 }
@@ -61,13 +62,13 @@ __device__ inline void d_joint_passive_count(int w, double* qpos, double* qvel,
         }
     } else if(threadIdx.x==0)for(int i=0;i<njnt;++i) {
         // Malformed overlapping descriptors retain original ordered updates.
-        int t=jtype[i],q=qadr[i],d=dadr[i];double v=stiffness[i];
+        int t=jtype[i],q=qadr[i],d=dadr[i];real_t v=stiffness[i];
         if(t==0)for(int axis=0;axis<3;++axis)out[d+axis]-=v*(qpos[q+axis]-spring[q+axis]);
         else if(t==2 || t==3)out[d]-=v*(qpos[q]-spring[q]);
     }
     __syncthreads();
     for(int k=2*threadIdx.x;k+1<nv;k+=2*blockDim.x) {
-        const double2 old=libero_vec::load_pair(out+k),d=libero_vec::load_pair(damping+k),v=libero_vec::load_pair(qvel+k);
+        const real2_t old=libero_vec::load_pair(out+k),d=libero_vec::load_pair(damping+k),v=libero_vec::load_pair(qvel+k);
         libero_vec::store_pair(out+k,old.x-d.x*v.x,old.y-d.y*v.y);
     }
     if((nv&1)&&threadIdx.x==0)out[nv-1]-=damping[nv-1]*qvel[nv-1];
@@ -75,28 +76,28 @@ __device__ inline void d_joint_passive_count(int w, double* qpos, double* qvel,
 }
 
 namespace d_passive_detail {
-struct Vec { double v[3]; __device__ double& operator[](int i) {return v[i];}
-    __device__ double operator[](int i) const {return v[i];} };
+struct Vec { real_t v[3]; __device__ real_t& operator[](int i) {return v[i];}
+    __device__ real_t operator[](int i) const {return v[i];} };
 __device__ inline Vec cross(Vec a,Vec b) {
     return {{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};
 }
-__device__ inline Vec rot(const double* m,Vec v) {
+__device__ inline Vec rot(const real_t* m,Vec v) {
     return {{m[0]*v[0]+m[1]*v[1]+m[2]*v[2],m[3]*v[0]+m[4]*v[1]+m[5]*v[2],m[6]*v[0]+m[7]*v[1]+m[8]*v[2]}};
 }
-__device__ inline Vec rot_t(const double* m,Vec v) {
+__device__ inline Vec rot_t(const real_t* m,Vec v) {
     return {{m[0]*v[0]+m[3]*v[1]+m[6]*v[2],m[1]*v[0]+m[4]*v[1]+m[7]*v[2],m[2]*v[0]+m[5]*v[1]+m[8]*v[2]}};
 }
 }
 
 namespace d_passive_detail {
 // The body producer retains scalar arithmetic and diagnostic-prefix semantics.
-__device__ inline bool fluid_body(int b, const double* cvel,const double* subtree_com,
-    const double* xipos,const double* ximat,int* rootid,double* box,double* wind,
-    double* opt,int diagnostic,double* stages,int stride,double* payload) {
-    constexpr double pi=3.14159265358979323846;
-        int root=rootid[b]; const double* m=ximat+9*b;
+__device__ inline bool fluid_body(int b, const real_t* cvel,const real_t* subtree_com,
+    const real_t* xipos,const real_t* ximat,int* rootid,real_t* box,real_t* wind,
+    real_t* opt,int diagnostic,real_t* stages,int stride,real_t* payload) {
+    constexpr real_t pi=REAL_C(3.14159265358979323846);
+        int root=rootid[b]; const real_t* m=ximat+9*b;
         Vec offset={{xipos[3*b]-subtree_com[3*root],xipos[3*b+1]-subtree_com[3*root+1],xipos[3*b+2]-subtree_com[3*root+2]}};
-        const double2 cv01=libero_vec::load_pair(cvel+6*b),cv23=libero_vec::load_pair(cvel+6*b+2),cv45=libero_vec::load_pair(cvel+6*b+4);
+        const real2_t cv01=libero_vec::load_pair(cvel+6*b),cv23=libero_vec::load_pair(cvel+6*b+2),cv45=libero_vec::load_pair(cvel+6*b+4);
         Vec ang={{cv01.x,cv01.y,cv23.x}};
         Vec lin={{cv23.y,cv45.x,cv45.y}};
         Vec local_ang=rot_t(m,ang), ox=cross(offset,ang);
@@ -104,25 +105,25 @@ __device__ inline bool fluid_body(int b, const double* cvel,const double* subtre
         Vec object_lin=rot_t(m,lin), local_wind=rot_t(m,{{wind[0],wind[1],wind[2]}});
         Vec local_lin; for(int r=0;r<3;++r) local_lin[r]=object_lin[r]-local_wind[r];
         for(int r=0;r<3;++r) if(!isfinite(offset[r]) || !isfinite(local_ang[r]) || !isfinite(object_lin[r]) || !isfinite(local_wind[r]) || !isfinite(local_lin[r])) {return false;}
-        double* st=stages+b*stride;
+        real_t* st=stages+b*stride;
         if(diagnostic!=0) for(int r=0;r<3;++r) {
             st[r]=box[3*b+r];st[3+r]=local_ang[r];st[6+r]=object_lin[r];
-            st[9+r]=0.0;st[12+r]=local_wind[r];st[15+r]=local_ang[r];st[18+r]=local_lin[r];
+            st[9+r]=REAL_C(0.0);st[12+r]=local_wind[r];st[15+r]=local_ang[r];st[18+r]=local_lin[r];
         }
-        const double2 boxxy=libero_vec::load_pair(box+3*b);
-        double x=boxxy.x,y=boxxy.y,z=box[3*b+2],visc=opt[0],density=opt[1];
-        Vec torque={{0.,0.,0.}},force={{0.,0.,0.}};
-        if(visc>0.0) {
-            double diam=(x+y+z)/3.0,ang_scl=-pi*diam*diam*diam*visc,lin_scl=-3.0*pi*diam*visc;
+        const real2_t boxxy=libero_vec::load_pair(box+3*b);
+        real_t x=boxxy.x,y=boxxy.y,z=box[3*b+2],visc=opt[0],density=opt[1];
+        Vec torque={{REAL_C(0.),REAL_C(0.),REAL_C(0.)}},force={{REAL_C(0.),REAL_C(0.),REAL_C(0.)}};
+        if(visc>REAL_C(0.0)) {
+            real_t diam=(x+y+z)/REAL_C(3.0),ang_scl=-pi*diam*diam*diam*visc,lin_scl=-REAL_C(3.0)*pi*diam*visc;
             for(int r=0;r<3;++r) {torque[r]=local_ang[r]*ang_scl;force[r]=local_lin[r]*lin_scl;}
         }
-        if(density>0.0) {
-            force[0]-=0.5*density*y*z*fabs(local_lin[0])*local_lin[0];
-            force[1]-=0.5*density*x*z*fabs(local_lin[1])*local_lin[1];
-            force[2]-=0.5*density*x*y*fabs(local_lin[2])*local_lin[2];
-            torque[0]-=density*x*(y*y*y*y+z*z*z*z)*fabs(local_ang[0])*local_ang[0]/64.0;
-            torque[1]-=density*y*(x*x*x*x+z*z*z*z)*fabs(local_ang[1])*local_ang[1]/64.0;
-            torque[2]-=density*z*(x*x*x*x+y*y*y*y)*fabs(local_ang[2])*local_ang[2]/64.0;
+        if(density>REAL_C(0.0)) {
+            force[0]-=REAL_C(0.5)*density*y*z*fabs(local_lin[0])*local_lin[0];
+            force[1]-=REAL_C(0.5)*density*x*z*fabs(local_lin[1])*local_lin[1];
+            force[2]-=REAL_C(0.5)*density*x*y*fabs(local_lin[2])*local_lin[2];
+            torque[0]-=density*x*(y*y*y*y+z*z*z*z)*fabs(local_ang[0])*local_ang[0]/REAL_C(64.0);
+            torque[1]-=density*y*(x*x*x*x+z*z*z*z)*fabs(local_ang[1])*local_ang[1]/REAL_C(64.0);
+            torque[2]-=density*z*(x*x*x*x+y*y*y*y)*fabs(local_ang[2])*local_ang[2]/REAL_C(64.0);
         }
         Vec wt=rot(m,torque),wf=rot(m,force);
         for(int r=0;r<3;++r) if(!isfinite(torque[r]) || !isfinite(force[r]) || !isfinite(wt[r]) || !isfinite(wf[r])) {return false;}
@@ -132,17 +133,17 @@ __device__ inline bool fluid_body(int b, const double* cvel,const double* subtre
 }
 } // namespace d_passive_detail
 
-__device__ inline void d_fluid_count(int w, double* cvel,double* subtree_com,
-    double* xipos,double* ximat,double* cdof,int* active,int* rootid,double* mass,
-    double* box,int* ancestor,double* wind,double* opt,int passive_disabled,
-    int diagnostic,double* stages,double* qfrc,int* status,int nbody,int nv,
+__device__ inline void d_fluid_count(int w, real_t* cvel,real_t* subtree_com,
+    real_t* xipos,real_t* ximat,real_t* cdof,int* active,int* rootid,real_t* mass,
+    real_t* box,int* ancestor,real_t* wind,real_t* opt,int passive_disabled,
+    int diagnostic,real_t* stages,real_t* qfrc,int* status,int nbody,int nv,
     const int*body_dof_offsets=nullptr,const int*body_dof_indices=nullptr) {
     using namespace d_passive_detail;
     cvel+=(long long)w*nbody*6; subtree_com+=(long long)w*nbody*3;
     xipos+=(long long)w*nbody*3; ximat+=(long long)w*nbody*9;
     cdof+=(long long)w*nv*6; qfrc+=(long long)w*nv;
     int stride=33+7*nv; stages+=(long long)w*nbody*stride;
-    if(diagnostic!=0)libero_vec::fill_block(stages,(size_t)nbody*stride,0.0);
+    if(diagnostic!=0)libero_vec::fill_block(stages,(size_t)nbody*stride,REAL_C(0.0));
     __syncthreads();
     if(active[w]==0 || status[w]!=0) return;
     bool invalid=false;
@@ -156,11 +157,11 @@ __device__ inline void d_fluid_count(int w, double* cvel,double* subtree_com,
         if(threadIdx.x==0) status[w]=2;
         __syncthreads(); return;
     }
-    if(passive_disabled!=0 || (opt[0]<=0.0 && opt[1]<=0.0)) return;
-    __shared__ double payload[9];
+    if(passive_disabled!=0 || (opt[0]<=REAL_C(0.0) && opt[1]<=REAL_C(0.0))) return;
+    __shared__ real_t payload[9];
     __shared__ int body_ok;
     for(int b=1;b<nbody;++b) {
-        if(mass[b]<1e-15) continue;
+        if(mass[b]<REAL_C(1e-15)) continue;
         if(threadIdx.x==0) body_ok=fluid_body(b,cvel,subtree_com,xipos,ximat,
             rootid,box,wind,opt,diagnostic,stages,stride,payload);
         __syncthreads();
@@ -171,22 +172,22 @@ __device__ inline void d_fluid_count(int w, double* cvel,double* subtree_com,
         Vec offset,wt,wf;
         // One shared load per warp; every lane receives the same body payload.
         for(int r=0;r<3;++r) {
-            double o=0.0,t=0.0,f=0.0;
+            real_t o=REAL_C(0.0),t=REAL_C(0.0),f=REAL_C(0.0);
             if((threadIdx.x&31)==0) {o=payload[r];t=payload[3+r];f=payload[6+r];}
             offset[r]=__shfl_sync(0xffffffffu,o,0);
             wt[r]=__shfl_sync(0xffffffffu,t,0);
             wf[r]=__shfl_sync(0xffffffffu,f,0);
         }
-        double* st=stages+b*stride;
+        real_t* st=stages+b*stride;
         const bool sparse=diagnostic==0 && body_dof_offsets && body_dof_indices;
         const int begin=sparse?body_dof_offsets[b]:0;
         const int count=sparse?body_dof_offsets[b+1]-begin:nv;
         for(int base=0;base<count;base+=blockDim.x) {
             const int ordinal=base+threadIdx.x;
             const int j=ordinal<count?(sparse?body_dof_indices[begin+ordinal]:ordinal):nv;
-            Vec jp={{0.,0.,0.}},jr={{0.,0.,0.}};
+            Vec jp={{REAL_C(0.),REAL_C(0.),REAL_C(0.)}},jr={{REAL_C(0.),REAL_C(0.),REAL_C(0.)}};
             bool projection_bad=false, result_bad=false;
-            double result=0.0;
+            real_t result=REAL_C(0.0);
             if(j<nv) {
                 if(sparse || ancestor[b*nv+j]!=0) {
                     jr={{cdof[6*j],cdof[6*j+1],cdof[6*j+2]}};
@@ -195,10 +196,10 @@ __device__ inline void d_fluid_count(int w, double* cvel,double* subtree_com,
                 }
                 for(int r=0;r<3;++r) projection_bad|=!isfinite(jp[r]) || !isfinite(jr[r]);
                 if(!projection_bad) {
-                    double qforce=0.0,qtorque=0.0;
-                    for(int r=0;r<3;++r) if(wf[r]!=0.0) qforce+=jp[r]*wf[r];
+                    real_t qforce=REAL_C(0.0),qtorque=REAL_C(0.0);
+                    for(int r=0;r<3;++r) if(wf[r]!=REAL_C(0.0)) qforce+=jp[r]*wf[r];
                     result=qfrc[j]+qforce;
-                    for(int r=0;r<3;++r) if(wt[r]!=0.0) qtorque+=jr[r]*wt[r];
+                    for(int r=0;r<3;++r) if(wt[r]!=REAL_C(0.0)) qtorque+=jr[r]*wt[r];
                     result+=qtorque;
                     result_bad=!isfinite(result);
                 }
@@ -217,25 +218,25 @@ __device__ inline void d_fluid_count(int w, double* cvel,double* subtree_com,
             __syncthreads();
             if(fail!=libero_warp::no_index) {
                 if(sparse)for(int k=threadIdx.x;k<fail/2;k+=blockDim.x)
-                    if(ancestor[b*nv+k]==0)qfrc[k]=(qfrc[k]+0.0)+0.0;
+                    if(ancestor[b*nv+k]==0)qfrc[k]=(qfrc[k]+REAL_C(0.0))+REAL_C(0.0);
                 __syncthreads();
                 if(threadIdx.x==0) status[w]=2;
                 __syncthreads(); return;
             }
         }
         if(sparse)for(int j=threadIdx.x;j<nv;j+=blockDim.x)
-            if(ancestor[b*nv+j]==0)qfrc[j]=(qfrc[j]+0.0)+0.0;
+            if(ancestor[b*nv+j]==0)qfrc[j]=(qfrc[j]+REAL_C(0.0))+REAL_C(0.0);
         __syncthreads();
     }
     __syncthreads();
 }
 
-__device__ inline void d_actuation_prepare(int w,double* length,double* moment,
-    double* velocity,double* ctrl,int* active,int* vel_status,double* gain,
-    double* bias0,double* bias1,double* bias2,int* bias_type,double* ctrl_lo,
-    double* ctrl_hi,double* force_lo,double* force_hi,int* force_limited,
-    int disable_flags,double* force,double* force_pre,double* ctrl_used,
-    int* ctrl_route,int* force_route,double* qfrc_actuator,int* status,
+__device__ inline void d_actuation_prepare(int w,real_t* length,real_t* moment,
+    real_t* velocity,real_t* ctrl,int* active,int* vel_status,real_t* gain,
+    real_t* bias0,real_t* bias1,real_t* bias2,int* bias_type,real_t* ctrl_lo,
+    real_t* ctrl_hi,real_t* force_lo,real_t* force_hi,int* force_limited,
+    int disable_flags,real_t* force,real_t* force_pre,real_t* ctrl_used,
+    int* ctrl_route,int* force_route,real_t* qfrc_actuator,int* status,
     int* warn_badctrl_count,int* warn_badctrl_lastinfo,int* warning_number,
     int* warning_lastinfo,int nv,int nu) {
     length+=(long long)w*nu;moment+=(long long)w*nu*nv;velocity+=(long long)w*nu;
@@ -243,27 +244,27 @@ __device__ inline void d_actuation_prepare(int w,double* length,double* moment,
     ctrl_used+=(long long)w*nu;ctrl_route+=(long long)w*nu;force_route+=(long long)w*nu;
     qfrc_actuator+=(long long)w*nv;
     status[w]=0;warn_badctrl_count[w]=0;warn_badctrl_lastinfo[w]=-1;
-    for(int j=0;j<nv;++j) qfrc_actuator[j]=0.0;
-    for(int i=0;i<nu;++i) {force[i]=0.0;force_pre[i]=0.0;ctrl_used[i]=0.0;ctrl_route[i]=0;force_route[i]=0;}
+    for(int j=0;j<nv;++j) qfrc_actuator[j]=REAL_C(0.0);
+    for(int i=0;i<nu;++i) {force[i]=REAL_C(0.0);force_pre[i]=REAL_C(0.0);ctrl_used[i]=REAL_C(0.0);ctrl_route[i]=0;force_route[i]=0;}
     if(active[w]==0) return;
     if(active[w]!=1) {status[w]=1;return;}
     if(vel_status[w]!=0) {status[w]=2;return;}
     if((disable_flags&1024)!=0) return;
     int bad_index=-1;
     for(int i=0;i<nu;++i) {
-        double u=ctrl[i];
+        real_t u=ctrl[i];
         if((disable_flags&128)==0) {
             if(u<ctrl_lo[i]) {u=ctrl_lo[i];ctrl_route[i]=-1;}
             else if(u>ctrl_hi[i]) {u=ctrl_hi[i];ctrl_route[i]=1;}
         }
-        if(bad_index<0 && (u!=u || u>1e10 || u< -1e10)) bad_index=i;
+        if(bad_index<0 && (u!=u || u>REAL_C(1e10) || u< -REAL_C(1e10))) bad_index=i;
     }
     if(bad_index>=0) {warn_badctrl_count[w]=1;warn_badctrl_lastinfo[w]=bad_index;++warning_number[w];warning_lastinfo[w]=bad_index;}
     for(int i=0;i<nu;++i) {
-        double u=0.0;
+        real_t u=REAL_C(0.0);
         if(bad_index<0) {u=ctrl[i];if(ctrl_route[i]==-1) u=ctrl_lo[i];else if(ctrl_route[i]==1) u=ctrl_hi[i];}
         ctrl_used[i]=u;
-        double f=gain[i]*u;
+        real_t f=gain[i]*u;
         if(bias_type[i]==1) f+=bias0[i]+bias1[i]*length[i]+bias2[i]*velocity[i];
         force_pre[i]=f;
         if(force_limited[i]!=0) {
@@ -275,12 +276,12 @@ __device__ inline void d_actuation_prepare(int w,double* length,double* moment,
 }
 
 // Large-NU preparation; the ordinary small actuator family retains scalar work.
-__device__ inline void d_actuation_prepare_block(int w,double* length,double* moment,
-    double* velocity,double* ctrl,int* active,int* vel_status,double* gain,
-    double* bias0,double* bias1,double* bias2,int* bias_type,double* ctrl_lo,
-    double* ctrl_hi,double* force_lo,double* force_hi,int* force_limited,
-    int disable_flags,double* force,double* force_pre,double* ctrl_used,
-    int* ctrl_route,int* force_route,double* qfrc_actuator,int* status,
+__device__ inline void d_actuation_prepare_block(int w,real_t* length,real_t* moment,
+    real_t* velocity,real_t* ctrl,int* active,int* vel_status,real_t* gain,
+    real_t* bias0,real_t* bias1,real_t* bias2,int* bias_type,real_t* ctrl_lo,
+    real_t* ctrl_hi,real_t* force_lo,real_t* force_hi,int* force_limited,
+    int disable_flags,real_t* force,real_t* force_pre,real_t* ctrl_used,
+    int* ctrl_route,int* force_route,real_t* qfrc_actuator,int* status,
     int* warn_badctrl_count,int* warn_badctrl_lastinfo,int* warning_number,
     int* warning_lastinfo,int nv,int nu) {
     length+=(long long)w*nu;moment+=(long long)w*nu*nv;velocity+=(long long)w*nu;
@@ -288,9 +289,9 @@ __device__ inline void d_actuation_prepare_block(int w,double* length,double* mo
     ctrl_used+=(long long)w*nu;ctrl_route+=(long long)w*nu;force_route+=(long long)w*nu;
     qfrc_actuator+=(long long)w*nv;
     if(threadIdx.x==0){status[w]=0;warn_badctrl_count[w]=0;warn_badctrl_lastinfo[w]=-1;}
-    libero_vec::fill_block(qfrc_actuator,nv,0.0);
-    libero_vec::fill_block(force,nu,0.0);libero_vec::fill_block(force_pre,nu,0.0);
-    libero_vec::fill_block(ctrl_used,nu,0.0);libero_vec::fill_block(ctrl_route,nu,0);
+    libero_vec::fill_block(qfrc_actuator,nv,REAL_C(0.0));
+    libero_vec::fill_block(force,nu,REAL_C(0.0));libero_vec::fill_block(force_pre,nu,REAL_C(0.0));
+    libero_vec::fill_block(ctrl_used,nu,REAL_C(0.0));libero_vec::fill_block(ctrl_route,nu,0);
     libero_vec::fill_block(force_route,nu,0);
     __syncthreads();
     if(active[w]==0) return;
@@ -300,30 +301,30 @@ __device__ inline void d_actuation_prepare_block(int w,double* length,double* mo
     int bad_index=libero_warp::no_index;
     for(int base=2*threadIdx.x;base<nu;base+=2*blockDim.x) {
         const bool pair=base+1<nu;
-        const double2 inputs=pair?libero_vec::load_pair(ctrl+base):make_double2(ctrl[base],0.0);
+        const real2_t inputs=pair?libero_vec::load_pair(ctrl+base):make_real2(ctrl[base],REAL_C(0.0));
         for(int part=0;part<(pair?2:1);++part) {
         const int i=base+part;
-        double u=part?inputs.y:inputs.x;
+        real_t u=part?inputs.y:inputs.x;
         if((disable_flags&128)==0) {
             if(u<ctrl_lo[i]) {u=ctrl_lo[i];ctrl_route[i]=-1;}
             else if(u>ctrl_hi[i]) {u=ctrl_hi[i];ctrl_route[i]=1;}
         }
-        if(u!=u || u>1e10 || u< -1e10)bad_index=bad_index<i?bad_index:i;
+        if(u!=u || u>REAL_C(1e10) || u< -REAL_C(1e10))bad_index=bad_index<i?bad_index:i;
         }
     }
     bad_index=d_passive_detail::first_bad(bad_index);
     if(threadIdx.x==0 && bad_index!=libero_warp::no_index) {warn_badctrl_count[w]=1;warn_badctrl_lastinfo[w]=bad_index;++warning_number[w];warning_lastinfo[w]=bad_index;}
     for(int base=2*threadIdx.x;base<nu;base+=2*blockDim.x) {
         const bool pair=base+1<nu;
-        double fvals[2],prevals[2],used[2];
-        const double2 inputs=bad_index==libero_warp::no_index?
-            (pair?libero_vec::load_pair(ctrl+base):make_double2(ctrl[base],0.0)):make_double2(0.0,0.0);
+        real_t fvals[2],prevals[2],used[2];
+        const real2_t inputs=bad_index==libero_warp::no_index?
+            (pair?libero_vec::load_pair(ctrl+base):make_real2(ctrl[base],REAL_C(0.0))):make_real2(REAL_C(0.0),REAL_C(0.0));
         for(int part=0;part<(pair?2:1);++part) {
         const int i=base+part;
-        double u=0.0;
+        real_t u=REAL_C(0.0);
         if(bad_index==libero_warp::no_index) {u=part?inputs.y:inputs.x;if(ctrl_route[i]==-1) u=ctrl_lo[i];else if(ctrl_route[i]==1) u=ctrl_hi[i];}
         used[part]=u;
-        double f=gain[i]*u;
+        real_t f=gain[i]*u;
         if(bias_type[i]==1) f+=bias0[i]+bias1[i]*length[i]+bias2[i]*velocity[i];
         prevals[part]=f;
         if(force_limited[i]!=0) {
@@ -342,9 +343,9 @@ __device__ inline void d_actuation_prepare_block(int w,double* length,double* mo
 }
 
 #ifndef D_NO_ACTUATION_DX
-extern __device__ void d_actuation_gemv_dx(const double*,const double*,double*);
+extern __device__ void d_actuation_gemv_dx(const real_t*,const real_t*,real_t*);
 #ifdef D_SCALAR_SUPPORT
-extern __device__ void d_actuation_support_or_dx(const double*,const double*,double*);
+extern __device__ void d_actuation_support_or_dx(const real_t*,const real_t*,real_t*);
 #define D_ACTUATION_CONTRACT d_actuation_support_or_dx
 #else
 #define D_ACTUATION_CONTRACT d_actuation_gemv_dx
@@ -352,18 +353,18 @@ extern __device__ void d_actuation_support_or_dx(const double*,const double*,dou
 
 // All lanes in a world block must call this helper. Force clipping/warnings
 // are scalar; the dense transpose contraction is performed by cuBLASDx.
-__device__ inline void d_actuation_count(int w,double* length,double* moment,
-    double* velocity,double* ctrl,int* active,int* vel_status,double* gain,
-    double* bias0,double* bias1,double* bias2,int* bias_type,double* ctrl_lo,
-    double* ctrl_hi,double* force_lo,double* force_hi,int* force_limited,
-    int disable_flags,double* force,double* force_pre,double* ctrl_used,
-    int* ctrl_route,int* force_route,double* qfrc_actuator,int* status,
+__device__ inline void d_actuation_count(int w,real_t* length,real_t* moment,
+    real_t* velocity,real_t* ctrl,int* active,int* vel_status,real_t* gain,
+    real_t* bias0,real_t* bias1,real_t* bias2,int* bias_type,real_t* ctrl_lo,
+    real_t* ctrl_hi,real_t* force_lo,real_t* force_hi,int* force_limited,
+    int disable_flags,real_t* force,real_t* force_pre,real_t* ctrl_used,
+    int* ctrl_route,int* force_route,real_t* qfrc_actuator,int* status,
     int* warn_badctrl_count,int* warn_badctrl_lastinfo,int* warning_number,
     int* warning_lastinfo,int nv,int nu) {
     __shared__ int run;
 #ifdef D_FAST_DATAFLOW
     DForceShared& work=d_force_shared();
-    libero_vec::fill_block(work.actuator,D_NV,0.0);
+    libero_vec::fill_block(work.actuator,D_NV,REAL_C(0.0));
     const long long u=(long long)w*nu,v=(long long)w*nv;
     if(nu<=16) {
         if(threadIdx.x==0)d_actuation_prepare(0,length+u,moment+u*nv,velocity+u,ctrl+u,active+w,
@@ -403,7 +404,7 @@ __device__ inline void d_actuation_count(int w,double* length,double* moment,
 #ifdef D_FAST_DATAFLOW
         // Keep the contraction result live for smooth-force assembly. The
         // declared actuator diagnostic is still written once at this boundary.
-        double* contracted=d_force_shared().actuator;
+        real_t* contracted=d_force_shared().actuator;
         D_ACTUATION_CONTRACT(moment+(long long)w*nu*nv,d_force_shared().scalar_force,contracted);
         libero_vec::copy_block(contracted,qfrc_actuator+(long long)w*nv,nv);
 #else

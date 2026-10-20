@@ -81,7 +81,7 @@ class NativeBatchedPhysics:
 
     def prepare_fused_substep_graph(self, build_root, *, allow_compile=False,
                                     fast_compile=False, device_lto=False, profile_newton=False,
-                                    atomic_reductions=None, defer_post=True):
+                                    atomic_reductions=None, defer_post=True, single_solve=False):
         """Capture one readable fusion kernel per physical substep.
 
         Offline callers may permit compilation; ordinary execution loads only
@@ -95,7 +95,8 @@ class NativeBatchedPhysics:
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,
                               fast_compile=fast_compile, device_lto=device_lto,
-                              profile_newton=profile_newton, atomic_reductions=atomic_reductions)
+                              profile_newton=profile_newton, atomic_reductions=atomic_reductions,
+                              single_solve=single_solve)
         # Only the built-in device sampler has a proved read set (poses and
         # velocities, never intermediate cfrc/sensordata). Unknown observers
         # retain complete Post even if they permit graph capture.

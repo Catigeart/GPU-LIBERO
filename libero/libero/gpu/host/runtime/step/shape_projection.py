@@ -5,6 +5,7 @@ are held. Original N validators retain invalid-source error precedence.
 Do not block original N validation using these diagnostics. Publication success
 must additionally require projection_status==0; original N errors take priority.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False})
 
@@ -45,11 +46,11 @@ def project_cone_heads(admitted:wp.array(dtype=wp.int32),
                        row_type:wp.array(dtype=wp.int32,ndim=2),
                        row_id:wp.array(dtype=wp.int32,ndim=2),
                        contact_dim:wp.array(dtype=wp.int32,ndim=2),
-                       contact_mu:wp.array(dtype=wp.float64,ndim=2),
-                       contact_friction:wp.array(dtype=wp.float64,ndim=3),
+                       contact_mu:wp.array(dtype=scalar.wp_real,ndim=2),
+                       contact_friction:wp.array(dtype=scalar.wp_real,ndim=3),
                        cone_dim:wp.array(dtype=wp.int32,ndim=2),
-                       cone_mu:wp.array(dtype=wp.float64,ndim=2),
-                       cone_friction:wp.array(dtype=wp.float64,ndim=3),
+                       cone_mu:wp.array(dtype=scalar.wp_real,ndim=2),
+                       cone_friction:wp.array(dtype=scalar.wp_real,ndim=3),
                        projection_status:wp.array(dtype=wp.int32),
                        error_item:wp.array(dtype=wp.int32),
                        rows:int,contacts:int):
@@ -76,11 +77,11 @@ def project_cone_heads(admitted:wp.array(dtype=wp.int32),
    for component in range(dim):
     if row_type[w,i+component]!=7 or row_id[w,i+component]!=contact:
      projection_status[w]=9004;error_item[w]=i+component;return
-   if not wp.isfinite(contact_mu[w,contact]) or contact_mu[w,contact]<=wp.float64(0.0):
+   if not wp.isfinite(contact_mu[w,contact]) or contact_mu[w,contact]<=scalar.wp_real(0.0):
     projection_status[w]=9006;error_item[w]=i;return
    for component in range(dim-1):
     value=contact_friction[w,contact,component]
-    if not wp.isfinite(value) or value<=wp.float64(0.0):
+    if not wp.isfinite(value) or value<=scalar.wp_real(0.0):
      projection_status[w]=9007;error_item[w]=i;return
    i+=dim
   elif row_type[w,i]>=0 and row_type[w,i]<=6:
@@ -106,13 +107,13 @@ def reset_scalar_i32(value:wp.array(dtype=wp.int32),fill:int):
  value[wp.tid()]=fill
 
 @wp.kernel
-def reset_scalar_f64(value:wp.array(dtype=wp.float64)):
- value[wp.tid()]=wp.float64(0.0)
+def reset_scalar_f64(value:wp.array(dtype=scalar.wp_real)):
+ value[wp.tid()]=scalar.wp_real(0.0)
 
 @wp.kernel
-def prepare_static_run_scalars(model_scalars:wp.array(dtype=wp.float64),
-                               tolerance:wp.array(dtype=wp.float64),
-                               meaninertia:wp.array(dtype=wp.float64),
+def prepare_static_run_scalars(model_scalars:wp.array(dtype=scalar.wp_real),
+                               tolerance:wp.array(dtype=scalar.wp_real),
+                               meaninertia:wp.array(dtype=scalar.wp_real),
                                stage:wp.array(dtype=wp.int32),
                                maxiter_arr:wp.array(dtype=wp.int32),
                                solver_iter_base:wp.array(dtype=wp.int32),

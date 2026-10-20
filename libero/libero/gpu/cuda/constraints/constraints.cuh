@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Handwritten S stages. CF_S_* macros supply only ABI signatures, never arithmetic.
 // Every array is a contiguous raw pointer. World and model capacities are explicit.
 #pragma once
@@ -20,12 +21,12 @@
 #endif
 namespace cf_s {
 // Pair checks are restricted to the caller's valid contiguous span.
-__device__ __forceinline__ bool bounded_nonfinite_lane(const double* p,int n,int first,int stride){
+__device__ __forceinline__ bool bounded_nonfinite_lane(const real_t* p,int n,int first,int stride){
   bool bad=false;
   for(int z=2*first;z<n;z+=2*stride){
-    if(z+1<n){const double2 v=libero_vec::load_pair(p+z);
-      bad|=!isfinite(v.x)||!isfinite(v.y)||fabs(v.x)>1e100||fabs(v.y)>1e100;
-    }else bad|=!isfinite(p[z])||fabs(p[z])>1e100;
+    if(z+1<n){const real2_t v=libero_vec::load_pair(p+z);
+      bad|=!isfinite(v.x)||!isfinite(v.y)||fabs(v.x)>REAL_SAFE_MAGNITUDE||fabs(v.y)>REAL_SAFE_MAGNITUDE;
+    }else bad|=!isfinite(p[z])||fabs(p[z])>REAL_SAFE_MAGNITUDE;
   }
   return bad;
 }
@@ -91,7 +92,7 @@ __device__ void CF_S_produce {
   // Values/ranges/options remain current inputs; a drift uses the full scan.
   bool candidate_drift=false;
   for(int k=threadIdx.x;k<NV;k+=blockDim.x)
-    candidate_drift|=int(frictionloss[k]>0.)!=cold_friction_mask[k];
+    candidate_drift|=int(frictionloss[k]>REAL_C(0.))!=cold_friction_mask[k];
   for(int j=threadIdx.x;j<NJ;j+=blockDim.x)
     candidate_drift|=int(limited[j]!=0)!=cold_limited_mask[j];
   const bool cold_valid=!s1_block_any(candidate_drift);
@@ -129,8 +130,8 @@ __device__ void CF_S_produce {
 #endif
       int j=z/2,side=z&1,keep=0,counted=0;
       if(ordinal<candidate_count&&limited[j]){
-        double v=qpos[w*NQ+qposadr[j]],m=margins[j];
-        double d=side?ranges[2*j+1]-v:v-ranges[2*j];
+        real_t v=qpos[w*NQ+qposadr[j]],m=margins[j];
+        real_t d=side?ranges[2*j+1]-v:v-ranges[2*j];
         counted=d<m;keep=!(d>=m);
       }
       // Keep the baseline's distinct comparisons even for NaN model data.
@@ -146,41 +147,41 @@ __device__ void CF_S_produce {
   }
   for(int r=threadIdx.x;r<fr;r+=blockDim.x){
     int i=friction_map[r],slot=w*NF_CAP+r;
-    friction_pos[slot]=friction_margin[slot]=0.;friction_loss[slot]=frictionloss[i];
+    friction_pos[slot]=friction_margin[slot]=REAL_C(0.);friction_loss[slot]=frictionloss[i];
     friction_type[slot]=1;friction_id[slot]=i;friction_global_adr[slot]=offset+r;
 #if CF_S_UNIFIED_METADATA
     const int q=w*S_ROWS+r;
-    unified_pos[q]=unified_margin[q]=0.;unified_loss[q]=frictionloss[i];
+    unified_pos[q]=unified_margin[q]=REAL_C(0.);unified_loss[q]=frictionloss[i];
     unified_type[q]=1;unified_id[q]=i;
 #endif
   }
   for(int r=threadIdx.x;r<lr;r+=blockDim.x){
     int z=limit_map[r],j=z/2,side=z&1,slot=w*NL_CAP+r;
-    double v=qpos[w*NQ+qposadr[j]];
+    real_t v=qpos[w*NQ+qposadr[j]];
     limit_pos[slot]=side?ranges[2*j+1]-v:v-ranges[2*j];
-    limit_margin[slot]=margins[j];limit_loss[slot]=0.;
+    limit_margin[slot]=margins[j];limit_loss[slot]=REAL_C(0.);
     limit_type[slot]=3;limit_id[slot]=j;limit_global_adr[slot]=offset+fr+r;
 #if CF_S_UNIFIED_METADATA
     const int q=w*S_ROWS+fr+r;
-    unified_pos[q]=limit_pos[slot];unified_margin[q]=margins[j];unified_loss[q]=0.;
+    unified_pos[q]=limit_pos[slot];unified_margin[q]=margins[j];unified_loss[q]=REAL_C(0.);
     unified_type[q]=3;unified_id[q]=j;
 #endif
   }
   for(int z=2*threadIdx.x;z<(fr+lr)*NV;z+=2*blockDim.x){
-    double value[2];
+    real_t value[2];
     const int count=z+1<(fr+lr)*NV?2:1;
     for(int h=0;h<count;h++){
       const int r=(z+h)/NV,k=(z+h)%NV;
-      if(r<fr)value[h]=k==friction_map[r]?1.:0.;
+      if(r<fr)value[h]=k==friction_map[r]?REAL_C(1.):REAL_C(0.);
       else{const int local=r-fr,j=limit_map[local]/2,side=limit_map[local]&1;
-        value[h]=k==dofadr[j]?(side?-1.:1.):0.;}
+        value[h]=k==dofadr[j]?(side?-REAL_C(1.):REAL_C(1.)):REAL_C(0.);}
     }
-    double* out=unified_J+w*S_ROWS*NV+z;
+    real_t* out=unified_J+w*S_ROWS*NV+z;
     if(count==2)libero_vec::store_pair(out,value[0],value[1]);else *out=value[0];
 #if CF_S_COMPATIBLE
     const int split=fr*NV;
     if(count==2&&(z+1<split||z>=split)){
-      double* compatible=z<split?friction_J+w*NF_CAP*NV+z:limit_J+w*NL_CAP*NV+z-split;
+      real_t* compatible=z<split?friction_J+w*NF_CAP*NV+z:limit_J+w*NL_CAP*NV+z-split;
       libero_vec::store_pair(compatible,value[0],value[1]);
     }else for(int h=0;h<count;h++){
       if(z+h<split)friction_J[w*NF_CAP*NV+z+h]=value[h];
@@ -237,7 +238,7 @@ __device__ void CF_S_preflight {
         atomicOr(field_error+local,5);
     }
     if(field_eligible[threadIdx.x]&&(!isfinite(dist[g])||!isfinite(margin[g])||
-       fabs(dist[g])>1e100||fabs(margin[g])>1e100))atomicOr(field_error+threadIdx.x,5);
+       fabs(dist[g])>REAL_SAFE_MAGNITUDE||fabs(margin[g])>REAL_SAFE_MAGNITUDE))atomicOr(field_error+threadIdx.x,5);
     __syncthreads();
     if(!error&&field_error[threadIdx.x]>0){error=5;rows=0;}
     // Encode the lane index before the error code: earliest contact wins,
@@ -313,90 +314,90 @@ __device__ void CF_S_preflight {
   }
   __syncthreads();
 }
-__device__ double body_component(const double*cdof,const double*subtree,const double*pos,
+__device__ real_t body_component(const real_t*cdof,const real_t*subtree,const real_t*pos,
  const int*roots,const int*ancestor,int w,int c,int body,int j,int component,bool rotation,int nv,int nb,int nc){
-  if(!ancestor[body*nv+j])return 0.;
-  const double*a=cdof+(w*nv+j)*6;
+  if(!ancestor[body*nv+j])return REAL_C(0.);
+  const real_t*a=cdof+(w*nv+j)*6;
   if(rotation)return a[component];
-  const double*p=pos+(w*nc+c)*3;const double*s=subtree+(w*nb+roots[body])*3;
-  double o[3]={p[0]-s[0],p[1]-s[1],p[2]-s[2]};
+  const real_t*p=pos+(w*nc+c)*3;const real_t*s=subtree+(w*nb+roots[body])*3;
+  real_t o[3]={p[0]-s[0],p[1]-s[1],p[2]-s[2]};
   int u=(component+1)%3,v=(component+2)%3;
   return a[3+component]+(a[u]*o[v]-a[v]*o[u]);
 }
-__device__ __forceinline__ void body_components(const double*cdof,const double*subtree,const double*pos,
+__device__ __forceinline__ void body_components(const real_t*cdof,const real_t*subtree,const real_t*pos,
  const int*roots,const int*ancestor,int w,int c,int body,int j,bool rotation,int nv,int nb,int nc,
- double* translation,double* angular){
+ real_t* translation,real_t* angular){
   if(!ancestor[body*nv+j]){
-    for(int k=0;k<3;k++)translation[k]=angular[k]=0.;
+    for(int k=0;k<3;k++)translation[k]=angular[k]=REAL_C(0.);
     return;
   }
-  const double*a=cdof+(w*nv+j)*6;
-  const double*p=pos+(w*nc+c)*3;const double*s=subtree+(w*nb+roots[body])*3;
-  double o[3]={p[0]-s[0],p[1]-s[1],p[2]-s[2]};
+  const real_t*a=cdof+(w*nv+j)*6;
+  const real_t*p=pos+(w*nc+c)*3;const real_t*s=subtree+(w*nb+roots[body])*3;
+  real_t o[3]={p[0]-s[0],p[1]-s[1],p[2]-s[2]};
   for(int k=0;k<3;k++){
     int u=(k+1)%3,v=(k+2)%3;
     translation[k]=a[3+k]+(a[u]*o[v]-a[v]*o[u]);
-    angular[k]=rotation?a[k]:0.;
+    angular[k]=rotation?a[k]:REAL_C(0.);
   }
 }
-__device__ __forceinline__ void body_components_offset(const double*cdof,
- const int*ancestor,int w,int body,int j,bool rotation,int nv,const double*offset,
- double*translation,double*angular){
+__device__ __forceinline__ void body_components_offset(const real_t*cdof,
+ const int*ancestor,int w,int body,int j,bool rotation,int nv,const real_t*offset,
+ real_t*translation,real_t*angular){
   if(!ancestor[body*nv+j]){
-    for(int k=0;k<3;k++)translation[k]=angular[k]=0.;
+    for(int k=0;k<3;k++)translation[k]=angular[k]=REAL_C(0.);
     return;
   }
-  const double*a=cdof+(w*nv+j)*6;
+  const real_t*a=cdof+(w*nv+j)*6;
   for(int k=0;k<3;k++){
     int u=(k+1)%3,v=(k+2)%3;
     translation[k]=a[3+k]+(a[u]*offset[v]-a[v]*offset[u]);
-    angular[k]=rotation?a[k]:0.;
+    angular[k]=rotation?a[k]:REAL_C(0.);
   }
 }
 // Membership comes from the immutable ordered body-pair DOF table. A missing
 // body contribution is explicitly zero and never reads an unrelated cdof.
-__device__ __forceinline__ void body_components_known(const double* cdof,
- int w,int j,bool member,bool rotation,int nv,const double* offset,
- const double*planes,int pitch,int layout,int plane_pair,
- double* translation,double* angular){
-  if(!member){for(int k=0;k<3;k++)translation[k]=angular[k]=0.;return;}
-  double value[6];
+__device__ __forceinline__ void body_components_known(const real_t* cdof,
+ int w,int j,bool member,bool rotation,int nv,const real_t* offset,
+ const real_t*planes,int pitch,int layout,int plane_pair,
+ real_t* translation,real_t* angular){
+  if(!member){for(int k=0;k<3;k++)translation[k]=angular[k]=REAL_C(0.);return;}
+  real_t value[6];
   // An optional producer view is consumed only when explicitly bound. The
   // public AoS fallback and membership read domain remain available.
   if(layout&&planes){
     if(plane_pair>=0){
       for(int k=0;k<6;k++){
-        const double2 v=libero_vec::load_pair(planes+(w*6+k)*pitch+plane_pair);
+        const real2_t v=libero_vec::load_pair(planes+(w*6+k)*pitch+plane_pair);
         value[k]=j==plane_pair?v.x:v.y;
       }
     }else for(int k=0;k<6;k++)value[k]=planes[(w*6+k)*pitch+j];
   }else{
-    const double* a=cdof+(w*nv+j)*6;
-    for(int k=0;k<6;k+=2){const double2 v=libero_vec::load_pair(a+k);value[k]=v.x;value[k+1]=v.y;}
+    const real_t* a=cdof+(w*nv+j)*6;
+    for(int k=0;k<6;k+=2){const real2_t v=libero_vec::load_pair(a+k);value[k]=v.x;value[k+1]=v.y;}
   }
-  const double* a=value;
+  const real_t* a=value;
   for(int k=0;k<3;k++){
     int u=(k+1)%3,v=(k+2)%3;
     translation[k]=a[3+k]+(a[u]*offset[v]-a[v]*offset[u]);
-    angular[k]=rotation?a[k]:0.;
+    angular[k]=rotation?a[k]:REAL_C(0.);
   }
 }
 #ifndef CF_S_WARPS
 #define CF_S_WARPS 8
 #endif
-__device__ __forceinline__ bool shared_cdof_safe(const double* cdof,const double* planes,
+__device__ __forceinline__ bool shared_cdof_safe(const real_t* cdof,const real_t* planes,
  int w,int j,int nv,int pitch,int layout){
-  // The production preflight already requires |cdof|<=1e100. Keep the
+  // The production preflight already bounds |cdof| by REAL_SAFE_MAGNITUDE. Keep the
   // optimization independently safe as well: exceptional direct callers must
   // retain the old overflow/NaN arithmetic and later finite-check rejection.
   if(layout&&planes){
     for(int k=0;k<6;k++){
-      const double value=planes[(w*6+k)*pitch+j];
-      if(!isfinite(value)||fabs(value)>1e100)return false;
+      const real_t value=planes[(w*6+k)*pitch+j];
+      if(!isfinite(value)||fabs(value)>REAL_SAFE_MAGNITUDE)return false;
     }
   }else for(int k=0;k<6;k+=2){
-    const double2 value=libero_vec::load_pair(cdof+(w*nv+j)*6+k);
-    if(!isfinite(value.x)||!isfinite(value.y)||fabs(value.x)>1e100||fabs(value.y)>1e100)return false;
+    const real2_t value=libero_vec::load_pair(cdof+(w*nv+j)*6+k);
+    if(!isfinite(value.x)||!isfinite(value.y)||fabs(value.x)>REAL_SAFE_MAGNITUDE||fabs(value.y)>REAL_SAFE_MAGNITUDE)return false;
   }
   return true;
 }
@@ -435,42 +436,42 @@ __device__ void CF_S_jacobian_rows {
     // already own these columns; compatible diagnostics still compute both.
     const bool common_root=__shfl_sync(mask,lane==0?int(roots[b1]==roots[b2]):0,0)!=0;
 #endif
-    double offset1[3],offset2[3],contact_frame[9];
+    real_t offset1[3],offset2[3],contact_frame[9];
     for(int k=0;k<3;k++){
-      double one=0.,two=0.;
+      real_t one=REAL_C(0.),two=REAL_C(0.);
       if(lane==0){
-        double p=pos[g*3+k];
+        real_t p=pos[g*3+k];
         one=p-subtree[(w*S_NBODY+roots[b1])*3+k];
         two=p-subtree[(w*S_NBODY+roots[b2])*3+k];
       }
       offset1[k]=__shfl_sync(mask,one,0);
       offset2[k]=__shfl_sync(mask,two,0);
     }
-    for(int k=0;k<9;k++)contact_frame[k]=__shfl_sync(mask,lane==0?frame[g*9+k]:0.,0);
+    for(int k=0;k<9;k++)contact_frame[k]=__shfl_sync(mask,lane==0?frame[g*9+k]:REAL_C(0.),0);
 #if !CF_S_COMPATIBLE && CF_S_COMMON_ANCESTOR_ZERO
     bool common_root_safe=common_root;
-    for(int k=0;k<3;k++)common_root_safe&=isfinite(offset1[k])&&fabs(offset1[k])<=2e100;
+    for(int k=0;k<3;k++)common_root_safe&=isfinite(offset1[k])&&fabs(offset1[k])<=(REAL_C(2)*REAL_SAFE_MAGNITUDE);
     for(int k=0;k<9;k++)common_root_safe&=isfinite(contact_frame[k]);
 #endif
     // Retain dense zero columns even though arithmetic visits only the ordered
     // union of the two ancestor sets. Rotational diagnostics for d<=3 remain
     // untouched, matching their original ownership boundary.
     for(int r=0;r<d;r++){
-        libero_vec::fill_lane(unified_J+(w*S_ROWS+unified_incoming[w]+start+r)*nv,nv,0.,lane,lanes);
+        libero_vec::fill_lane(unified_J+(w*S_ROWS+unified_incoming[w]+start+r)*nv,nv,REAL_C(0.),lane,lanes);
 #if CF_S_COMPATIBLE
-        libero_vec::fill_lane(J+(w*S_ROWS+start+r)*nv,nv,0.,lane,lanes);
+        libero_vec::fill_lane(J+(w*S_ROWS+start+r)*nv,nv,REAL_C(0.),lane,lanes);
 #endif
     }
 #if CF_S_COMPATIBLE
     for(int k=0;k<3;k++){
       const int z=(g*3+k)*nv;
-      libero_vec::fill_lane(jac1p+z,nv,0.,lane,lanes);
-      libero_vec::fill_lane(jac2p+z,nv,0.,lane,lanes);
-      libero_vec::fill_lane(difp+z,nv,0.,lane,lanes);
+      libero_vec::fill_lane(jac1p+z,nv,REAL_C(0.),lane,lanes);
+      libero_vec::fill_lane(jac2p+z,nv,REAL_C(0.),lane,lanes);
+      libero_vec::fill_lane(difp+z,nv,REAL_C(0.),lane,lanes);
       if(d>3){
-        libero_vec::fill_lane(jac1r+z,nv,0.,lane,lanes);
-        libero_vec::fill_lane(jac2r+z,nv,0.,lane,lanes);
-        libero_vec::fill_lane(difr+z,nv,0.,lane,lanes);
+        libero_vec::fill_lane(jac1r+z,nv,REAL_C(0.),lane,lanes);
+        libero_vec::fill_lane(jac2r+z,nv,REAL_C(0.),lane,lanes);
+        libero_vec::fill_lane(difr+z,nv,REAL_C(0.),lane,lanes);
       }
     }
 #endif
@@ -512,8 +513,8 @@ __device__ void CF_S_jacobian_rows {
       if(lane<used){
       const int j=pair_column[warp][lane],members=pair_member[warp][lane];
 #if !CF_S_COMPATIBLE && CF_S_COMMON_ANCESTOR_ZERO
-      // |offset|<=2e100 and |cdof|<=1e100 bound each cross product by
-      // 2e200 and each translation by 4e200+1e100, below DBL_MAX. Outside
+      // With B=REAL_SAFE_MAGNITUDE, |offset|<=2B and |cdof|<=B
+      // bound cross products by 2B^2, below REAL_MAX in either precision. Outside
       // this sufficient bound, execute the accepted arithmetic unchanged.
       if(!(common_root_safe&&members==3&&shared_cdof_safe(cdof,cdof_planes,w,j,nv,cdof_pitch,cdof_layout))){
 #endif
@@ -525,12 +526,12 @@ __device__ void CF_S_jacobian_rows {
         peer<used&&pair_member[warp][peer]==members&&
         pair_column[warp][peer]==j+((lane&1)?-1:1);
       const int plane_pair=adjacent?pairbase:-1;
-      double dp[3],dr[3],onep[3],twop[3],oner[3],twor[3];
+      real_t dp[3],dr[3],onep[3],twop[3],oner[3],twor[3];
       body_components_known(cdof,w,j,(members&1)!=0,d>3,nv,offset1,cdof_planes,cdof_pitch,cdof_layout,plane_pair,onep,oner);
       body_components_known(cdof,w,j,(members&2)!=0,d>3,nv,offset2,cdof_planes,cdof_pitch,cdof_layout,plane_pair,twop,twor);
       for(int k=0;k<3;k++){
         int z=(g*3+k)*nv+j;
-        double one=onep[k],two=twop[k];dp[k]=two-one;
+        real_t one=onep[k],two=twop[k];dp[k]=two-one;
 #if CF_S_COMPATIBLE
         jac1p[z]=one;jac2p[z]=two;difp[z]=dp[k];
 #endif
@@ -542,8 +543,8 @@ __device__ void CF_S_jacobian_rows {
         }
       }
       for(int r=0;r<d;r++){
-        double value=0.;int fr=r<3?r:r-3;
-        for(int k=0;k<3;k++){double coeff=contact_frame[fr*3+k];if(coeff!=0.)value+=coeff*(r<3?dp[k]:dr[k]);}
+        real_t value=REAL_C(0.);int fr=r<3?r:r-3;
+        for(int k=0;k<3;k++){real_t coeff=contact_frame[fr*3+k];if(coeff!=REAL_C(0.))value+=coeff*(r<3?dp[k]:dr[k]);}
         unified_J[(w*S_ROWS+unified_incoming[w]+start+r)*nv+j]=value;
 #if CF_S_COMPATIBLE
         J[(w*S_ROWS+start+r)*nv+j]=value;
@@ -572,17 +573,17 @@ __device__ void CF_S_metadata {
     int start=rowstart[g],d=dim[g];out_address[g]=incoming[w]+start;
     const int q=w*S_ROWS+start;
     out_pos[q]=dist[g];out_margin[q]=margin[g];
-    libero_vec::fill_serial(out_pos+q+1,d-1,0.);
-    libero_vec::fill_serial(out_margin+q+1,d-1,0.);
-    libero_vec::fill_serial(out_frictionloss+q,d,0.);
+    libero_vec::fill_serial(out_pos+q+1,d-1,REAL_C(0.));
+    libero_vec::fill_serial(out_margin+q+1,d-1,REAL_C(0.));
+    libero_vec::fill_serial(out_frictionloss+q,d,REAL_C(0.));
     libero_vec::fill_serial(out_type+q,d,d==1?5:7);
     libero_vec::fill_serial(out_id+q,d,c);
 #if CF_S_UNIFIED_METADATA
     const int u=q+incoming[w];
     unified_pos[u]=dist[g];unified_margin[u]=margin[g];
-    libero_vec::fill_serial(unified_pos+u+1,d-1,0.);
-    libero_vec::fill_serial(unified_margin+u+1,d-1,0.);
-    libero_vec::fill_serial(unified_loss+u,d,0.);
+    libero_vec::fill_serial(unified_pos+u+1,d-1,REAL_C(0.));
+    libero_vec::fill_serial(unified_margin+u+1,d-1,REAL_C(0.));
+    libero_vec::fill_serial(unified_loss+u,d,REAL_C(0.));
     libero_vec::fill_serial(unified_type+u,d,d==1?5:7);
     libero_vec::fill_serial(unified_id+u,d,c);
 #endif
@@ -701,10 +702,10 @@ __device__ void CF_S_prediag {
         // Canonical admission proves a unique group leader and all followers.
         const int b1=geom_body[geom1[w*S_CONTACTS+id]],b2=geom_body[geom2[w*S_CONTACTS+id]];
         const int d=t==7?dim[w*S_CONTACTS+id]:1;
-        const double tran=body_inv[2*b1]+body_inv[2*b2];
+        const real_t tran=body_inv[2*b1]+body_inv[2*b2];
         const int nt=d<3?d:3;
         libero_vec::fill_serial(prediag+q,nt,tran);
-        if(d>3){const double rot=body_inv[2*b1+1]+body_inv[2*b2+1];
+        if(d>3){const real_t rot=body_inv[2*b1+1]+body_inv[2*b2+1];
           libero_vec::fill_serial(prediag+q+nt,d-nt,rot);}
       }
     }
@@ -717,7 +718,7 @@ __device__ void CF_S_prediag {
     else if(t==3){prediag[q]=dof_inv[jnt_dofadr[id]];i++;}
     else if(t==5||t==7){
       int b1=geom_body[geom1[w*S_CONTACTS+id]],b2=geom_body[geom2[w*S_CONTACTS+id]];
-      double tran=body_inv[2*b1]+body_inv[2*b2],rot=body_inv[2*b1+1]+body_inv[2*b2+1];
+      real_t tran=body_inv[2*b1]+body_inv[2*b2],rot=body_inv[2*b1+1]+body_inv[2*b2+1];
       int d=t==5?1:dim[w*S_CONTACTS+id];for(int j=0;j<d;j++)prediag[q+j]=j<3?tran:rot;i+=d;
     }else{if(!status[w])status[w]=8;committed[w]=0;return;}
     if(i>n){if(!status[w])status[w]=2;committed[w]=0;return;}

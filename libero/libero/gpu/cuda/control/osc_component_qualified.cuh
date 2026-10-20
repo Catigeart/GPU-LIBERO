@@ -1,10 +1,11 @@
+#include "precision.cuh"
 #pragma once
 #ifndef OSC_MASS_RECEIPT
 #define OSC_MASS_RECEIPT 0
 #endif
 namespace osc_component {
-__device__ inline void mass(int w,const double* M,const double* J,double* X,double* A,int* status,int direct,double* MI){
- __shared__ double lu[49],mi[49],j[42],jt[42],jw[42],x[42],a[36];
+__device__ inline void mass(int w,const real_t* M,const real_t* J,real_t* X,real_t* A,int* status,int direct,real_t* MI){
+ __shared__ real_t lu[49],mi[49],j[42],jt[42],jw[42],x[42],a[36];
  __shared__ int piv[7],info;
  for(int z=threadIdx.x;z<49;z+=blockDim.x){lu[z]=M[w*49+z];mi[z]=z/7==z%7?1:0;}
  for(int z=threadIdx.x;z<42;z+=blockDim.x){j[z]=J[w*42+z];jt[(z%7)*6+z/7]=j[z];}
@@ -19,8 +20,8 @@ __device__ inline void mass(int w,const double* M,const double* J,double* X,doub
  // Validation-only receipt; both performance variants compile this store out.
  if(OSC_MASS_RECEIPT&&!direct)for(int z=threadIdx.x;z<49;z+=blockDim.x)MI[w*49+z]=mi[z];__syncthreads();
 }
-__device__ inline void tasks(int w,const double* A,double* L,int* R,int* O,int* stats,int candidate){
- __shared__ double a[36],ap[36],ar[36],lf[36],lp[36],lr[36];__shared__ int r[3],ok[3];
+__device__ inline void tasks(int w,const real_t* A,real_t* L,int* R,int* O,int* stats,int candidate){
+ __shared__ real_t a[36],ap[36],ar[36],lf[36],lp[36],lr[36];__shared__ int r[3],ok[3];
  for(int z=threadIdx.x;z<36;z+=blockDim.x){a[z]=A[w*36+z];ap[z]=ar[z]=0;}__syncthreads();
  if(threadIdx.x==0)for(int i=0;i<3;i++)for(int k=0;k<3;k++){ap[i*6+k]=a[i*6+k];ar[i*6+k]=a[(i+3)*6+k+3];}__syncthreads();
  if(candidate)osc_cuda::operator_tasks(w,a,ap,ar,lf,lp,lr,r,ok,stats);

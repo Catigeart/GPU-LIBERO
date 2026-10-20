@@ -18,9 +18,11 @@ enum class Phase : int {
 };
 enum class Info : int {
   Rows, Contacts, FrictionRows, Iterations, SearchEvaluations, CoefficientRefresh,
-  StopReason, Error, Sm, Enabled, LayoutRefresh, Count
+  StopReason, Error, Sm, Enabled, LayoutRefresh, InitialConeRows, WarmChoice,
+  InitialConeMaxForceBits, InitialGradientNormBits, InitialDecrementBits, Count
 };
 constexpr int header_cells = 16, info_cells = 16;
+static_assert(int(Info::Count)<=info_cells,"Profile info exceeds its reserved header");
 constexpr int record_cells = info_cells + 2 * int(Phase::Count);
 struct Configuration { uint64_t *buffer; int capacity; };
 extern __device__ Configuration configuration;

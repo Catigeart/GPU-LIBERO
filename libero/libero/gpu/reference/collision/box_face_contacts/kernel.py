@@ -5,6 +5,7 @@ fd038c185abfae66213bcabd0db34450a5fb596481fa5d1bb567fdff62a587b2.
 The SAT tuple is the input boundary. No clipped geometry or contact is uploaded.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -13,18 +14,18 @@ wp.set_module_options({"enable_backward": False, "fuse_fp": True, "fast_math": F
 
 
 @wp.func
-def _clear_error(stage_i: wp.array(dtype=wp.int32), stage_d: wp.array(dtype=wp.float64),
-                 trace_i: wp.array(dtype=wp.int32), trace_d: wp.array(dtype=wp.float64),
-                 raw: wp.array(dtype=wp.float64), out_count: wp.array(dtype=wp.int32),
+def _clear_error(stage_i: wp.array(dtype=wp.int32), stage_d: wp.array(dtype=scalar.wp_real),
+                 trace_i: wp.array(dtype=wp.int32), trace_d: wp.array(dtype=scalar.wp_real),
+                 raw: wp.array(dtype=scalar.wp_real), out_count: wp.array(dtype=wp.int32),
                  state: wp.array(dtype=wp.int32), frame_written: wp.array(dtype=wp.int32),
-                 frame0: wp.array(dtype=wp.float64), t: int, status: int, phase: int):
+                 frame0: wp.array(dtype=scalar.wp_real), t: int, status: int, phase: int):
     for z in range(256):stage_i[t*256+z]=0
-    for z in range(512):stage_d[t*512+z]=wp.float64(0.0)
+    for z in range(512):stage_d[t*512+z]=scalar.wp_real(0.0)
     for z in range(192):
         trace_i[t*192+z]=0
-        trace_d[t*192+z]=wp.float64(0.0)
-    for z in range(500):raw[t*500+z]=wp.float64(0.0)
-    for z in range(6):frame0[t*6+z]=wp.float64(0.0)
+        trace_d[t*192+z]=scalar.wp_real(0.0)
+    for z in range(500):raw[t*500+z]=scalar.wp_real(0.0)
+    for z in range(6):frame0[t*6+z]=scalar.wp_real(0.0)
     out_count[t]=0
     frame_written[t]=0
     state[t*4]=0
@@ -33,28 +34,28 @@ def _clear_error(stage_i: wp.array(dtype=wp.int32), stage_d: wp.array(dtype=wp.f
 
 
 @wp.func
-def _dot3(a: wp.array(dtype=wp.float64), ao: int,
-          b: wp.array(dtype=wp.float64), bo: int) -> wp.float64:
+def _dot3(a: wp.array(dtype=scalar.wp_real), ao: int,
+          b: wp.array(dtype=scalar.wp_real), bo: int) -> scalar.wp_real:
     return (a[ao]*b[bo] + a[ao+1]*b[bo+1]) + a[ao+2]*b[bo+2]
 
 
 @wp.func
-def _add_scaled(dst: wp.array(dtype=wp.float64), do: int,
-                src: wp.array(dtype=wp.float64), so: int, scale: wp.float64):
+def _add_scaled(dst: wp.array(dtype=scalar.wp_real), do: int,
+                src: wp.array(dtype=scalar.wp_real), so: int, scale: scalar.wp_real):
     for c in range(3):
         dst[do+c] = dst[do+c] + src[so+c]*scale
 
 
 @wp.kernel(enable_backward=False)
-def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
+def _face(pair: wp.array(dtype=scalar.wp_real), sat: wp.array(dtype=scalar.wp_real),
           sat_i: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
-          counts: wp.array(dtype=wp.int32), point_scratch: wp.array(dtype=wp.float64),
-          post_scratch: wp.array(dtype=wp.float64),
-          stage_i: wp.array(dtype=wp.int32), stage_d: wp.array(dtype=wp.float64),
-          trace_i: wp.array(dtype=wp.int32), trace_d: wp.array(dtype=wp.float64),
-          raw: wp.array(dtype=wp.float64), out_count: wp.array(dtype=wp.int32),
+          counts: wp.array(dtype=wp.int32), point_scratch: wp.array(dtype=scalar.wp_real),
+          post_scratch: wp.array(dtype=scalar.wp_real),
+          stage_i: wp.array(dtype=wp.int32), stage_d: wp.array(dtype=scalar.wp_real),
+          trace_i: wp.array(dtype=wp.int32), trace_d: wp.array(dtype=scalar.wp_real),
+          raw: wp.array(dtype=scalar.wp_real), out_count: wp.array(dtype=wp.int32),
           state: wp.array(dtype=wp.int32), frame_written: wp.array(dtype=wp.int32),
-          frame0: wp.array(dtype=wp.float64), pairs: int):
+          frame0: wp.array(dtype=scalar.wp_real), pairs: int):
     t = wp.tid()
     w = t // pairs
     q = t - w*pairs
@@ -66,18 +67,18 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
     rb = t*500
     ps = t*18
     for z in range(512):
-        stage_d[di+z] = wp.float64(0.0)
+        stage_d[di+z] = scalar.wp_real(0.0)
     for z in range(256):
         stage_i[ii+z] = 0
     for z in range(500):
-        raw[rb+z] = wp.float64(0.0)
+        raw[rb+z] = scalar.wp_real(0.0)
     for z in range(192):
         trace_i[t*192+z] = 0
-        trace_d[t*192+z] = wp.float64(0.0)
+        trace_d[t*192+z] = scalar.wp_real(0.0)
     for z in range(6):
-        frame0[t*6+z] = wp.float64(0.0)
+        frame0[t*6+z] = scalar.wp_real(0.0)
     for z in range(18):
-        point_scratch[ps+z] = wp.float64(0.0)
+        point_scratch[ps+z] = scalar.wp_real(0.0)
     out_count[t] = 0
     frame_written[t] = 0
     state[t*4] = 0
@@ -121,29 +122,29 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
     stage_i[ii+2] = q2
     # rotmore is a signed permutation, including source +0 initialization.
     if q1 == 0:
-        stage_d[di+2]=-wp.float64(1.0); stage_d[di+4]=wp.float64(1.0); stage_d[di+6]=wp.float64(1.0)
+        stage_d[di+2]=-scalar.wp_real(1.0); stage_d[di+4]=scalar.wp_real(1.0); stage_d[di+6]=scalar.wp_real(1.0)
     elif q1 == 1:
-        stage_d[di]=wp.float64(1.0); stage_d[di+5]=-wp.float64(1.0); stage_d[di+7]=wp.float64(1.0)
+        stage_d[di]=scalar.wp_real(1.0); stage_d[di+5]=-scalar.wp_real(1.0); stage_d[di+7]=scalar.wp_real(1.0)
     elif q1 == 2:
-        stage_d[di]=wp.float64(1.0); stage_d[di+4]=wp.float64(1.0); stage_d[di+8]=wp.float64(1.0)
+        stage_d[di]=scalar.wp_real(1.0); stage_d[di+4]=scalar.wp_real(1.0); stage_d[di+8]=scalar.wp_real(1.0)
     elif q1 == 3:
-        stage_d[di+2]=wp.float64(1.0); stage_d[di+4]=wp.float64(1.0); stage_d[di+6]=-wp.float64(1.0)
+        stage_d[di+2]=scalar.wp_real(1.0); stage_d[di+4]=scalar.wp_real(1.0); stage_d[di+6]=-scalar.wp_real(1.0)
     elif q1 == 4:
-        stage_d[di]=wp.float64(1.0); stage_d[di+5]=wp.float64(1.0); stage_d[di+7]=-wp.float64(1.0)
+        stage_d[di]=scalar.wp_real(1.0); stage_d[di+5]=scalar.wp_real(1.0); stage_d[di+7]=-scalar.wp_real(1.0)
     else:
-        stage_d[di]=-wp.float64(1.0); stage_d[di+4]=wp.float64(1.0); stage_d[di+8]=-wp.float64(1.0)
+        stage_d[di]=-scalar.wp_real(1.0); stage_d[di+4]=scalar.wp_real(1.0); stage_d[di+8]=-scalar.wp_real(1.0)
     i0=0; i1=1; i2=2
-    f0=wp.float64(1.0); f1=wp.float64(1.0); f2=wp.float64(1.0)
+    f0=scalar.wp_real(1.0); f1=scalar.wp_real(1.0); f2=scalar.wp_real(1.0)
     if q1 == 0:
-        i0=2; f0=-wp.float64(1.0); i2=0
+        i0=2; f0=-scalar.wp_real(1.0); i2=0
     elif q1 == 1:
-        i1=2; f1=-wp.float64(1.0); i2=1
+        i1=2; f1=-scalar.wp_real(1.0); i2=1
     elif q1 == 3:
-        i0=2; i2=0; f2=-wp.float64(1.0)
+        i0=2; i2=0; f2=-scalar.wp_real(1.0)
     elif q1 == 4:
-        i1=2; i2=1; f2=-wp.float64(1.0)
+        i1=2; i2=1; f2=-scalar.wp_real(1.0)
     elif q1 == 5:
-        f0=-wp.float64(1.0); f2=-wp.float64(1.0)
+        f0=-scalar.wp_real(1.0); f2=-scalar.wp_real(1.0)
     stage_i[ii+12]=i0; stage_i[ii+13]=i1; stage_i[ii+14]=i2
     # sat layout: pos21, pos12, rot, rott, rotabs, rottabs, clnorm.
     # q2=1 calls mju_mulMatMatT (mju_dot starts with an add of +0).
@@ -153,7 +154,7 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
                 x=((stage_d[di+3*i]*sat[sb+6+3*j] +
                     stage_d[di+3*i+1]*sat[sb+6+3*j+1]) +
                     stage_d[di+3*i+2]*sat[sb+6+3*j+2])
-                stage_d[di+12+3*i+j]=wp.float64(0.0)+x
+                stage_d[di+12+3*i+j]=scalar.wp_real(0.0)+x
         stage_d[di+9]=sat[sb+3+i0]*f0
         stage_d[di+10]=sat[sb+3+i1]*f1
         stage_d[di+11]=sat[sb+3+i2]*f2
@@ -184,24 +185,24 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
     stage_d[di+11]=stage_d[di+11]-hz
     clcorner=wp.int32(0)
     for i in range(3):
-        if stage_d[di+18+i] < wp.float64(0.0):
+        if stage_d[di+18+i] < scalar.wp_real(0.0):
             clcorner=clcorner+(1<<i)
     stage_i[ii+3]=clcorner
     for j in range(3):
         point_scratch[ps+j]=stage_d[di+9+j]
     for i in range(3):
-        sign=wp.float64(-1.0)
+        sign=scalar.wp_real(-1.0)
         if (clcorner & (1<<i)) != 0:
-            sign=wp.float64(1.0)
+            sign=scalar.wp_real(1.0)
         scale=stage_d[di+30+i]*sign
         for j in range(3):
             point_scratch[ps+j]=point_scratch[ps+j]+stage_d[di+21+3*i+j]*scale
     m=wp.int32(1)
     for i in range(3):
-        if wp.abs(stage_d[di+18+i]) < wp.float64(0.5):
-            sign=wp.float64(2.0)
+        if wp.abs(stage_d[di+18+i]) < scalar.wp_real(0.5):
+            sign=scalar.wp_real(2.0)
             if (clcorner & (1<<i)) != 0:
-                sign=-wp.float64(2.0)
+                sign=-scalar.wp_real(2.0)
             scale=stage_d[di+30+i]*sign
             for j in range(3):
                 point_scratch[ps+3*m+j]=stage_d[di+21+3*i+j]*scale
@@ -245,7 +246,7 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
             for j in range(2):
                 trace_d[t*192+4*(4*i+2*axis+j)]=a
                 trace_d[t*192+4*(4*i+2*axis+j)+1]=b
-            if wp.abs(b)>wp.float64(1.0e-15):
+            if wp.abs(b)>scalar.wp_real(1.0e-15):
                 if not wp.isfinite(b):
                     _clear_error(stage_i,stage_d,trace_i,trace_d,raw,out_count,state,frame_written,frame0,t,4,3)
                     return
@@ -256,13 +257,13 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
                     other=ly
                     if axis==1:
                         extent=ly; other=lx
-                    side=-wp.float64(1.0)
+                    side=-scalar.wp_real(1.0)
                     if j==1:
-                        side=wp.float64(1.0)
+                        side=scalar.wp_real(1.0)
                     l=extent*side
-                    c1=(l-a)*(wp.float64(1.0)/b)
+                    c1=(l-a)*(scalar.wp_real(1.0)/b)
                     trace_d[tr+2]=c1
-                    if c1<wp.float64(0.0) or c1>wp.float64(1.0):
+                    if c1<scalar.wp_real(0.0) or c1>scalar.wp_real(1.0):
                         trace_i[tr+1]=1
                         stage_i[ii+16]=stage_i[ii+16]+1
                         continue
@@ -286,7 +287,7 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
     c=point_scratch[ps+4]; d=point_scratch[ps+7]
     det=a*d-b*c
     if m>2:
-        if not wp.isfinite(det) or det==wp.float64(0.0):
+        if not wp.isfinite(det) or det==scalar.wp_real(0.0):
             _clear_error(stage_i,stage_d,trace_i,trace_d,raw,out_count,state,frame_written,frame0,t,4,4)
             return
         for i in range(4):
@@ -297,12 +298,12 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
                 lly=ly
             x=llx-point_scratch[ps]
             y=lly-point_scratch[ps+1]
-            u=(x*d-y*b)*(wp.float64(1.0)/det)
-            v=(y*a-x*c)*(wp.float64(1.0)/det)
+            u=(x*d-y*b)*(scalar.wp_real(1.0)/det)
+            v=(y*a-x*c)*(scalar.wp_real(1.0)/det)
             tr=t*192+4*(16+i)
             trace_i[tr]=1
             trace_d[tr]=x;trace_d[tr+1]=y;trace_d[tr+2]=u;trace_d[tr+3]=v
-            if u<=wp.float64(0.0) or v<=wp.float64(0.0) or u>=wp.float64(1.0) or v>=wp.float64(1.0):
+            if u<=scalar.wp_real(0.0) or v<=scalar.wp_real(0.0) or u>=scalar.wp_real(1.0) or v>=scalar.wp_real(1.0):
                 trace_i[tr+1]=1
                 stage_i[ii+18]=stage_i[ii+18]+1
                 continue
@@ -323,11 +324,12 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
         tr=t*192+4*(20+i)
         trace_i[tr]=1
         trace_d[tr]=x;trace_d[tr+1]=y;trace_d[tr+2]=point_scratch[ps+3*src+2]
-        if i!=0 and (x<=-lx or x>=lx):
+        # Vertex zero retains boundary ownership, but must also be clipped.
+        if x < -lx or x > lx or (i!=0 and (x==-lx or x==lx)):
             trace_i[tr+1]=1
             stage_i[ii+19]=stage_i[ii+19]+1
             continue
-        if i!=0 and (y<=-ly or y>=ly):
+        if y < -ly or y > ly or (i!=0 and (y==-ly or y==ly)):
             trace_i[tr+1]=2
             stage_i[ii+20]=stage_i[ii+20]+1
             continue
@@ -351,7 +353,7 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
             continue
         for j in range(3):
             stage_d[di+231+3*accepted+j]=stage_d[di+81+3*i+j]
-        stage_d[di+233+3*accepted]=stage_d[di+233+3*accepted]*wp.float64(0.5)
+        stage_d[di+233+3*accepted]=stage_d[di+233+3*accepted]*scalar.wp_real(0.5)
         trace_d[tr+2]=stage_d[di+233+3*accepted]
         trace_i[tr+2]=accepted
         for j in range(3):
@@ -369,11 +371,11 @@ def _face(pair: wp.array(dtype=wp.float64), sat: wp.array(dtype=wp.float64),
             x=((pair[mat+3*i]*stage_d[di+3*j] +
                 pair[mat+3*i+1]*stage_d[di+3*j+1]) +
                 pair[mat+3*i+2]*stage_d[di+3*j+2])
-            stage_d[di+403+3*i+j]=wp.float64(0.0)+x
+            stage_d[di+403+3*i+j]=scalar.wp_real(0.0)+x
         stage_d[di+400+i]=pair[pos+i]
-    sign=wp.float64(1.0)
+    sign=scalar.wp_real(1.0)
     if q2!=0:
-        sign=-wp.float64(1.0)
+        sign=-scalar.wp_real(1.0)
     for i in range(3):
         frame0[t*6+i]=sign*stage_d[di+403+3*i+2]
     frame_written[t]=1
@@ -415,22 +417,22 @@ class BoxFaceContactWorkspace:
             raise ValueError("positive N and P required")
         self.nworld=nworld; self.pairs=pairs; self.device=device
         npair=nworld*pairs
-        self.pair_f=wp.zeros(npair*31,dtype=wp.float64,device=device)
-        self.sat_f=wp.zeros(npair*45,dtype=wp.float64,device=device)
+        self.pair_f=wp.zeros(npair*31,dtype=scalar.wp_real,device=device)
+        self.sat_f=wp.zeros(npair*45,dtype=scalar.wp_real,device=device)
         self.sat_i=wp.zeros(npair*6,dtype=wp.int32,device=device)
         self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.counts=wp.zeros(nworld,dtype=wp.int32,device=device)
-        self.point_scratch=wp.zeros(npair*18,dtype=wp.float64,device=device)
-        self.post_scratch=wp.zeros(npair*150,dtype=wp.float64,device=device)
+        self.point_scratch=wp.zeros(npair*18,dtype=scalar.wp_real,device=device)
+        self.post_scratch=wp.zeros(npair*150,dtype=scalar.wp_real,device=device)
         self.stage_i=wp.zeros(npair*256,dtype=wp.int32,device=device)
-        self.stage_d=wp.zeros(npair*512,dtype=wp.float64,device=device)
+        self.stage_d=wp.zeros(npair*512,dtype=scalar.wp_real,device=device)
         self.trace_i=wp.zeros(npair*192,dtype=wp.int32,device=device)
-        self.trace_d=wp.zeros(npair*192,dtype=wp.float64,device=device)
-        self.raw=wp.zeros(npair*500,dtype=wp.float64,device=device)
+        self.trace_d=wp.zeros(npair*192,dtype=scalar.wp_real,device=device)
+        self.raw=wp.zeros(npair*500,dtype=scalar.wp_real,device=device)
         self.count=wp.zeros(npair,dtype=wp.int32,device=device)
         self.state=wp.zeros(npair*4,dtype=wp.int32,device=device)
         self.frame_written=wp.zeros(npair,dtype=wp.int32,device=device)
-        self.frame0=wp.zeros(npair*6,dtype=wp.float64,device=device)
+        self.frame0=wp.zeros(npair*6,dtype=scalar.wp_real,device=device)
 
     def upload(self,pair_f,sat_f,sat_i,active,counts):
         expected=((pair_f,(self.nworld,self.pairs,31),np.dtype('float64'),'pair_f',self.pair_f),

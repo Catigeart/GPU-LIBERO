@@ -65,14 +65,16 @@ def load_endpoint(path, prefix=''):
     return result
 
 
-def compare_endpoints(actual, previous, cpu, worlds, *, baseline_samples=(), multiplier=3., floor=1e-10):
+def compare_endpoints(actual, previous, cpu, worlds, *, baseline_samples=(), multiplier=3., floor=1e-10,
+                      scalar_epsilon=0., field_floors=None):
     """Always include the original old endpoint; never derive budgets from new.
 
     Additional samples must be independently obtained frozen OLD endpoints.
     This function never collects samples or expands a budget automatically.
     Missing fields, mismatched shapes and nonfinite references fail explicitly.
     """
-    if worlds < 1 or not np.isfinite(multiplier) or multiplier <= 0 or not np.isfinite(floor) or floor < 0:
+    if (worlds < 1 or not np.isfinite(multiplier) or multiplier <= 0 or not np.isfinite(floor) or floor < 0
+            or not np.isfinite(scalar_epsilon) or scalar_epsilon < 0):
         raise ValueError('invalid comparison policy')
     for name, values in [('candidate', actual), ('baseline', previous), ('cpu', cpu)]:
         missing = set(FIELDS) - values.keys()
@@ -97,13 +99,24 @@ def compare_endpoints(actual, previous, cpu, worlds, *, baseline_samples=(), mul
                                ('rms', lambda x: float(np.sqrt(np.mean(x * x))))]:
                 error = fn(value[world] - ref[world])
                 previous_error = max(fn(sample[world] - ref[world]) for sample in (old, *samples))
-                limit = max(multiplier * previous_error, floor)
+                # An explicit FP32 screening budget, fixed before execution.
+                # It is scaled by the frozen reference, never the candidate.
+                roundoff_floor = 1024 * scalar_epsilon * max(1., fn(ref[world]), fn(old[world]))
+                sensitivity = float((field_floors or {}).get((field, world, metric), 0.))
+                if not np.isfinite(sensitivity) or sensitivity < 0:
+                    raise ValueError('finite nonnegative frozen field floor required')
+                unconditioned_limit = max(multiplier * previous_error, floor, roundoff_floor)
+                limit = max(unconditioned_limit, sensitivity)
                 change = fn(value[world] - old[world])
                 checks.append(dict(field=field, world=world, metric=metric,
                                    error=error if np.isfinite(error) else None,
                                    previous_error=previous_error,
                                    endpoint_change=change if np.isfinite(change) else None,
-                                   limit=limit, passed=bool(np.isfinite(error) and error <= limit)))
+                                   limit=limit, roundoff_floor=roundoff_floor,
+                                   sensitivity_floor=sensitivity,
+                                   unconditioned_limit=unconditioned_limit,
+                                   unconditioned_passed=bool(np.isfinite(error) and error <= unconditioned_limit),
+                                   passed=bool(np.isfinite(error) and error <= limit)))
     return checks
 
 

@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -6,24 +7,24 @@
 // lane 0 retains the bounded DFS stack and diagnostic tapes. All block threads
 // must enter cf_tree; its caller retains the normal inter-stage block barrier.
 namespace collision_cuda {
-__device__ inline double tree_dot(double a,double b,double c,double x,double y,double z) {
+__device__ inline real_t tree_dot(real_t a,real_t b,real_t c,real_t x,real_t y,real_t z) {
     return a*x+b*y+c*z;
 }
-__device__ inline double tree_normal(const double* m,int base,int axis,int coord) {
+__device__ inline real_t tree_normal(const real_t* m,int base,int axis,int coord) {
     return m[base+3*coord+axis];
 }
-__device__ inline double tree_center(const double* aa,int ab,const double* p,int pb,
-                                    const double* m,int mb,int axis) {
+__device__ inline real_t tree_center(const real_t* aa,int ab,const real_t* p,int pb,
+                                    const real_t* m,int mb,int axis) {
     return tree_dot(aa[ab],aa[ab+1],aa[ab+2],m[mb+3*axis],m[mb+3*axis+1],m[mb+3*axis+2])+p[pb+axis];
 }
 // Return overlap in bit 0, cache initialization in bit 1, reject axis+1 above.
-__device__ inline int tree_obb(const double* aa,int ab0,int ab1,const double* pos,
-                              int pb0,int pb1,const double* mat,int mb0,int mb1,
-                              int cached,double* product,double* offset,int sb,int initialize) {
+__device__ inline int tree_obb(const real_t* aa,int ab0,int ab1,const real_t* pos,
+                              int pb0,int pb1,const real_t* mat,int mb0,int mb1,
+                              int cached,real_t* product,real_t* offset,int sb,int initialize) {
     bool inf1[3],inf2[3];
-    for(int k=0;k<3;++k){inf1[k]=aa[ab0+3+k]>=1.e10;inf2[k]=aa[ab1+3+k]>=1.e10;}
+    for(int k=0;k<3;++k){inf1[k]=aa[ab0+3+k]>=REAL_C(1.e10);inf2[k]=aa[ab1+3+k]>=REAL_C(1.e10);}
     if((inf1[0]&&inf1[1]&&inf1[2])||(inf2[0]&&inf2[1]&&inf2[2]))return 1+2*initialize;
-    double center[2][3]={{0,0,0},{0,0,0}};
+    real_t center[2][3]={{0,0,0},{0,0,0}};
     if(!cached)for(int k=0;k<3;++k){
         center[0][k]=tree_center(aa,ab0,pos,pb0,mat,mb0,k);
         center[1][k]=tree_center(aa,ab1,pos,pb1,mat,mb1,k);
@@ -46,14 +47,14 @@ __device__ inline int tree_obb(const double* aa,int ab0,int ab1,const double* po
         if((j==0&&(inf2[0]||inf2[1]||inf2[2]))||(j==1&&(inf1[0]||inf1[1]||inf1[2])))continue;
         int mj=j?mb1:mb0;
         for(int k=0;k<3;++k){
-            double n[3]={tree_normal(mat,mj,k,0),tree_normal(mat,mj,k,1),tree_normal(mat,mj,k,2)};
-            double p[2]={0,0},r[2]={0,0};
+            real_t n[3]={tree_normal(mat,mj,k,0),tree_normal(mat,mj,k,1),tree_normal(mat,mj,k,2)};
+            real_t p[2]={0,0},r[2]={0,0};
             for(int i=0;i<2;++i){int ab=i?ab1:ab0,mi=i?mb1:mb0;
                 if(!cached){
                     p[i]=tree_dot(center[i][0],center[i][1],center[i][2],n[0],n[1],n[2]);
-                    double d0=tree_dot(tree_normal(mat,mi,0,0),tree_normal(mat,mi,0,1),tree_normal(mat,mi,0,2),n[0],n[1],n[2]);
-                    double d1=tree_dot(tree_normal(mat,mi,1,0),tree_normal(mat,mi,1,1),tree_normal(mat,mi,1,2),n[0],n[1],n[2]);
-                    double d2=tree_dot(tree_normal(mat,mi,2,0),tree_normal(mat,mi,2,1),tree_normal(mat,mi,2,2),n[0],n[1],n[2]);
+                    real_t d0=tree_dot(tree_normal(mat,mi,0,0),tree_normal(mat,mi,0,1),tree_normal(mat,mi,0,2),n[0],n[1],n[2]);
+                    real_t d1=tree_dot(tree_normal(mat,mi,1,0),tree_normal(mat,mi,1,1),tree_normal(mat,mi,1,2),n[0],n[1],n[2]);
+                    real_t d2=tree_dot(tree_normal(mat,mi,2,0),tree_normal(mat,mi,2,1),tree_normal(mat,mi,2,2),n[0],n[1],n[2]);
                     r[i]=fabs(aa[ab+3]*d0)+fabs(aa[ab+4]*d1)+fabs(aa[ab+5]*d2);
                 }else{
                     int adr=sb+18*i+9*j+3*k;
@@ -66,12 +67,12 @@ __device__ inline int tree_obb(const double* aa,int ab0,int ab1,const double* po
     }
     return 1+2*initialize;
 }
-__device__ inline int tree_sphere(int g1,int g2,const double* bound,const int* type,
-                                 const double* pos,const double* mat,int pb,int mb){
+__device__ inline int tree_sphere(int g1,int g2,const real_t* bound,const int* type,
+                                 const real_t* pos,const real_t* mat,int pb,int mb){
     int p1=pb+3*g1,p2=pb+3*g2;
     if(bound[g1]>0&&bound[g2]>0){
-        double radius=bound[g1]+bound[g2];
-        double x=pos[p1]-pos[p2],y=pos[p1+1]-pos[p2+1],z=pos[p1+2]-pos[p2+2];
+        real_t radius=bound[g1]+bound[g2];
+        real_t x=pos[p1]-pos[p2],y=pos[p1+1]-pos[p2+1],z=pos[p1+2]-pos[p2+2];
         if(x*x+y*y+z*z>radius*radius)return 0;
     }
     if(type[g1]==0&&bound[g2]>0){int m=mb+9*g1;
@@ -100,8 +101,8 @@ __device__ inline bool tree_suppressed(int g1,int g2,int merged,int start,int en
     for(int k=start;k<end;++k)if((p1[k]==g1&&p2[k]==g2)||(p1[k]==g2&&p2[k]==g1))return true;
     return false;
 }
-__device__ inline double tree_surface(const double* aa,int b){
-    double x=aa[b+3]-aa[b],y=aa[b+4]-aa[b+1],z=aa[b+5]-aa[b+2];return x*y+y*z+z*x;
+__device__ inline real_t tree_surface(const real_t* aa,int b){
+    real_t x=aa[b+3]-aa[b],y=aa[b+4]-aa[b+1],z=aa[b+5]-aa[b+2];return x*y+y*z+z*x;
 }
 __device__ inline bool tree_pairs_changed_lane(int lane,int npair,
     const int* pair1,const int* pair2,const int* pair_shadow){
@@ -113,11 +114,11 @@ __device__ inline bool tree_pairs_changed_lane(int lane,int npair,
 }
 template<bool Diagnostics>
 __device__ inline void cf_tree_impl(int w,const int* stage,const int* stage_count,const int* active_in,
-    const double* xipos,const double* ximat,const double* geom_pos,const double* geom_mat,
+    const real_t* xipos,const real_t* ximat,const real_t* geom_pos,const real_t* geom_mat,
     const int* body_adr,const int* body_num,const int* geom_adr,const int* geom_num,
-    const int* child,const int* geomid,const double* bvh_aa,const double* geom_aa,
-    const double* rbound,const int* gtype,const int* pair1,const int* pair2,
-    int* stack1,int* stack2,double* product,double* offset,
+    const int* child,const int* geomid,const real_t* bvh_aa,const real_t* geom_aa,
+    const real_t* rbound,const int* gtype,const int* pair1,const int* pair2,
+    int* stack1,int* stack2,real_t* product,real_t* offset,
     int* out_req,int* out_visit,int* out_stack,int* out_leaf,int* out_active,
     int* req_count,int* visit_count,int* stack_count,int* leaf_count,int* status,int* first_stage,
     int stage_slots,int req_slots,int visit_slots,int stack_slots,int leaf_slots,int nbody,int ngeom,
@@ -148,7 +149,7 @@ __device__ inline void cf_tree_impl(int w,const int* stage,const int* stage_coun
     // Every OBB predicate in this world traversal consumes the same body's
     // 36 products and 12 offsets. Keep that state local across visits, then
     // preserve its retained scratch owner once at the ordered exit.
-    double local_product[36],local_offset[12];
+    real_t local_product[36],local_offset[12];
     if(lane==0){
         libero_vec::copy_serial(product+w*36,local_product,36);
         libero_vec::copy_serial(offset+w*12,local_offset,12);

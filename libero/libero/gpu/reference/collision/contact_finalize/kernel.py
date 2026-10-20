@@ -6,6 +6,7 @@ last kernel completes frames and appends in source call order. The only sort
 is within marked mj_collideTree bodypair segments. All buffers are persistent.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -20,11 +21,11 @@ CONTACT_I = 5
 
 
 @wp.kernel(enable_backward=False)
-def _dedup(raw: wp.array(dtype=wp.float64), raw_count: wp.array(dtype=wp.int32),
+def _dedup(raw: wp.array(dtype=scalar.wp_real), raw_count: wp.array(dtype=wp.int32),
            call_count: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
            types: wp.array(dtype=wp.int32), route: wp.array(dtype=wp.int32),
            geom_type: wp.array(dtype=wp.int32), ngeom: int,
-           compact: wp.array(dtype=wp.float64),
+           compact: wp.array(dtype=scalar.wp_real),
            compact_count: wp.array(dtype=wp.int32), keep_index: wp.array(dtype=wp.int32),
            status: wp.array(dtype=wp.int32), pairs: int):
     call = wp.tid()
@@ -35,7 +36,7 @@ def _dedup(raw: wp.array(dtype=wp.float64), raw_count: wp.array(dtype=wp.int32),
     for r in range(MAX_RAW):
         keep_index[call*MAX_RAW+r] = -1
         for k in range(RAW_F):
-            compact[(call*MAX_RAW+r)*RAW_F+k] = wp.float64(0.0)
+            compact[(call*MAX_RAW+r)*RAW_F+k] = scalar.wp_real(0.0)
     if active[world] == 0:
         return
     if active[world] != 1:
@@ -83,7 +84,7 @@ def _dedup(raw: wp.array(dtype=wp.float64), raw_count: wp.array(dtype=wp.int32),
 
 
 @wp.func
-def _sqrt3(x: wp.float64, y: wp.float64, z: wp.float64) -> wp.float64:
+def _sqrt3(x: scalar.wp_real, y: scalar.wp_real, z: scalar.wp_real) -> scalar.wp_real:
     return wp.sqrt((x*x + y*y) + z*z)
 
 
@@ -104,8 +105,8 @@ def _key_lt(ga: wp.int32, ha: wp.int32, gb: wp.int32, hb: wp.int32,
 
 
 @wp.func
-def _copy_contact(dst: wp.int32, src: wp.int32, src_f: wp.array(dtype=wp.float64),
-                  src_i: wp.array(dtype=wp.int32), dst_f: wp.array(dtype=wp.float64),
+def _copy_contact(dst: wp.int32, src: wp.int32, src_f: wp.array(dtype=scalar.wp_real),
+                  src_i: wp.array(dtype=wp.int32), dst_f: wp.array(dtype=scalar.wp_real),
                   dst_i: wp.array(dtype=wp.int32)):
     for k in range(CONTACT_F):
         dst_f[dst*CONTACT_F+k] = src_f[src*CONTACT_F+k]
@@ -117,10 +118,10 @@ def _copy_contact(dst: wp.int32, src: wp.int32, src_f: wp.array(dtype=wp.float64
 def _assemble(compact_count: wp.array(dtype=wp.int32), keep_index: wp.array(dtype=wp.int32),
               call_count: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
               segment: wp.array(dtype=wp.int32), sort_enabled: wp.array(dtype=wp.int32),
-              geom_type: wp.array(dtype=wp.int32), params_f: wp.array(dtype=wp.float64),
+              geom_type: wp.array(dtype=wp.int32), params_f: wp.array(dtype=scalar.wp_real),
               params_i: wp.array(dtype=wp.int32), dedup_status: wp.array(dtype=wp.int32),
-              contact_f: wp.array(dtype=wp.float64), contact_i: wp.array(dtype=wp.int32),
-              scratch_f: wp.array(dtype=wp.float64), scratch_i: wp.array(dtype=wp.int32),
+              contact_f: wp.array(dtype=scalar.wp_real), contact_i: wp.array(dtype=wp.int32),
+              scratch_f: wp.array(dtype=scalar.wp_real), scratch_i: wp.array(dtype=wp.int32),
               ncon: wp.array(dtype=wp.int32), attempts: wp.array(dtype=wp.int32),
               appended: wp.array(dtype=wp.int32), warnings: wp.array(dtype=wp.int32),
               status: wp.array(dtype=wp.int32), pairs: int, capacity: int):
@@ -208,31 +209,31 @@ def _assemble(compact_count: wp.array(dtype=wp.int32), keep_index: wp.array(dtyp
             x1 = params_f[pf+5]
             x2 = params_f[pf+6]
             nx = _sqrt3(x0,x1,x2)
-            if nx < wp.float64(0.5):
+            if nx < scalar.wp_real(0.5):
                 if status[w] == 0:
                     status[w] = 30
                 return
-            if nx < wp.float64(1e-15):
-                x0 = wp.float64(1.0); x1 = wp.float64(0.0); x2 = wp.float64(0.0)
+            if nx < scalar.wp_real(1e-15):
+                x0 = scalar.wp_real(1.0); x1 = scalar.wp_real(0.0); x2 = scalar.wp_real(0.0)
             else:
-                invx = wp.float64(1.0)/nx
+                invx = scalar.wp_real(1.0)/nx
                 x0 *= invx; x1 *= invx; x2 *= invx
             y0 = params_f[pf+7]
             y1 = params_f[pf+8]
             y2 = params_f[pf+9]
-            if _sqrt3(y0,y1,y2) < wp.float64(0.5):
-                y0 = wp.float64(0.0); y1 = wp.float64(0.0); y2 = wp.float64(0.0)
-                if x1 < wp.float64(0.5) and x1 > wp.float64(-0.5):
-                    y1 = wp.float64(1.0)
+            if _sqrt3(y0,y1,y2) < scalar.wp_real(0.5):
+                y0 = scalar.wp_real(0.0); y1 = scalar.wp_real(0.0); y2 = scalar.wp_real(0.0)
+                if x1 < scalar.wp_real(0.5) and x1 > scalar.wp_real(-0.5):
+                    y1 = scalar.wp_real(1.0)
                 else:
-                    y2 = wp.float64(1.0)
+                    y2 = scalar.wp_real(1.0)
             dot = (x0*y0+x1*y1)+x2*y2
             y0 -= x0*dot; y1 -= x1*dot; y2 -= x2*dot
             ny = _sqrt3(y0,y1,y2)
-            if ny < wp.float64(1e-15):
-                y0 = wp.float64(1.0); y1 = wp.float64(0.0); y2 = wp.float64(0.0)
+            if ny < scalar.wp_real(1e-15):
+                y0 = scalar.wp_real(1.0); y1 = scalar.wp_real(0.0); y2 = scalar.wp_real(0.0)
             else:
-                invy = wp.float64(1.0)/ny
+                invy = scalar.wp_real(1.0)/ny
                 y0 *= invy; y1 *= invy; y2 *= invy
             z0 = x1*y2-x2*y1
             z1 = x2*y0-x0*y2
@@ -257,9 +258,9 @@ def _assemble(compact_count: wp.array(dtype=wp.int32), keep_index: wp.array(dtyp
                 contact_f[cf+21+k] = params_f[pf+19+k]
             for k in range(5):
                 contact_f[cf+23+k] = params_f[pf+21+k]
-            contact_f[cf+28] = wp.float64(0.0)
+            contact_f[cf+28] = scalar.wp_real(0.0)
             for k in range(36):
-                contact_f[cf+29+k] = wp.float64(0.0)
+                contact_f[cf+29+k] = scalar.wp_real(0.0)
             for k in range(4):
                 contact_i[ci+k] = params_i[slot*5+k]
             contact_i[ci+4] = -1
@@ -314,7 +315,7 @@ class ContactFinalizeWorkspace:
         self.params = ContactParamsWorkspace(nworld,pairs*MAX_RAW,static,device=device)
         self.geom_type = wp.array(np.ascontiguousarray(geom_type),dtype=wp.int32,device=device)
         n = nworld*pairs
-        self.raw = wp.empty(n*MAX_RAW*RAW_F,dtype=wp.float64,device=device)
+        self.raw = wp.empty(n*MAX_RAW*RAW_F,dtype=scalar.wp_real,device=device)
         self.raw_count = wp.empty(n,dtype=wp.int32,device=device)
         self.call_count = wp.empty(nworld,dtype=wp.int32,device=device)
         self.active = self.params.active
@@ -324,9 +325,9 @@ class ContactFinalizeWorkspace:
         self.compact_count = wp.empty(n,dtype=wp.int32,device=device)
         self.keep_index = wp.empty(n*MAX_RAW,dtype=wp.int32,device=device)
         self.dedup_status = wp.empty(n,dtype=wp.int32,device=device)
-        self.contact_f = wp.empty(nworld*capacity*CONTACT_F,dtype=wp.float64,device=device)
+        self.contact_f = wp.empty(nworld*capacity*CONTACT_F,dtype=scalar.wp_real,device=device)
         self.contact_i = wp.empty(nworld*capacity*CONTACT_I,dtype=wp.int32,device=device)
-        self.scratch_f = wp.empty(nworld*capacity*CONTACT_F,dtype=wp.float64,device=device)
+        self.scratch_f = wp.empty(nworld*capacity*CONTACT_F,dtype=scalar.wp_real,device=device)
         self.scratch_i = wp.empty(nworld*capacity*CONTACT_I,dtype=wp.int32,device=device)
         self.ncon = wp.empty(nworld,dtype=wp.int32,device=device)
         self.attempts = wp.empty(n,dtype=wp.int32,device=device)

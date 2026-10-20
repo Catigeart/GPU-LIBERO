@@ -1,4 +1,5 @@
 """Exact raw-model diagnostic assembly; all dynamic forward operands are GPU-produced."""
+import libero.gpu.precision as scalar
 from pathlib import Path
 from types import SimpleNamespace
 import importlib
@@ -98,7 +99,7 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
         actual_model = Path(intake['model_record']['path'])
         d.qpos.assign(state['qpos']);d.qvel.assign(state['qvel'])
         d.qfrc_applied.assign(state['qfrc_applied']);d.xfrc_applied.assign(state['xfrc_applied'])
-        ctrl = wp.array(state['ctrl'],dtype=wp.float64,device=device)
+        ctrl = wp.array(state['ctrl'],dtype=scalar.wp_real,device=device)
         forward_plan = wp.zeros(W,dtype=wp.int64,device=device)
         f = FoundationForwardAdapter(d,mask=fmask,expected_state_epoch=expected_state,
             state_valid=state_valid,nq=runtime_shape.nq,nv=runtime_shape.nv,source_records=intake['kwargs']['source_records'],stream=stream)
@@ -141,7 +142,7 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                         qpos=d.qpos,cdof=cdof,subtree_com=subtree),
             lambda:dict(qvel=d.qvel,qvel_epoch=d.written['velocity'],expected_qvel_epoch=forward_plan))
         qm = pos.mass.mass.qm.reshape((W,runtime_shape.nM))
-        warm = wp.array(state['qacc_warmstart'],dtype=wp.float64,device=device)
+        warm = wp.array(state['qacc_warmstart'],dtype=scalar.wp_real,device=device)
         n = newton_factory(model_path=actual_model,model_spec=spec,rows=R,contacts=C,nworld=W,
             build_root=build/'n-native',mode=mode,device=device,
             live_inputs=dict(J=sw.efc_J.reshape((W,R,runtime_shape.nv)),aref=sw.efc_aref.reshape((W,R)),
@@ -207,7 +208,7 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
             physics.scope_gaps.remove('robot_controller')
         e = GenericEulerWorkspace(model,W,device=device,mode=mode)
         e.qpos,e.qvel = d.qpos,d.qvel
-        e.time = wp.array(state['time'],dtype=wp.float64,device=device)
+        e.time = wp.array(state['time'],dtype=scalar.wp_real,device=device)
         e.qM,e.qfrc_smooth = qm,d.public['qfrc_smooth']
         e.qacc,e.qfrc_constraint = public['qacc'],public['qfrc_constraint']
         e.ctrl,e.qacc_warmstart,e.sensordata = physics.ctrl,public['qacc_warmstart'],post.public['sensor']

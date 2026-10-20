@@ -6,6 +6,7 @@ and src/engine/engine_util_blas.c helpers (Apache-2.0). This stops before
 cross-axis SAT; a nonseparated face prefix is not a collision decision.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -22,15 +23,15 @@ NONFINITE_ERROR = 4
 
 @wp.kernel
 def _face_prefix(
-    size: wp.array(dtype=wp.float64, ndim=2),
+    size: wp.array(dtype=scalar.wp_real, ndim=2),
     kind: wp.array(dtype=wp.int32, ndim=1),
-    xpos: wp.array(dtype=wp.float64, ndim=3),
-    xmat: wp.array(dtype=wp.float64, ndim=3),
+    xpos: wp.array(dtype=scalar.wp_real, ndim=3),
+    xmat: wp.array(dtype=scalar.wp_real, ndim=3),
     pair_ids: wp.array(dtype=wp.int32, ndim=3),
     pair_count: wp.array(dtype=wp.int32, ndim=1),
-    margin: wp.array(dtype=wp.float64, ndim=2),
+    margin: wp.array(dtype=scalar.wp_real, ndim=2),
     active: wp.array(dtype=wp.int32, ndim=1),
-    out: wp.array(dtype=wp.float64, ndim=3),
+    out: wp.array(dtype=scalar.wp_real, ndim=3),
     route: wp.array(dtype=wp.int32, ndim=3),
     state: wp.array(dtype=wp.int32, ndim=3),
     geom_count: int,
@@ -40,7 +41,7 @@ def _face_prefix(
     w = t // pair_capacity
     q = t - w * pair_capacity
     for j in range(55):
-        out[w, q, j] = wp.float64(0.0)
+        out[w, q, j] = scalar.wp_real(0.0)
     route[w, q, 0] = -1
     route[w, q, 1] = -1
     state[w, q, 0] = 0
@@ -66,13 +67,13 @@ def _face_prefix(
         return
     route[w, q, 0] = g1
     route[w, q, 1] = g2
-    if not wp.isfinite(margin[w, q]) or margin[w, q] < wp.float64(0.0):
+    if not wp.isfinite(margin[w, q]) or margin[w, q] < scalar.wp_real(0.0):
         state[w, q, 4] = NONFINITE_ERROR
         route[w, q, 0] = -1
         route[w, q, 1] = -1
         return
     for j in range(3):
-        if not wp.isfinite(size[g1, j]) or not wp.isfinite(size[g2, j]) or size[g1, j] <= wp.float64(0.0) or size[g2, j] <= wp.float64(0.0) or not wp.isfinite(xpos[w, g1, j]) or not wp.isfinite(xpos[w, g2, j]):
+        if not wp.isfinite(size[g1, j]) or not wp.isfinite(size[g2, j]) or size[g1, j] <= scalar.wp_real(0.0) or size[g2, j] <= scalar.wp_real(0.0) or not wp.isfinite(xpos[w, g1, j]) or not wp.isfinite(xpos[w, g2, j]):
             state[w, q, 4] = NONFINITE_ERROR
             route[w, q, 0] = -1
             route[w, q, 1] = -1
@@ -100,7 +101,7 @@ def _face_prefix(
     for i in range(3):
         for j in range(3):
             factor = xmat[w, g1, 3 * i + j]
-            if factor != wp.float64(0.0):
+            if factor != scalar.wp_real(0.0):
                 for k in range(3):
                     idx = 6 + 3 * j + k
                     out[w, q, idx] = out[w, q, idx] + xmat[w, g2, 3 * i + k] * factor
@@ -115,7 +116,7 @@ def _face_prefix(
         out[w, q, 45 + j] = (out[w, q, 24 + j] * size[g1, 0] + out[w, q, 27 + j] * size[g1, 1]) + out[w, q, 30 + j] * size[g1, 2]
     penetration = margin[w, q]
     for i in range(3):
-        penetration = penetration + (size[g1, i] * wp.float64(3.0) + size[g2, i] * wp.float64(3.0))
+        penetration = penetration + (size[g1, i] * scalar.wp_real(3.0) + size[g2, i] * scalar.wp_real(3.0))
     code = int(-1)
     for i in range(3):
         c1 = (-wp.abs(out[w, q, i]) + size[g1, i]) + out[w, q, 42 + i]
@@ -130,13 +131,13 @@ def _face_prefix(
         if c1 < penetration:
             penetration = c1
             side = int(0)
-            if out[w, q, i] < wp.float64(0.0):
+            if out[w, q, i] < scalar.wp_real(0.0):
                 side = 1
             code = i + 3 * side
         if c2 < penetration:
             penetration = c2
             side = int(0)
-            if out[w, q, 3 + i] < wp.float64(0.0):
+            if out[w, q, 3 + i] < scalar.wp_real(0.0):
                 side = 1
             code = i + 3 * side + 6
     out[w, q, 54] = penetration
@@ -200,15 +201,15 @@ class BoxBoxFaceWorkspace:
         self.n, self.g, self.p, self.device = n, len(size), p, device
         self.host_geom_size = size.copy()
         self.host_geom_type = kind.copy()
-        self.geom_size = wp.array(size, dtype=wp.float64, device=device)
+        self.geom_size = wp.array(size, dtype=scalar.wp_real, device=device)
         self.geom_type = wp.array(kind, dtype=wp.int32, device=device)
-        self.geom_xpos = wp.empty((n,self.g,3), dtype=wp.float64, device=device)
-        self.geom_xmat = wp.empty((n,self.g,9), dtype=wp.float64, device=device)
+        self.geom_xpos = wp.empty((n,self.g,3), dtype=scalar.wp_real, device=device)
+        self.geom_xmat = wp.empty((n,self.g,9), dtype=scalar.wp_real, device=device)
         self.pair_geom_ids = wp.empty((n,p,2), dtype=wp.int32, device=device)
         self.pair_count = wp.empty((n,), dtype=wp.int32, device=device)
-        self.margin = wp.empty((n,p), dtype=wp.float64, device=device)
+        self.margin = wp.empty((n,p), dtype=scalar.wp_real, device=device)
         self.active_world = wp.empty((n,), dtype=wp.int32, device=device)
-        self.out = wp.empty((n,p,55), dtype=wp.float64, device=device)
+        self.out = wp.empty((n,p,55), dtype=scalar.wp_real, device=device)
         self.route = wp.empty((n,p,2), dtype=wp.int32, device=device)
         self.state = wp.empty((n,p,5), dtype=wp.int32, device=device)
 

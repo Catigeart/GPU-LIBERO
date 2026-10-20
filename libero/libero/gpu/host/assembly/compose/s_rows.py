@@ -4,6 +4,7 @@ Each combined stage owns an entire world's rows. The original arithmetic,
 validation, prefix writes and stage-local returns are retained by compose.
 Works with both the original workspace and native-dimension generated types.
 """
+import libero.gpu.precision as scalar
 import ast
 import copy
 import hashlib
@@ -33,8 +34,8 @@ class _SegmentOperands(ast.NodeTransformer):
         replacements = {'self': 'self.' + self.segment,
                         's': 'self.' + self.segment + '.static'}
         if self.segment == 's03':
-            replacements.update(timestep='wp.float64(self.s03.timestep)',
-                                impratio='wp.float64(self.s03.impratio)',
+            replacements.update(timestep='scalar.wp_real(self.s03.timestep)',
+                                impratio='scalar.wp_real(self.s03.impratio)',
                                 refsafe='int(self.s03.refsafe)')
         if node.id in replacements:
             return ast.parse(replacements[node.id], mode='eval').body

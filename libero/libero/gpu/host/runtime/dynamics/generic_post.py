@@ -4,6 +4,7 @@ Preparation creates work arrays only. Caller then binds all true D/C/S/N input
 owners through RuntimePostAdapter and calls freeze_bindings exactly once before
 any launch. Durable public values remain separate in that publication adapter.
 """
+import libero.gpu.precision as scalar
 from types import SimpleNamespace
 import numpy as np
 import warp as wp
@@ -39,23 +40,23 @@ class GenericPostWorkspace:
         for name,key in (('parent','body_parentid'),('dofadr','body_dofadr'),('dofnum','body_dofnum'),
                          ('root','body_rootid'),('geom_body','geom_bodyid')):
             setattr(self,name,wp.array(s[key],dtype=wp.int32,device=self.device))
-        self.gravity=wp.array(np.asarray(o['gravity'],np.float64),dtype=wp.float64,device=self.device)
-        schema={'active':((n,),wp.int32),'qvel':((n,v),wp.float64),'qacc':((n,v),wp.float64),
-            'cinert':((n,10*b),wp.float64),'cvel':((n,6*b),wp.float64),'cdof':((n,6*v),wp.float64),
-            'cdof_dot':((n,6*v),wp.float64),'xipos':((n,b,3),wp.float64),'subtree_com':((n,b,3),wp.float64),
-            'xfrc_applied':((n,6*b),wp.float64),'efc_force':((n,e),wp.float64),
+        self.gravity=wp.array(np.asarray(o['gravity'],np.float64),dtype=scalar.wp_real,device=self.device)
+        schema={'active':((n,),wp.int32),'qvel':((n,v),scalar.wp_real),'qacc':((n,v),scalar.wp_real),
+            'cinert':((n,10*b),scalar.wp_real),'cvel':((n,6*b),scalar.wp_real),'cdof':((n,6*v),scalar.wp_real),
+            'cdof_dot':((n,6*v),scalar.wp_real),'xipos':((n,b,3),scalar.wp_real),'subtree_com':((n,b,3),scalar.wp_real),
+            'xfrc_applied':((n,6*b),scalar.wp_real),'efc_force':((n,e),scalar.wp_real),
             'ncon':((n,),wp.int32),'nefc':((n,),wp.int32),'ne':((n,),wp.int32),
-            'contact_frame':((n,c*9),wp.float64),'contact_pos':((n,c*3),wp.float64),
-            'site_xpos':((n,self.nsite,3),wp.float64),'site_xmat':((n,self.nsite,9),wp.float64)}
+            'contact_frame':((n,c*9),scalar.wp_real),'contact_pos':((n,c*3),scalar.wp_real),
+            'site_xpos':((n,self.nsite,3),scalar.wp_real),'site_xmat':((n,self.nsite,9),scalar.wp_real)}
         for key in ('dim','efc_address','geom1','geom2'):schema['contact_'+key]=((n,c),wp.int32)
         for name,(shape,dtype) in schema.items():setattr(self,name,wp.zeros(shape,dtype=dtype,device=self.device))
-        self.cacc=wp.zeros((n,6*b),dtype=wp.float64,device=self.device)
-        self.cfrc_ext=wp.zeros((n,6*b),dtype=wp.float64,device=self.device)
-        self.cfrc_int=wp.zeros((n,b,6),dtype=wp.float64,device=self.device)
-        self.contact_force=wp.zeros((n,c,6),dtype=wp.float64,device=self.device)
+        self.cacc=wp.zeros((n,6*b),dtype=scalar.wp_real,device=self.device)
+        self.cfrc_ext=wp.zeros((n,6*b),dtype=scalar.wp_real,device=self.device)
+        self.cfrc_int=wp.zeros((n,b,6),dtype=scalar.wp_real,device=self.device)
+        self.contact_force=wp.zeros((n,c,6),dtype=scalar.wp_real,device=self.device)
         self.status=wp.zeros(n,dtype=wp.int32,device=self.device)
         self.sensor=SimpleNamespace(cfrc=self.cfrc_int,com=self.subtree_com,site_pos=self.site_xpos,
-            site_mat=self.site_xmat,active=self.active,result=wp.zeros((n,6),dtype=wp.float64,device=self.device),
+            site_mat=self.site_xmat,active=self.active,result=wp.zeros((n,6),dtype=scalar.wp_real,device=self.device),
             status=wp.zeros(n,dtype=wp.int32,device=self.device))
         for name,key in (('sensor_type','sensor_type'),('sensor_site','sensor_objid'),('sensor_adr','sensor_adr'),
                          ('site_body','site_bodyid'),('body_root','body_rootid')):

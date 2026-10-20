@@ -4,6 +4,7 @@ Structural and cone safety guards and all update arithmetic retain source
 AST/order. A row/column rank preserves the original finite error priority;
 any finite error precedes envelope errors. No production qualification.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 import ast
 import copy
@@ -16,9 +17,9 @@ import warp as wp
 
 @wp.kernel(enable_backward=False)
 def _finite_cap(active: wp.array(dtype=wp.int32), structural: wp.array(dtype=wp.int32),
-    count: wp.array(dtype=wp.int32), jar: wp.array(dtype=wp.float64),
-    D: wp.array(dtype=wp.float64), R: wp.array(dtype=wp.float64), loss: wp.array(dtype=wp.float64),
-    J: wp.array(dtype=wp.float64), first: wp.array(dtype=wp.int32),
+    count: wp.array(dtype=wp.int32), jar: wp.array(dtype=scalar.wp_real),
+    D: wp.array(dtype=scalar.wp_real), R: wp.array(dtype=scalar.wp_real), loss: wp.array(dtype=scalar.wp_real),
+    J: wp.array(dtype=scalar.wp_real), first: wp.array(dtype=wp.int32),
     envelope: wp.array(dtype=wp.int32), rows: int, nv: int):
     tid=wp.tid()
     w=tid//rows
@@ -33,9 +34,9 @@ def _finite_cap(active: wp.array(dtype=wp.int32), structural: wp.array(dtype=wp.
     for j in range(nv):
         if not wp.isfinite(J[row*nv+j]):
             wp.atomic_min(first,w,base+j+1)
-    cap=wp.float64(10000.0)
-    lower=wp.float64(-10000.0)
-    d_cap=wp.float64(2.0e16)
+    cap=scalar.wp_real(10000.0)
+    lower=scalar.wp_real(-10000.0)
+    d_cap=scalar.wp_real(2.0e16)
     if (jar[row]>cap or jar[row]<lower or D[row]>d_cap or D[row]<lower or
             R[row]>cap or R[row]<lower or loss[row]>cap or loss[row]<lower):
         wp.atomic_or(envelope,w,1)

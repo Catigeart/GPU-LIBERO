@@ -1,5 +1,6 @@
 """D01 prepare-time model rejection and device-resident camlight workspace."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import hashlib
 import json
@@ -81,14 +82,14 @@ class CamlightWorkspace:
             arr=model.arrays[name].reshape(-1)
             if arr.size==0:
                 arr=np.zeros(1,dtype=arr.dtype)  # inaccessible static padding for empty model
-            setattr(m,name,wp.array(arr,dtype=wp.int32 if name.endswith('id') else wp.float64,device=device))
+            setattr(m,name,wp.array(arr,dtype=wp.int32 if name.endswith('id') else scalar.wp_real,device=device))
         m.nbody=n.nbody;m.ncam=n.ncam;m.nlight=n.nlight;self.static=m
         d=Data()
         d.active=wp.zeros(capacity,dtype=wp.int32,device=device)
         for name,cols in (('body_xpos',3*n.nbody),('body_xquat',4*n.nbody),('body_xmat',9*n.nbody),
                           ('cam_xpos',3*n.ncam),('cam_xmat',9*n.ncam),('light_xpos',3*n.nlight),
                           ('light_xdir',3*n.nlight),('cam_tmpquat',4*n.ncam),('light_raw_dir',3*n.nlight),('light_norm',n.nlight)):
-            setattr(d,name,wp.zeros((capacity,max(1,cols)),dtype=wp.float64,device=device))
+            setattr(d,name,wp.zeros((capacity,max(1,cols)),dtype=scalar.wp_real,device=device))
         for name,cols in (('cam_identity',n.ncam),('light_identity',n.nlight),('light_norm_branch',n.nlight)):
             setattr(d,name,wp.zeros((capacity,max(1,cols)),dtype=wp.int32,device=device))
         d.status=wp.zeros(capacity,dtype=wp.int32,device=device)
@@ -111,7 +112,7 @@ class CamlightWorkspace:
                 raise ValueError('input schema '+name)
             dst=self.active if name=='active' else getattr(self,'body_'+name)
             payload=np.ascontiguousarray(value.reshape((self.capacity,-1)) if name!='active' else value)
-            wp.copy(dst,wp.array(payload,dtype=wp.int32 if name=='active' else wp.float64,device=self.device))
+            wp.copy(dst,wp.array(payload,dtype=wp.int32 if name=='active' else scalar.wp_real,device=self.device))
 
     def download(self):
         """Diagnostic transfer outside the production interval."""

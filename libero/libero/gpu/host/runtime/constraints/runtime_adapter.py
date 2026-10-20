@@ -5,6 +5,7 @@ allocates arrays, calls upload_inputs, or fabricates producer clocks. Admission
 (position/C/F currentness) belongs to the upstream device gate supplying active.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import numpy as np
 import warp as wp
 from .identity import NQ, NV, NBODY, MJB_SHA256
@@ -56,7 +57,7 @@ class ResidentConstraintRuntime:
         self._stage_methods = tuple(stage.launch.__func__ for stage in (workspace.s01,workspace.s02,workspace.s03))
         self._stage_config = self._configs()
         N, R, C = self._capacities
-        I, F = wp.int32, wp.float64
+        I, F = wp.int32, scalar.wp_real
         self._specs = dict(active=((N,), I), ncon=((N,), I), qpos=((N, NQ), F),
                            cdof=((N, NV, 6), F), subtree_com=((N, NBODY, 3), F))
         for key in ('geom1', 'geom2', 'dim', 'exclude'):

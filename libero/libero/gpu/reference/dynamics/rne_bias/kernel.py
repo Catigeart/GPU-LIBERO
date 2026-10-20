@@ -1,4 +1,5 @@
 """Source-ordered MuJoCo 2.3.7 mj_rne(flg_acc=0), Apache-2.0."""
+import libero.gpu.precision as scalar
 from dataclasses import dataclass
 import numpy as np
 import warp as wp
@@ -44,10 +45,10 @@ class RNEBiasModel:
                 if np.any(db[a:a+c]!=i):raise ValueError('dof body mismatch')
         if np.any(covered!=1):raise ValueError('dof coverage')
         return cls(nb,nv,*(wp.array(x,dtype=wp.int32,device=device) for x in (bp,ba,bn,db)),
-                   wp.array(gravity,dtype=wp.float64,device=device),int(disabled[0]))
+                   wp.array(gravity,dtype=scalar.wp_real,device=device),int(disabled[0]))
 
 @wp.func
-def _dot6(dof:wp.array2d(dtype=wp.float64),frc:wp.array2d(dtype=wp.float64),w:int,d:int,b:int)->wp.float64:
+def _dot6(dof:wp.array2d(dtype=scalar.wp_real),frc:wp.array2d(dtype=scalar.wp_real),w:int,d:int,b:int)->scalar.wp_real:
     p0=dof[w,6*d]*frc[w,6*b]
     p1=dof[w,6*d+1]*frc[w,6*b+1]
     p2=dof[w,6*d+2]*frc[w,6*b+2]
@@ -57,17 +58,17 @@ def _dot6(dof:wp.array2d(dtype=wp.float64),frc:wp.array2d(dtype=wp.float64),w:in
     return ((p0+p2)+(p1+p3))+(p4+p5)
 
 @wp.kernel
-def _rne_bias(active:wp.array(dtype=wp.int32),cdof_dot:wp.array2d(dtype=wp.float64),
-              qvel:wp.array2d(dtype=wp.float64),cinert:wp.array2d(dtype=wp.float64),
-              cvel:wp.array2d(dtype=wp.float64),cdof:wp.array2d(dtype=wp.float64),
+def _rne_bias(active:wp.array(dtype=wp.int32),cdof_dot:wp.array2d(dtype=scalar.wp_real),
+              qvel:wp.array2d(dtype=scalar.wp_real),cinert:wp.array2d(dtype=scalar.wp_real),
+              cvel:wp.array2d(dtype=scalar.wp_real),cdof:wp.array2d(dtype=scalar.wp_real),
               bp:wp.array(dtype=wp.int32),ba:wp.array(dtype=wp.int32),bn:wp.array(dtype=wp.int32),
-              db:wp.array(dtype=wp.int32),gravity:wp.array(dtype=wp.float64),disabled:int,
-              nb:int,nv:int,cacc:wp.array2d(dtype=wp.float64),frc:wp.array2d(dtype=wp.float64),
-              result:wp.array2d(dtype=wp.float64),status:wp.array(dtype=wp.int32)):
+              db:wp.array(dtype=wp.int32),gravity:wp.array(dtype=scalar.wp_real),disabled:int,
+              nb:int,nv:int,cacc:wp.array2d(dtype=scalar.wp_real),frc:wp.array2d(dtype=scalar.wp_real),
+              result:wp.array2d(dtype=scalar.wp_real),status:wp.array(dtype=wp.int32)):
     w=wp.tid();status[w]=0
     for k in range(nb*6):
-        cacc[w,k]=wp.float64(0.0);frc[w,k]=wp.float64(0.0)
-    for k in range(nv):result[w,k]=wp.float64(0.0)
+        cacc[w,k]=scalar.wp_real(0.0);frc[w,k]=scalar.wp_real(0.0)
+    for k in range(nv):result[w,k]=scalar.wp_real(0.0)
     if active[w]==0:return
     if active[w]!=1:status[w]=1;return
     for k in range(nv*6):
@@ -79,12 +80,12 @@ def _rne_bias(active:wp.array(dtype=wp.int32),cdof_dot:wp.array2d(dtype=wp.float
     for k in range(nb*6):
         if not wp.isfinite(cvel[w,k]):status[w]=2;return
     if disabled==0:
-        for k in range(3):cacc[w,3+k]=gravity[k]*wp.float64(-1.0)
+        for k in range(3):cacc[w,3+k]=gravity[k]*scalar.wp_real(-1.0)
     for i in range(1,nb):
         adr=ba[i];count=bn[i]
         # mju_mulDofVec: n=0 zero, n=1 scale, n>1 row-wise zero-skip accumulation.
-        t0,t1,t2=wp.float64(0.0),wp.float64(0.0),wp.float64(0.0)
-        t3,t4,t5=wp.float64(0.0),wp.float64(0.0),wp.float64(0.0)
+        t0,t1,t2=scalar.wp_real(0.0),scalar.wp_real(0.0),scalar.wp_real(0.0)
+        t3,t4,t5=scalar.wp_real(0.0),scalar.wp_real(0.0),scalar.wp_real(0.0)
         if count==1:
             q=qvel[w,adr];d=6*adr
             t0=cdof_dot[w,d]*q;t1=cdof_dot[w,d+1]*q;t2=cdof_dot[w,d+2]*q
@@ -92,7 +93,7 @@ def _rne_bias(active:wp.array(dtype=wp.int32),cdof_dot:wp.array2d(dtype=wp.float
         elif count>1:
             for j in range(count):
                 q=qvel[w,adr+j]
-                if q!=wp.float64(0.0):
+                if q!=scalar.wp_real(0.0):
                     d=6*(adr+j)
                     t0+=cdof_dot[w,d]*q;t1+=cdof_dot[w,d+1]*q;t2+=cdof_dot[w,d+2]*q
                     t3+=cdof_dot[w,d+3]*q;t4+=cdof_dot[w,d+4]*q;t5+=cdof_dot[w,d+5]*q
@@ -131,16 +132,16 @@ def _rne_bias(active:wp.array(dtype=wp.int32),cdof_dot:wp.array2d(dtype=wp.float
         if not wp.isfinite(result[w,k]):status[w]=3
     if status[w]==3:
         for k in range(nb*6):
-            cacc[w,k]=wp.float64(0.0);frc[w,k]=wp.float64(0.0)
-        for k in range(nv):result[w,k]=wp.float64(0.0)
+            cacc[w,k]=scalar.wp_real(0.0);frc[w,k]=scalar.wp_real(0.0)
+        for k in range(nv):result[w,k]=scalar.wp_real(0.0)
 
 def launch(model,active,cdof_dot,qvel,cinert,cvel,cdof,cacc,frc,result,status,stream=None):
     n=active.shape[0]
-    schema=((active,(n,),wp.int32),(cdof_dot,(n,model.nv*6),wp.float64),
-            (qvel,(n,model.nv),wp.float64),(cinert,(n,model.nbody*10),wp.float64),
-            (cvel,(n,model.nbody*6),wp.float64),(cdof,(n,model.nv*6),wp.float64),
-            (cacc,(n,model.nbody*6),wp.float64),(frc,(n,model.nbody*6),wp.float64),
-            (result,(n,model.nv),wp.float64),(status,(n,),wp.int32))
+    schema=((active,(n,),wp.int32),(cdof_dot,(n,model.nv*6),scalar.wp_real),
+            (qvel,(n,model.nv),scalar.wp_real),(cinert,(n,model.nbody*10),scalar.wp_real),
+            (cvel,(n,model.nbody*6),scalar.wp_real),(cdof,(n,model.nv*6),scalar.wp_real),
+            (cacc,(n,model.nbody*6),scalar.wp_real),(frc,(n,model.nbody*6),scalar.wp_real),
+            (result,(n,model.nv),scalar.wp_real),(status,(n,),wp.int32))
     for a,shape,dtype in schema:
         if a.shape!=shape or a.dtype!=dtype or not a.device.is_cuda:raise ValueError(f'invalid device array: {shape}/{dtype}')
     wp.launch(_rne_bias,dim=n,inputs=[active,cdof_dot,qvel,cinert,cvel,cdof,model.body_parent,

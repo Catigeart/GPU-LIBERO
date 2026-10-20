@@ -7,6 +7,7 @@ or Jacobian values are used in production.
 """
 
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -20,7 +21,7 @@ BAD_OFFSET = 3
 BAD_CONTACT = 4
 BAD_NUMERIC = 5
 CAPACITY = 6
-SAFE_MAGNITUDE = wp.float64(1.0e100)
+SAFE_MAGNITUDE = scalar.wp_real(scalar.safe_magnitude)
 
 
 class ContactStatic:
@@ -90,10 +91,10 @@ def _preflight(
     ncon: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32),
     capacity: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
     geom1: wp.array2d(dtype=wp.int32), geom2: wp.array2d(dtype=wp.int32),
-    pos: wp.array3d(dtype=wp.float64), frame: wp.array3d(dtype=wp.float64),
-    dist: wp.array2d(dtype=wp.float64), margin: wp.array2d(dtype=wp.float64),
+    pos: wp.array3d(dtype=scalar.wp_real), frame: wp.array3d(dtype=scalar.wp_real),
+    dist: wp.array2d(dtype=scalar.wp_real), margin: wp.array2d(dtype=scalar.wp_real),
     dim: wp.array2d(dtype=wp.int32), exclude: wp.array2d(dtype=wp.int32),
-    cdof: wp.array3d(dtype=wp.float64), subtree: wp.array3d(dtype=wp.float64),
+    cdof: wp.array3d(dtype=scalar.wp_real), subtree: wp.array3d(dtype=scalar.wp_real),
     geom_body: wp.array(dtype=wp.int32), rowstart: wp.array2d(dtype=wp.int32),
     local_count: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
     maxcon: int, maxrows: int, nv: int, nbody: int, ngeom: int,
@@ -166,13 +167,13 @@ def _preflight(
 
 @wp.func
 def _body_component(
-    cdof: wp.array3d(dtype=wp.float64), subtree: wp.array3d(dtype=wp.float64),
-    pos: wp.array3d(dtype=wp.float64), roots: wp.array(dtype=wp.int32),
+    cdof: wp.array3d(dtype=scalar.wp_real), subtree: wp.array3d(dtype=scalar.wp_real),
+    pos: wp.array3d(dtype=scalar.wp_real), roots: wp.array(dtype=wp.int32),
     ancestor: wp.array2d(dtype=wp.int32),
     w: int, c: int, body: int, j: int, component: int, rotation: int,
-) -> wp.float64:
+) -> scalar.wp_real:
     if ancestor[body, j] == 0:
-        return wp.float64(0.0)
+        return scalar.wp_real(0.0)
     if rotation == 1:
         return cdof[w, j, component]
     root = roots[body]
@@ -193,15 +194,15 @@ def _body_component(
 def _jacobian_rows(
     ncon: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
     geom1: wp.array2d(dtype=wp.int32), geom2: wp.array2d(dtype=wp.int32),
-    pos: wp.array3d(dtype=wp.float64), frame: wp.array3d(dtype=wp.float64),
+    pos: wp.array3d(dtype=scalar.wp_real), frame: wp.array3d(dtype=scalar.wp_real),
     dim: wp.array2d(dtype=wp.int32), exclude: wp.array2d(dtype=wp.int32),
-    cdof: wp.array3d(dtype=wp.float64), subtree: wp.array3d(dtype=wp.float64),
+    cdof: wp.array3d(dtype=scalar.wp_real), subtree: wp.array3d(dtype=scalar.wp_real),
     geom_body: wp.array(dtype=wp.int32), roots: wp.array(dtype=wp.int32),
     ancestor: wp.array2d(dtype=wp.int32), rowstart: wp.array2d(dtype=wp.int32),
-    status: wp.array(dtype=wp.int32), J: wp.array3d(dtype=wp.float64),
-    jac1p: wp.array4d(dtype=wp.float64), jac2p: wp.array4d(dtype=wp.float64),
-    difp: wp.array4d(dtype=wp.float64), jac1r: wp.array4d(dtype=wp.float64),
-    jac2r: wp.array4d(dtype=wp.float64), difr: wp.array4d(dtype=wp.float64),
+    status: wp.array(dtype=wp.int32), J: wp.array3d(dtype=scalar.wp_real),
+    jac1p: wp.array4d(dtype=scalar.wp_real), jac2p: wp.array4d(dtype=scalar.wp_real),
+    difp: wp.array4d(dtype=scalar.wp_real), jac1r: wp.array4d(dtype=scalar.wp_real),
+    jac2r: wp.array4d(dtype=scalar.wp_real), difr: wp.array4d(dtype=scalar.wp_real),
     maxcon: int, nv: int,
 ):
     w, c, j = wp.tid()
@@ -235,10 +236,10 @@ def _jacobian_rows(
         if row >= 3:
             rotation = 1
             frame_row = row - 3
-        value = wp.float64(0.0)
+        value = scalar.wp_real(0.0)
         for k in range(3):
             coeff = frame[w, c, frame_row * 3 + k]
-            if coeff != wp.float64(0.0):
+            if coeff != scalar.wp_real(0.0):
                 difference = difp[w, c, k, j]
                 if rotation == 1:
                     difference = difr[w, c, k, j]
@@ -250,12 +251,12 @@ def _jacobian_rows(
 def _metadata(
     ncon: wp.array(dtype=wp.int32), incoming: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32), dim: wp.array2d(dtype=wp.int32),
-    exclude: wp.array2d(dtype=wp.int32), dist: wp.array2d(dtype=wp.float64),
-    margin: wp.array2d(dtype=wp.float64), rowstart: wp.array2d(dtype=wp.int32),
+    exclude: wp.array2d(dtype=wp.int32), dist: wp.array2d(dtype=scalar.wp_real),
+    margin: wp.array2d(dtype=scalar.wp_real), rowstart: wp.array2d(dtype=wp.int32),
     local_count: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
     out_address: wp.array2d(dtype=wp.int32), out_exclude: wp.array2d(dtype=wp.int32),
-    out_pos: wp.array2d(dtype=wp.float64), out_margin: wp.array2d(dtype=wp.float64),
-    out_frictionloss: wp.array2d(dtype=wp.float64),
+    out_pos: wp.array2d(dtype=scalar.wp_real), out_margin: wp.array2d(dtype=scalar.wp_real),
+    out_frictionloss: wp.array2d(dtype=scalar.wp_real),
     out_type: wp.array2d(dtype=wp.int32), out_id: wp.array2d(dtype=wp.int32),
     outgoing: wp.array(dtype=wp.int32), nv: int,
 ):
@@ -280,14 +281,14 @@ def _metadata(
         if row >= d:
             break
         r = start + row
-        value = wp.float64(0.0)
-        gap = wp.float64(0.0)
+        value = scalar.wp_real(0.0)
+        gap = scalar.wp_real(0.0)
         if row == 0:
             value = dist[w, c]
             gap = margin[w, c]
         out_pos[w, r] = value
         out_margin[w, r] = gap
-        out_frictionloss[w, r] = wp.float64(0.0)
+        out_frictionloss[w, r] = scalar.wp_real(0.0)
         out_type[w, r] = kind
         out_id[w, r] = c
 
@@ -310,7 +311,7 @@ class ContactWorkspace:
         self.static = static
         self.nworld, self.maxcon, self.maxrows = nworld, maxcon, maxrows
         N, C, R, V, B = nworld, maxcon, maxrows, max(static.nv, 1), static.nbody
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         self.geom_body = wp.array(static.arrays['geom_bodyid'], dtype=I, device=self.device)
         self.roots = wp.array(static.arrays['body_rootid'], dtype=I, device=self.device)
         self.ancestor = wp.array(static.ancestor_mask, dtype=I, device=self.device)

@@ -1,7 +1,7 @@
 """P06-D staged dynamics: position/velocity/bias/control/actuation/acceleration.
 
 This namespace owns the staged entry points that compose the accepted Phase05
-device chains into the MuJoCo 2.3.7 forward-stage boundaries.  Production
+device chains into the MuJoCo REAL_C(2.3)REAL_C(.7) forward-stage boundaries.  Production
 kernels keep the accepted source order (engine_forward.c SHA
 d8957dc8c2b2aa7ac690ab56e7425deb7632e5df40c609cf9914ab44553c51d5).  The
 accepted D09 smooth kernel is retained unchanged; the nonzero-xfrc acceleration

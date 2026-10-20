@@ -5,6 +5,7 @@ the task's official initialization bank (or a supplied bank); it never construct
 singleton physics environments. Goal logic/render packaging runs on the host at
 action boundaries. All worlds' physics advances in one native batch.
 """
+import libero.gpu.precision as scalar
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from threading import RLock
@@ -103,9 +104,27 @@ class GpuBatchEnv:
     ``ready_session`` explicitly reuses one fully qualified, immutable build in
     this process. Create it with host.build.aot.qualify_ready_session(); the
     default independent construction retains full artifact hash validation.
+    ``physics_engine='auto'`` selects native CUDA for FP64 and MJWarp for FP32.
+    Explicit ``physics_engine='native'`` retains the handwritten FP32 backend.
     """
     physics_backend = 'gpu'
     is_async = False
+
+    def __new__(cls, *args, physics_engine='auto', **kwargs):
+        from libero.gpu.host.backends.selection import resolve_engine
+        physics_engine = resolve_engine(physics_engine, kwargs.get('precision'))
+        if cls is GpuBatchEnv and physics_engine == 'mjwarp':
+            scalar.select(kwargs.get('precision') or 'fp32')
+            try:
+                from libero.gpu.host.backends.mjwarp.environment import MjWarpBatchEnv
+            except ModuleNotFoundError as error:
+                if error.name not in ('mujoco_warp', 'warp'):
+                    raise
+                raise ImportError('FP32 defaults to MJWarp. Use its isolated environment '
+                                  'and requirements-mjwarp.txt; select physics_engine="native" '
+                                  'explicitly for the handwritten FP32 comparison backend.') from error
+            return object.__new__(MjWarpBatchEnv)
+        return object.__new__(cls)
 
     @construction_scope
     @profile_construction
@@ -113,7 +132,10 @@ class GpuBatchEnv:
                  seed=0, device='cuda:0', memory_budget=None,
                  strict_build_receipts=False, build_root=None, initialize=True,
                  allow_compile=False, debug=False, ready_session=None,
-                 profile_startup=False, algorithm_options=None, **environment_options):
+                 profile_startup=False, algorithm_options=None, precision=None,
+                 physics_engine='auto', **environment_options):
+        self.physics_engine = 'native'
+        self.precision = scalar.select(precision)
         if type(num_envs) is not int or not 1 <= num_envs <= 128:
             raise ValueError('num_envs must be an integer in [1, 128]')
         from libero.gpu.host.runtime.core.memory_budget import normalize_memory_budget
@@ -240,6 +262,15 @@ class GpuBatchEnv:
         self.build_report['observations'] = self.observation_build_report
         self._selection = wp.zeros(self.num_envs, dtype=wp.int32, device=self.stream.device)
         self._all = np.ones(self.num_envs, dtype=np.int32)
+        self._bind_shells()
+        self._physics.bind_observer(self.observer)
+        self._closed = False
+
+    def _bind_shells(self):
+        """Share task predicates and facade binding across physical engines."""
+        from .facade import GpuSimFacade, SharedModelMetadata
+        from .goal_read_plan import GoalReadPlan
+        from .task_driver import _bind_static_robot_references
         template = self.built.domain_shell
         # Clone before installing any live CUDA/controller owners on a shell.
         with startup_phase('clone_shells'):
@@ -257,8 +288,6 @@ class GpuBatchEnv:
             # Keep CPU step/reset shims forbidden; this owner handles lifecycle.
         self._goal_plans = [GoalReadPlan.from_shell(shell) for shell in self.shells]
         self.observer.bind_sample_event_hook(self._sample_event)
-        self._physics.bind_observer(self.observer)
-        self._closed = False
 
     def _open(self):
         if self._closed:
@@ -271,7 +300,7 @@ class GpuBatchEnv:
 
     def prepare_substep_fusion(self, build_root, *, allow_compile=False,
                                fast_compile=False, device_lto=False, profile_newton=False,
-                               atomic_reductions=None, defer_post=True):
+                               atomic_reductions=None, defer_post=True, single_solve=False):
         """Opt into one fusion kernel per physical substep.
 
         This is an experimental native-batch entry. Ordinary execution is
@@ -283,6 +312,8 @@ class GpuBatchEnv:
         defer_post keeps complete force/sensor output at the last pre-Euler
         forward and both policy forwards, when the built-in sampler permits it.
         Set False to retain complete Post on every physical substep.
+        single_solve is an explicit FP32 scheduling candidate. It does not
+        change the default native schedule or qualify mathematical equivalence.
         """
         from libero.gpu.host.build.compilation import compilation_scope
         with self._lock:
@@ -292,7 +323,8 @@ class GpuBatchEnv:
                     build_root, allow_compile=allow_compile,
                     fast_compile=fast_compile,
                     device_lto=device_lto, profile_newton=profile_newton,
-                    atomic_reductions=atomic_reductions, defer_post=defer_post)
+                    atomic_reductions=atomic_reductions, defer_post=defer_post,
+                    single_solve=single_solve)
 
     def _ids(self, ids):
         if ids is None:
@@ -482,7 +514,7 @@ class GpuBatchEnv:
             self._selection.assign(mask)
             for name, array in roots.items():
                 source = wp.array(np.ascontiguousarray(payload[name]).reshape(-1),
-                                  dtype=wp.float64, device=self.stream.device)
+                                  dtype=scalar.wp_real, device=self.stream.device)
                 transfers.append(source)
                 width = array.size//self.num_envs
                 for row, world in enumerate(ids):
@@ -531,7 +563,8 @@ class GpuBatchEnv:
         with self._lock:
             self._open()
             self._check()
-            return dict(physics_backend='gpu', debug=self.debug, nworld=self.runtime.euler.capacity,
+            return dict(physics_backend='gpu', precision=self.precision, scalar_bytes=scalar.itemsize,
+                        debug=self.debug, nworld=self.runtime.euler.capacity,
                         model_sha256=self.built.metadata['model_sha256'],
                         substeps=self.substeps, memory_budget=self.memory_budget,
                         actual_integration_count=self.runtime.integration_count.numpy().tolist(),

@@ -1,17 +1,18 @@
+#include "precision.cuh"
 #pragma once
 #include <cuda_runtime.h>
 namespace physics_newton {
-__device__ void dx_direction_potrs(double*, double*);
-__device__ void dx_newton_candidates(double*,double*,double*);
-__device__ void dx_potrf_nv(double*, int*);
-__device__ void dx_potrf_1(double*, int*);
-__device__ void dx_potrf_3(double*, int*);
-__device__ void dx_potrf_4(double*, int*);
-__device__ void dx_potrf_6(double*, int*);
-__device__ void dx_hessian_gemm(double*,double*,double*);
-__device__ void dx_newton_jv(double*,double*,double*);
-__device__ void dx_newton_transpose(double*,double*,double*);
-__device__ void dx_newton_cone_ltj(double*,double*,double*);
-__device__ void dx_direction_forward(double* lower, double* rhs);
-__device__ void dx_direction_backward(double* lower, double* rhs);
+__device__ void dx_direction_potrs(real_t*, real_t*);
+__device__ void dx_newton_candidates(real_t*,real_t*,real_t*);
+__device__ void dx_potrf_nv(real_t*, int*);
+__device__ void dx_potrf_1(real_t*, int*);
+__device__ void dx_potrf_3(real_t*, int*);
+__device__ void dx_potrf_4(real_t*, int*);
+__device__ void dx_potrf_6(real_t*, int*);
+__device__ void dx_hessian_gemm(real_t*,real_t*,real_t*);
+__device__ void dx_newton_jv(real_t*,real_t*,real_t*);
+__device__ void dx_newton_transpose(real_t*,real_t*,real_t*);
+__device__ void dx_newton_cone_ltj(real_t*,real_t*,real_t*);
+__device__ void dx_direction_forward(real_t* lower, real_t* rhs);
+__device__ void dx_direction_backward(real_t* lower, real_t* rhs);
 }

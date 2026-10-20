@@ -1,4 +1,5 @@
 """Unselected diagnostic jar-only S04 candidate, with retained generic math."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import ast
@@ -8,9 +9,9 @@ import json
 import sys
 import types
 
-ORIGINAL_S04_SHA = "a3063d55d045ac6d1d774e9590dccfa74303be0d3914b8bdbaa594f99ff1a043"
+ORIGINAL_S04_SHA = "fb67805419a08cd96f6acaafb883dbdc0b75fb56b82b4509947322270287354f"
 FMA_POLICY_PROVENANCE = {'previous_no_fma_source_sha256': '433b9e216bb19e6511765bfbb4be67a0a924849ed2e48e50bed14bf89b9844fe', 'change': 'module fuse_fp False -> True; arithmetic AST unchanged'}
-JAR_CAP = 1.0e50
+JAR_CAP = scalar.jar_cap
 
 
 def _sha(raw):
@@ -23,8 +24,8 @@ def s04_candidate_source():
     if _sha(raw) != ORIGINAL_S04_SHA:
         raise ValueError("original S04 source identity changed")
     text = raw.decode("utf-8")
-    before = "cap=wp.float64(10000.0);d_cap=wp.float64(2.0e16)"
-    after = before + ";jar_cap=wp.float64(1.0e50);jar_lower=_flip_sign(jar_cap)"
+    before = "cap=scalar.wp_real(10000.0);d_cap=scalar.wp_real(2.0e16)"
+    after = before + ";jar_cap=scalar.wp_real(scalar.jar_cap);jar_lower=_flip_sign(jar_cap)"
     predicate = "jar[rb+r]>cap or jar[rb+r]<lower"
     replacement = "jar[rb+r]>jar_cap or jar[rb+r]<jar_lower"
     if text.count(before) != 1 or text.count(predicate) != 1:

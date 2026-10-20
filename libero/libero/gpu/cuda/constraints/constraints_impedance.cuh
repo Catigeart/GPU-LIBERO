@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Handwritten MuJoCo impedance passes; private stage outputs only.
 #pragma once
 #ifndef CF_S_BATCH_COMPACT
@@ -56,14 +57,14 @@ __device__ void CF_S_impedance_validate {
           if(typ[q]!=t||eid[q]!=id||!isfinite(prediag[q])||!isfinite(pos[q])||!isfinite(margin[q])){code=4;break;}
         }
         if(!code){
-          const double *ref=t==1?dof_ref+id*2:t==3?jnt_ref+id*2:cref+(cb+id)*2;
-          const double *imp=t==1?dof_imp+id*5:t==3?jnt_imp+id*5:cimp+(cb+id)*5;
+          const real_t *ref=t==1?dof_ref+id*2:t==3?jnt_ref+id*2:cref+(cb+id)*2;
+          const real_t *imp=t==1?dof_imp+id*5:t==3?jnt_imp+id*5:cimp+(cb+id)*5;
           for(int j=0;j<2;j++)if(!isfinite(ref[j]))code=5;
           if(t==5||t==7)for(int j=0;j<2;j++)if(!isfinite(creff[(cb+id)*2+j]))code=5;
           for(int j=0;j<5;j++)if(!isfinite(imp[j]))code=5;
           if(t==5||t==7)for(int j=0;j<5;j++)if(!isfinite(cfric[(cb+id)*5+j]))code=5;
-          if(!code&&imp[4]>1.&&imp[4]!=2.)code=6;
-          if(!code&&t==7)for(int j=1;j<d-1;j++)if(cfric[(cb+id)*5+j]==0.)code=5;
+          if(!code&&imp[4]>REAL_C(1.)&&imp[4]!=REAL_C(2.))code=6;
+          if(!code&&t==7)for(int j=1;j<d-1;j++)if(cfric[(cb+id)*5+j]==REAL_C(0.))code=5;
         }
       }
       const int first=libero_warp::min(code?k:libero_warp::no_index);
@@ -154,31 +155,31 @@ __device__ void CF_S_impedance_math {
   for(int ordinal=begin+threadIdx.x;ordinal<end;ordinal+=blockDim.x){
     const int i=compact_heads[rb+ordinal];
     int t=head_type[rb+ordinal],id=head_id[rb+ordinal],d=head_dim[rb+ordinal];
-    const double *ref=t==1?dof_ref+id*2:t==3?jnt_ref+id*2:cref+(cb+id)*2;
-    const double *ip=t==1?dof_imp+id*5:t==3?jnt_imp+id*5:cimp+(cb+id)*5;
+    const real_t *ref=t==1?dof_ref+id*2:t==3?jnt_ref+id*2:cref+(cb+id)*2;
+    const real_t *ip=t==1?dof_imp+id*5:t==3?jnt_imp+id*5:cimp+(cb+id)*5;
     // Validated record fields only; five-double record alignment alternates.
-    const double2 rv=libero_vec::load_pair(ref);
-    const double2 ip01=libero_vec::load_pair(ip),ip23=libero_vec::load_pair(ip+2);
-    double r0=rv.x,r1=rv.y,f0=0.,f1=0.;
-    if(t==5||t==7){const double2 fv=libero_vec::load_pair(creff+(cb+id)*2);f0=fv.x;f1=fv.y;}
-    if((r0>0.)!=(r1>0.)){r0=.02;r1=1.;}
-    if(refsafe&&r0>0.)r0=fmax(r0,2.*timestep);
-    if((f0>0.)!=(f1>0.))f0=f1=0.;
-    if(refsafe&&f0>0.)f0=fmax(f0,2.*timestep);
-    double p0=fmin(.9999,fmax(.0001,ip01.x)),p1=fmin(.9999,fmax(.0001,ip01.y));
-    double width=fmax(0.,ip23.x),mid=fmin(.9999,fmax(.0001,ip23.y)),power=fmax(1.,ip[4]);
-    double imp=0.,impP=0.;int branch=0;
-    if(p0==p1||width<=1e-15)imp=.5*(p0+p1);
+    const real2_t rv=libero_vec::load_pair(ref);
+    const real2_t ip01=libero_vec::load_pair(ip),ip23=libero_vec::load_pair(ip+2);
+    real_t r0=rv.x,r1=rv.y,f0=REAL_C(0.),f1=REAL_C(0.);
+    if(t==5||t==7){const real2_t fv=libero_vec::load_pair(creff+(cb+id)*2);f0=fv.x;f1=fv.y;}
+    if((r0>REAL_C(0.))!=(r1>REAL_C(0.))){r0=REAL_C(.02);r1=REAL_C(1.);}
+    if(refsafe&&r0>REAL_C(0.))r0=fmax(r0,REAL_C(2.)*timestep);
+    if((f0>REAL_C(0.))!=(f1>REAL_C(0.)))f0=f1=REAL_C(0.);
+    if(refsafe&&f0>REAL_C(0.))f0=fmax(f0,REAL_C(2.)*timestep);
+    real_t p0=fmin(REAL_C(.9999),fmax(REAL_C(.0001),ip01.x)),p1=fmin(REAL_C(.9999),fmax(REAL_C(.0001),ip01.y));
+    real_t width=fmax(REAL_C(0.),ip23.x),mid=fmin(REAL_C(.9999),fmax(REAL_C(.0001),ip23.y)),power=fmax(REAL_C(1.),ip[4]);
+    real_t imp=REAL_C(0.),impP=REAL_C(0.);int branch=0;
+    if(p0==p1||width<=REAL_C(1e-15))imp=REAL_C(.5)*(p0+p1);
     else{
-      double x=(pos[rb+i]-margin[rb+i])/width,sgn=1.;if(x<0.){x=-x;sgn=-1.;}
-      if(x>=1.){imp=p1;branch=1;}
-      else if(x<=0.){imp=p0;branch=2;}
+      real_t x=(pos[rb+i]-margin[rb+i])/width,sgn=REAL_C(1.);if(x<REAL_C(0.)){x=-x;sgn=-REAL_C(1.);}
+      if(x>=REAL_C(1.)){imp=p1;branch=1;}
+      else if(x<=REAL_C(0.)){imp=p0;branch=2;}
       else{
-        double y,yP;
-        if(power==1.){y=x;yP=1.;branch=3;}
-        else if(power==2.){
-          if(x<=mid){double a=1./mid;y=a*(x*x);yP=power*a*x;branch=4;}
-          else{double z=1.-x,b=1./(1.-mid);y=1.-b*(z*z);yP=power*b*z;branch=5;}
+        real_t y,yP;
+        if(power==REAL_C(1.)){y=x;yP=REAL_C(1.);branch=3;}
+        else if(power==REAL_C(2.)){
+          if(x<=mid){real_t a=REAL_C(1.)/mid;y=a*(x*x);yP=power*a*x;branch=4;}
+          else{real_t z=REAL_C(1.)-x,b=REAL_C(1.)/(REAL_C(1.)-mid);y=REAL_C(1.)-b*(z*z);yP=power*b*z;branch=5;}
         }else{
 #if CF_S_GROUP_TILES
           atomicMin(group_math_error+w,ordinal);return;
@@ -191,29 +192,29 @@ __device__ void CF_S_impedance_math {
     }
     // One lane owns the complete contact (<=6 rows). R adjustment, reciprocal
     // and postdiag use register values instead of additional global passes.
-    double local_R[6];
+    real_t local_R[6];
 #if CF_S_GROUP_PARAMETER_REUSE
     // Validation proves all rows in this group have the same owner. Only R0
     // survives the elliptic adjustment; tangential prediag is still validated.
-    local_R[0]=fmax(1e-15,(1.-imp)*prediag[rb+i]/imp);
-    const double group_k=t!=1?(r0>0.?1./fmax(1e-15,p1*p1*r0*r0*r1*r1):-r0/fmax(1e-15,p1*p1)):0.;
-    const double normal_b=r1>0.?2./fmax(1e-15,p1*r0):-r1/fmax(1e-15,p1);
-    double tangent_b=normal_b;
-    if(t==7&&(f0!=0.||f1!=0.))
-      tangent_b=f1>0.?2./fmax(1e-15,p1*f0):-f1/fmax(1e-15,p1);
+    local_R[0]=fmax(REAL_C(1e-15),(REAL_C(1.)-imp)*prediag[rb+i]/imp);
+    const real_t group_k=t!=1?(r0>REAL_C(0.)?REAL_C(1.)/fmax(REAL_C(1e-15),p1*p1*r0*r0*r1*r1):-r0/fmax(REAL_C(1e-15),p1*p1)):REAL_C(0.);
+    const real_t normal_b=r1>REAL_C(0.)?REAL_C(2.)/fmax(REAL_C(1e-15),p1*r0):-r1/fmax(REAL_C(1e-15),p1);
+    real_t tangent_b=normal_b;
+    if(t==7&&(f0!=REAL_C(0.)||f1!=REAL_C(0.)))
+      tangent_b=f1>REAL_C(0.)?REAL_C(2.)/fmax(REAL_C(1e-15),p1*f0):-f1/fmax(REAL_C(1e-15),p1);
 #endif
     for(int j=0;j<d;j++){
 #if CF_S_GROUP_PARAMETER_REUSE
       const int q=rb+i+j;const bool friction=t==7&&j>0;
       route[q]=branch;
-      const double k=friction?0.:group_k,b=friction?tangent_b:normal_b;
+      const real_t k=friction?REAL_C(0.):group_k,b=friction?tangent_b:normal_b;
 #else
-      int q=rb+i+j;bool friction=typ[q]==7&&j>0;double rr0=r0,rr1=r1;
-      route[q]=branch;local_R[j]=fmax(1e-15,(1.-imp)*prediag[q]/imp);
-      if(friction&&(f0!=0.||f1!=0.)){rr0=f0;rr1=f1;}
-      double k=0.;
-      if(typ[q]!=1&&!friction)k=rr0>0.?1./fmax(1e-15,p1*p1*rr0*rr0*rr1*rr1):-rr0/fmax(1e-15,p1*p1);
-      double b=rr1>0.?2./fmax(1e-15,p1*rr0):-rr1/fmax(1e-15,p1);
+      int q=rb+i+j;bool friction=typ[q]==7&&j>0;real_t rr0=r0,rr1=r1;
+      route[q]=branch;local_R[j]=fmax(REAL_C(1e-15),(REAL_C(1.)-imp)*prediag[q]/imp);
+      if(friction&&(f0!=REAL_C(0.)||f1!=REAL_C(0.))){rr0=f0;rr1=f1;}
+      real_t k=REAL_C(0.);
+      if(typ[q]!=1&&!friction)k=rr0>REAL_C(0.)?REAL_C(1.)/fmax(REAL_C(1e-15),p1*p1*rr0*rr0*rr1*rr1):-rr0/fmax(REAL_C(1e-15),p1*p1);
+      real_t b=rr1>REAL_C(0.)?REAL_C(2.)/fmax(REAL_C(1e-15),p1*rr0):-rr1/fmax(REAL_C(1e-15),p1);
 #endif
       #if CF_S_KBIP_PLANES
       KBIP[(w*4+0)*rows+i+j]=k;KBIP[(w*4+1)*rows+i+j]=b;
@@ -225,28 +226,28 @@ __device__ void CF_S_impedance_math {
     }
     if(t==7){
       int fbase=(cb+id)*5;
-      double friction[5];
+      real_t friction[5];
       // Read only the prefix used by the cone (validated d<=6).
       const int used=d>2?d-1:(mu_owner[cb+id]==i?1:0);int fj=0;
-      for(;fj+1<used;fj+=2){const double2 f=libero_vec::load_pair(cfric+fbase+fj);friction[fj]=f.x;friction[fj+1]=f.y;}
+      for(;fj+1<used;fj+=2){const real2_t f=libero_vec::load_pair(cfric+fbase+fj);friction[fj]=f.x;friction[fj+1]=f.y;}
       if(fj<used)friction[fj]=cfric[fbase+fj];
-      local_R[1]=local_R[0]/fmax(1e-15,impratio);
+      local_R[1]=local_R[0]/fmax(REAL_C(1e-15),impratio);
       if(mu_owner[cb+id]==i)mu[cb+id]=friction[0]*sqrt(local_R[1]/local_R[0]);
       for(int j=1;j<d-1;j++){
-        double f=friction[j];
+        real_t f=friction[j];
         local_R[j+1]=local_R[1]*friction[0]*friction[0]/(f*f);
       }
     }
     int j=0;
     for(;j+1<d;j+=2){
-      const int q=rb+i+j;const double rr=local_R[j],rr1=local_R[j+1];
-      const double dd=1./rr,pp=rr*imp/(1.-imp);
-      const double dd1=1./rr1,pp1=rr1*imp/(1.-imp);
+      const int q=rb+i+j;const real_t rr=local_R[j],rr1=local_R[j+1];
+      const real_t dd=REAL_C(1.)/rr,pp=rr*imp/(REAL_C(1.)-imp);
+      const real_t dd1=REAL_C(1.)/rr1,pp1=rr1*imp/(REAL_C(1.)-imp);
       libero_vec::store_pair(R+q,rr,rr1);
       libero_vec::store_pair(D+q,dd,dd1);
       libero_vec::store_pair(post+q,pp,pp1);
     }
-    if(j<d){const int q=rb+i+j;const double rr=local_R[j];R[q]=rr;D[q]=1./rr;post[q]=rr*imp/(1.-imp);}
+    if(j<d){const int q=rb+i+j;const real_t rr=local_R[j];R[q]=rr;D[q]=REAL_C(1.)/rr;post[q]=rr*imp/(REAL_C(1.)-imp);}
   }
 }
 __device__ void CF_S_impedance {

@@ -4,20 +4,21 @@ No arithmetic, active gates, schedule length, source helper or publication
 behavior changes. One writer per witness cell; reads occur at the retained
 solver's exact stream position, before any subsequent source mutation.
 """
+import libero.gpu.precision as scalar
 import sys
 import warp as wp
 
 
 @wp.kernel(enable_backward=False)
 def _parallel_tape_ls_buffers(slot: int, tape_slots: int, rows: int,
-    Mv: wp.array(dtype=wp.float64, ndim=2),
-    Jv: wp.array(dtype=wp.float64, ndim=2),
-    quad: wp.array(dtype=wp.float64, ndim=3),
-    quadGauss: wp.array(dtype=wp.float64, ndim=2),
-    tape_Mv: wp.array(dtype=wp.float64, ndim=3),
-    tape_Jv: wp.array(dtype=wp.float64, ndim=3),
-    tape_quad: wp.array(dtype=wp.float64, ndim=4),
-    tape_quadGauss: wp.array(dtype=wp.float64, ndim=3), nv: int):
+    Mv: wp.array(dtype=scalar.wp_real, ndim=2),
+    Jv: wp.array(dtype=scalar.wp_real, ndim=2),
+    quad: wp.array(dtype=scalar.wp_real, ndim=3),
+    quadGauss: wp.array(dtype=scalar.wp_real, ndim=2),
+    tape_Mv: wp.array(dtype=scalar.wp_real, ndim=3),
+    tape_Jv: wp.array(dtype=scalar.wp_real, ndim=3),
+    tape_quad: wp.array(dtype=scalar.wp_real, ndim=4),
+    tape_quadGauss: wp.array(dtype=scalar.wp_real, ndim=3), nv: int):
     if slot >= tape_slots:
         return
     stride = nv + 4 * rows + 3

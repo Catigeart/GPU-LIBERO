@@ -1,22 +1,28 @@
+#include "precision.cuh"
 #pragma once
 #include <cuda_runtime.h>
 #include "newton_types.cuh"
 
 namespace physics_newton {
 
-// CPU MuJoCo 2.3.7 is the production stopping policy. The previous roundoff
-// rule is retained for explicit comparisons, never selected implicitly.
+// Post-iteration stopping follows CPU MuJoCo 2.3.7. FP32 also permits the
+// same gradient criterion at entry. The previous roundoff rule is retained
+// for explicit comparisons, never selected implicitly.
 enum class StopPolicy : int { Cpu = 0, RoundoffResidual = 1 };
 struct NewtonOptions {
   int stop_policy = int(StopPolicy::Cpu);
+  // FP32 may already satisfy the ordinary normalized-gradient criterion at
+  // the selected initial acceleration. Preserve every solve and publication,
+  // but avoid factoring a Hessian solely to apply an unresolved correction.
+  bool initial_gradient_stop = FLASH_REAL_BITS == 32;
   // Optional per-world audit: eight int64 counters and eight first-event
   // scalars. Null pointers incur no residual audit or global audit writes.
   int64_t *audit = nullptr;
-  double *first_disagreement = nullptr;
+  real_t *first_disagreement = nullptr;
   // A completed smooth phase may hand its shared inputs directly to Newton.
   // Null keeps the canonical global path for skipped/recovery forwards.
-  double *smooth_acceleration = nullptr;
-  double *smooth_force = nullptr;
+  real_t *smooth_acceleration = nullptr;
+  real_t *smooth_force = nullptr;
 };
 
 // All block threads participate; shared is the parent kernel's workspace.

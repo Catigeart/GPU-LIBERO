@@ -1,16 +1,17 @@
+#include "precision.cuh"
 #pragma once
 
 // Each lane owns a row of both column-major operands. Column-pair rotations
 // remain ordered, while their row arithmetic and the final inverse cooperate.
 // The three independent OSC problems use one full warp and two half warps.
 struct OscPseudoinverseWork {
-    double columns[36];
-    double vectors[36];
+    real_t columns[36];
+    real_t vectors[36];
 };
 
 template<int Width>
-static __device__ double pinv_row_sum(double value,int rows,unsigned mask) {
-    double result=0.0;
+static __device__ real_t pinv_row_sum(real_t value,int rows,unsigned mask) {
+    real_t result=REAL_C(0.0);
     // Retain the row order of the scalar one-sided Jacobi implementation.
     #pragma unroll 1
     for(int row=0;row<rows;++row)result+=__shfl_sync(mask,value,row,Width);
@@ -18,19 +19,19 @@ static __device__ double pinv_row_sum(double value,int rows,unsigned mask) {
 }
 
 template<int N,int Width>
-static __device__ __noinline__ void pinv_group(const double* input,double* output,
+static __device__ __noinline__ void pinv_group(const real_t* input,real_t* output,
     OscPseudoinverseWork& work,int* rank,int* ok,unsigned mask) {
     const int lane=threadIdx.x&(Width-1);
-    double scale=0.0;
+    real_t scale=REAL_C(0.0);
     if(lane<N)for(int col=0;col<N;++col)scale=fmax(scale,fabs(input[lane*6+col]));
     #pragma unroll 1
     for(int row=0;row<N;++row)scale=fmax(scale,__shfl_sync(mask,scale,row,Width));
-    for(int z=lane;z<36;z+=Width)output[z]=0.0;
+    for(int z=lane;z<36;z+=Width)output[z]=REAL_C(0.0);
     if(lane==0){*rank=0;*ok=1;}
-    if(!(scale>0.0))return;
+    if(!(scale>REAL_C(0.0)))return;
     if(lane<N)for(int col=0;col<N;++col) {
         work.columns[col*6+lane]=input[lane*6+col]/scale;
-        work.vectors[col*6+lane]=col==lane?1.0:0.0;
+        work.vectors[col*6+lane]=col==lane?REAL_C(1.0):REAL_C(0.0);
     }
     bool converged=false;
     #pragma unroll 1
@@ -40,17 +41,17 @@ static __device__ __noinline__ void pinv_group(const double* input,double* outpu
         for(int p=0;p<N;++p) {
             #pragma unroll 1
             for(int q=p+1;q<N;++q) {
-                const double bp=lane<N?work.columns[p*6+lane]:0.0;
-                const double bq=lane<N?work.columns[q*6+lane]:0.0;
-                const double alpha=pinv_row_sum<Width>(bp*bp,N,mask);
-                const double beta=pinv_row_sum<Width>(bq*bq,N,mask);
-                const double gamma=pinv_row_sum<Width>(bp*bq,N,mask);
-                if(fabs(gamma)>2.220446049250313e-16*sqrt(alpha)*sqrt(beta)) {
-                    const double zeta=(beta-alpha)/(2*gamma);
-                    const double t=(zeta<0?-1.0:1.0)/(fabs(zeta)+sqrt(1+zeta*zeta));
-                    const double c=1/sqrt(1+t*t),s=c*t;
+                const real_t bp=lane<N?work.columns[p*6+lane]:REAL_C(0.0);
+                const real_t bq=lane<N?work.columns[q*6+lane]:REAL_C(0.0);
+                const real_t alpha=pinv_row_sum<Width>(bp*bp,N,mask);
+                const real_t beta=pinv_row_sum<Width>(bq*bq,N,mask);
+                const real_t gamma=pinv_row_sum<Width>(bp*bq,N,mask);
+                if(fabs(gamma)>real_t(REAL_EPSILON)*sqrt(alpha)*sqrt(beta)) {
+                    const real_t zeta=(beta-alpha)/(2*gamma);
+                    const real_t t=(zeta<0?-REAL_C(1.0):REAL_C(1.0))/(fabs(zeta)+sqrt(1+zeta*zeta));
+                    const real_t c=1/sqrt(1+t*t),s=c*t;
                     if(lane<N) {
-                        const double vp=work.vectors[p*6+lane],vq=work.vectors[q*6+lane];
+                        const real_t vp=work.vectors[p*6+lane],vq=work.vectors[q*6+lane];
                         work.columns[p*6+lane]=c*bp-s*bq;
                         work.columns[q*6+lane]=s*bp+c*bq;
                         work.vectors[p*6+lane]=c*vp-s*vq;
@@ -62,37 +63,37 @@ static __device__ __noinline__ void pinv_group(const double* input,double* outpu
         }
         if(rotations==0){converged=true;break;}
     }
-    double norms[N]={},singular[N]={},weights[N]={},maxnorm=0.0;
+    real_t norms[N]={},singular[N]={},weights[N]={},maxnorm=REAL_C(0.0);
     bool retained[N]={};
     #pragma unroll 1
     for(int p=0;p<N;++p) {
-        const double value=lane<N?work.columns[p*6+lane]:0.0;
+        const real_t value=lane<N?work.columns[p*6+lane]:REAL_C(0.0);
         norms[p]=pinv_row_sum<Width>(value*value,N,mask);
         singular[p]=sqrt(norms[p]);maxnorm=fmax(maxnorm,singular[p]);
     }
     int retained_count=0;
     for(int p=0;p<N;++p) {
-        retained[p]=singular[p]>1e-15*maxnorm;
+        retained[p]=singular[p]>REAL_C(1e-15)*maxnorm;
         if(retained[p]){++retained_count;weights[p]=(1/norms[p])/scale;}
     }
-    double maxcorr=0.0;
+    real_t maxcorr=REAL_C(0.0);
     #pragma unroll 1
     for(int p=0;p<N;++p) {
         #pragma unroll 1
         for(int q=p+1;q<N;++q)if(retained[p]&&retained[q]) {
-            const double bp=lane<N?work.columns[p*6+lane]:0.0;
-            const double bq=lane<N?work.columns[q*6+lane]:0.0;
-            const double gamma=pinv_row_sum<Width>(bp*bq,N,mask);
+            const real_t bp=lane<N?work.columns[p*6+lane]:REAL_C(0.0);
+            const real_t bq=lane<N?work.columns[q*6+lane]:REAL_C(0.0);
+            const real_t gamma=pinv_row_sum<Width>(bp*bq,N,mask);
             maxcorr=fmax(maxcorr,fabs(gamma)/(singular[p]*singular[q]));
         }
     }
-    if(maxcorr<2e-15)converged=true;
+    if(maxcorr<REAL_C(2e-15))converged=true;
     // Reconstructing a cell reads other lanes' rows, unlike the row-owned
     // rotations above. Close those writes before changing ownership.
     __syncwarp(mask);
     for(int z=lane;z<36;z+=Width) {
         const int row=z/6,col=z%6;
-        double value=0.0;
+        real_t value=REAL_C(0.0);
         if(row<N&&col<N)for(int k=0;k<N;++k)if(retained[k])
             value+=work.vectors[k*6+row]*work.columns[k*6+col]*weights[k];
         output[z]=value;
@@ -101,9 +102,9 @@ static __device__ __noinline__ void pinv_group(const double* input,double* outpu
 }
 
 // All world-block threads enter. The caller owns the block publication barrier.
-static __device__ void pinv_three_block(const double* full,const double* position,
-    const double* orientation,double* full_inverse,double* position_inverse,
-    double* orientation_inverse,int* ranks,int* ok) {
+static __device__ void pinv_three_block(const real_t* full,const real_t* position,
+    const real_t* orientation,real_t* full_inverse,real_t* position_inverse,
+    real_t* orientation_inverse,int* ranks,int* ok) {
     __shared__ OscPseudoinverseWork work[3];
     if(threadIdx.x<32)
         pinv_group<6,32>(full,full_inverse,work[0],ranks,ok,0xffffffffu);

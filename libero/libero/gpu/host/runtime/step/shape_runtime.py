@@ -4,6 +4,7 @@ No native/CPU forward outputs enter this module. Component adapters own
 their source/phase gates. The integration gate additionally requires the
 actual current forward publication before advancing the persistent state.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 
 from .schedule import enqueue_substep, substeps_per_action
@@ -19,9 +20,9 @@ def _integration_gate(intent: wp.array(dtype=wp.int32),
                       forward_written: wp.array(dtype=wp.int64),
                       forward_error: wp.array(dtype=wp.int32),
                       first_error: wp.array(dtype=wp.int32),
-                      qpos: wp.array(dtype=wp.float64, ndim=2),
-                      qvel: wp.array(dtype=wp.float64, ndim=2),
-                      qacc: wp.array(dtype=wp.float64, ndim=2),
+                      qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+                      qvel: wp.array(dtype=scalar.wp_real, ndim=2),
+                      qacc: wp.array(dtype=scalar.wp_real, ndim=2),
                       active: wp.array(dtype=wp.int32), nq: int, nv: int):
     w = wp.tid()
     active[w] = 0
@@ -41,14 +42,14 @@ def _integration_gate(intent: wp.array(dtype=wp.int32),
     # CPU_FLOW mj_checkPos/Vel/Acc domain. Warning-recovery full-forward
     # paths are not replaced by an apparently successful finite result.
     for i in range(nq):
-        if not wp.isfinite(qpos[w, i]) or wp.abs(qpos[w, i]) > wp.float64(1.0e10):
+        if not wp.isfinite(qpos[w, i]) or wp.abs(qpos[w, i]) > scalar.wp_real(1.0e10):
             first_error[w] = 2
             return
     for i in range(nv):
-        if not wp.isfinite(qvel[w, i]) or wp.abs(qvel[w, i]) > wp.float64(1.0e10):
+        if not wp.isfinite(qvel[w, i]) or wp.abs(qvel[w, i]) > scalar.wp_real(1.0e10):
             first_error[w] = 3
             return
-        if not wp.isfinite(qacc[w, i]) or wp.abs(qacc[w, i]) > wp.float64(1.0e10):
+        if not wp.isfinite(qacc[w, i]) or wp.abs(qacc[w, i]) > scalar.wp_real(1.0e10):
             first_error[w] = 4
             return
     active[w] = 1

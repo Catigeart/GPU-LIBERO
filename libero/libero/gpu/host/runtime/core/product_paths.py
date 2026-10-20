@@ -19,12 +19,13 @@ _MATHDX_URL = ('https://developer.nvidia.com/downloads/compute/cublasdx/redist/'
 _MATHDX_SHA = 'd905fb32e4baafe7f6cd3ad94ac194d86dcf463481f37221da972b2784fa73ac'
 
 
-def cache_root():
+def cache_root(*, create=True):
     explicit = os.environ.get('LIBERO_GPU_CACHE_DIR')
     root = Path(explicit).expanduser() if explicit else Path(
         os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))) / 'libero-gpu'
     root = root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
     return root
 
 

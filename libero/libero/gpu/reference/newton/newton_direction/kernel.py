@@ -5,6 +5,7 @@ Each CUDA thread owns one independent nv=43 world.  All inputs are already
 resident; launch does not allocate, upload, download, or call a CPU solver.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -14,21 +15,21 @@ NV = 43
 
 
 @wp.func
-def _factor(H: wp.array(dtype=wp.float64, ndim=3),
-            Hcone: wp.array(dtype=wp.float64, ndim=3),
-            w: int, cone: int, i: int, j: int) -> wp.float64:
+def _factor(H: wp.array(dtype=scalar.wp_real, ndim=3),
+            Hcone: wp.array(dtype=scalar.wp_real, ndim=3),
+            w: int, cone: int, i: int, j: int) -> scalar.wp_real:
     if cone > 0:
         return Hcone[w, i, j]
     return H[w, i, j]
 
 
 @wp.func
-def _source_dot(H: wp.array(dtype=wp.float64, ndim=3),
-                Hcone: wp.array(dtype=wp.float64, ndim=3),
-                x: wp.array(dtype=wp.float64, ndim=2),
-                w: int, cone: int, row: int, count: int) -> wp.float64:
+def _source_dot(H: wp.array(dtype=scalar.wp_real, ndim=3),
+                Hcone: wp.array(dtype=scalar.wp_real, ndim=3),
+                x: wp.array(dtype=scalar.wp_real, ndim=2),
+                w: int, cone: int, row: int, count: int) -> scalar.wp_real:
     # The original mju_dot uses 4 AVX lanes, then (0+2)+(1+3).
-    res = wp.float64(0.0)
+    res = scalar.wp_real(0.0)
     k = int(0)
     if count >= 4:
         a = _factor(H, Hcone, w, cone, row, 0) * x[w, 0]
@@ -59,22 +60,22 @@ def _source_dot(H: wp.array(dtype=wp.float64, ndim=3),
 
 
 @wp.kernel(enable_backward=False)
-def _direction(Ma: wp.array(dtype=wp.float64, ndim=2),
-               smooth: wp.array(dtype=wp.float64, ndim=2),
-               constraint: wp.array(dtype=wp.float64, ndim=2),
-               H: wp.array(dtype=wp.float64, ndim=3),
-               Hcone: wp.array(dtype=wp.float64, ndim=3),
+def _direction(Ma: wp.array(dtype=scalar.wp_real, ndim=2),
+               smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+               constraint: wp.array(dtype=scalar.wp_real, ndim=2),
+               H: wp.array(dtype=scalar.wp_real, ndim=3),
+               Hcone: wp.array(dtype=scalar.wp_real, ndim=3),
                ncone: wp.array(dtype=wp.int32),
                nefc: wp.array(dtype=wp.int32),
                active: wp.array(dtype=wp.int32),
                upstream_status: wp.array(dtype=wp.int32),
-               grad: wp.array(dtype=wp.float64, ndim=2),
-               Mgrad: wp.array(dtype=wp.float64, ndim=2),
-               candidate: wp.array(dtype=wp.float64, ndim=2),
+               grad: wp.array(dtype=scalar.wp_real, ndim=2),
+               Mgrad: wp.array(dtype=scalar.wp_real, ndim=2),
+               candidate: wp.array(dtype=scalar.wp_real, ndim=2),
                status: wp.array(dtype=wp.int32),
-               scratch_grad: wp.array(dtype=wp.float64, ndim=2),
-               scratch_x: wp.array(dtype=wp.float64, ndim=2),
-               scratch_fwd: wp.array(dtype=wp.float64, ndim=2)):
+               scratch_grad: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_x: wp.array(dtype=scalar.wp_real, ndim=2),
+               scratch_fwd: wp.array(dtype=scalar.wp_real, ndim=2)):
     w = wp.tid()
     if upstream_status[w] != 0:
         status[w] = upstream_status[w]
@@ -103,7 +104,7 @@ def _direction(Ma: wp.array(dtype=wp.float64, ndim=2),
     # The first-error contract gives every selected nonfinite operand
     # priority over any zero diagonal, regardless of its row position.
     for i in range(NV):
-        if _factor(H, Hcone, w, cone, i, i) == wp.float64(0.0):
+        if _factor(H, Hcone, w, cone, i, i) == scalar.wp_real(0.0):
             status[w] = 4
             return
     for i in range(NV):
@@ -139,7 +140,7 @@ def _direction(Ma: wp.array(dtype=wp.float64, ndim=2),
         # Warp's unary neg lowers to 0.0 - x, which maps +0 to +0.  The
         # original mju_scl multiplies by -1 and maps +0 to -0.  copysign
         # flips the sign bit exactly, including both signed zero values.
-        sign = wp.copysign(wp.float64(1.0), scratch_x[w, i])
+        sign = wp.copysign(scalar.wp_real(1.0), scratch_x[w, i])
         candidate[w, i] = wp.copysign(scratch_x[w, i], -sign)
 
 
@@ -155,9 +156,9 @@ class NewtonDirectionWorkspace:
         n = self.capacity
         for key in ('Ma', 'smooth', 'constraint', 'grad', 'Mgrad', 'candidate',
                     'scratch_grad', 'scratch_x', 'scratch_fwd'):
-            setattr(self, key, wp.empty((n, NV), dtype=wp.float64, device=device))
+            setattr(self, key, wp.empty((n, NV), dtype=scalar.wp_real, device=device))
         for key in ('H', 'Hcone'):
-            setattr(self, key, wp.empty((n, NV, NV), dtype=wp.float64, device=device))
+            setattr(self, key, wp.empty((n, NV, NV), dtype=scalar.wp_real, device=device))
         for key in ('ncone', 'nefc', 'active', 'upstream_status', 'status'):
             setattr(self, key, wp.empty(n, dtype=wp.int32, device=device))
 

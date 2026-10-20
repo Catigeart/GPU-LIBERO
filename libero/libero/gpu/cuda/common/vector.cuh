@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #ifndef LIBERO_VECTOR_CUH
 #define LIBERO_VECTOR_CUH
@@ -18,12 +19,22 @@ namespace libero_vec {
 __device__ __forceinline__ bool aligned16(const void* p) {
     return (reinterpret_cast<uintptr_t>(p) & uintptr_t(15)) == 0;
 }
-__device__ __forceinline__ double2 load_pair(const double* p) {
+__device__ __forceinline__ real2_t load_pair(const real_t* p) {
     // Exactly two valid naturally aligned doubles required. The address
     // predicate stays inside PTX; no C++ wide-pointer alignment fact escapes
     // this helper into a subsequent access at the same address.
-#if defined(__CUDA_ARCH__)
-    double2 value;
+#if defined(__CUDA_ARCH__) && FLASH_REAL_BITS == 32
+    real2_t value;
+    asm volatile("{ .reg .pred aligned; .reg .b64 residue; "
+                 "and.b64 residue, %2, 7; "
+                 "setp.eq.u64 aligned, residue, 0; "
+                 "@aligned ld.v2.f32 {%0, %1}, [%2]; "
+                 "@!aligned ld.f32 %0, [%2]; "
+                 "@!aligned ld.f32 %1, [%2+4]; }"
+                 : "=&f"(value.x), "=&f"(value.y) : "l"(p) : "memory");
+    return value;
+#elif defined(__CUDA_ARCH__)
+    real2_t value;
     asm volatile("{ .reg .pred aligned; .reg .b64 residue; "
                  "and.b64 residue, %2, 15; "
                  "setp.eq.u64 aligned, residue, 0; "
@@ -34,15 +45,23 @@ __device__ __forceinline__ double2 load_pair(const double* p) {
     return value;
 #else
     // Compiler/CPU emulation branch; never used by a CUDA device build.
-    if (aligned16(p)) return *reinterpret_cast<const double2*>(p);
-    return make_double2(p[0], p[1]);
+    if (aligned16(p)) return *reinterpret_cast<const real2_t*>(p);
+    return make_real2(p[0], p[1]);
 #endif
 }
-__device__ __forceinline__ void store_pair(double* p, double x, double y) {
+__device__ __forceinline__ void store_pair(real_t* p, real_t x, real_t y) {
     // Exactly two writable naturally aligned doubles required. Evaluate the
     // actual address in PTX so earlier vector accesses cannot delete this
     // scalar fallback. Both paths transfer raw FP64 register bits.
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) && FLASH_REAL_BITS == 32
+    asm volatile("{ .reg .pred aligned; .reg .b64 residue; "
+                 "and.b64 residue, %0, 7; "
+                 "setp.eq.u64 aligned, residue, 0; "
+                 "@aligned st.v2.f32 [%0], {%1, %2}; "
+                 "@!aligned st.f32 [%0], %1; "
+                 "@!aligned st.f32 [%0+4], %2; }"
+                 :: "l"(p), "f"(x), "f"(y) : "memory");
+#elif defined(__CUDA_ARCH__)
     asm volatile("{ .reg .pred aligned; .reg .b64 residue; "
                  "and.b64 residue, %0, 15; "
                  "setp.eq.u64 aligned, residue, 0; "
@@ -51,7 +70,7 @@ __device__ __forceinline__ void store_pair(double* p, double x, double y) {
                  "@!aligned st.b64 [%0+8], %2; }"
                  :: "l"(p), "d"(x), "d"(y) : "memory");
 #else
-    if (aligned16(p)) *reinterpret_cast<double2*>(p) = make_double2(x,y);
+    if (aligned16(p)) *reinterpret_cast<real2_t*>(p) = make_real2(x,y);
     else { p[0]=x; p[1]=y; }
 #endif
 }
@@ -172,7 +191,7 @@ template<class T>
 __device__ __forceinline__ void fill_serial(T* dst,size_t count,T value) {
     fill_lane(dst,count,value,0,1);
 }
-__device__ __forceinline__ bool any_nonfinite_lane(const double* src,size_t count,int first,int stride) {
+__device__ __forceinline__ bool any_nonfinite_lane(const real_t* src,size_t count,int first,int stride) {
     if (first<0 || stride<=0 || count==0) return false;
     const size_t lane=size_t(first),step=size_t(stride);
     // Match only the64-lane performance samples. Scalar17/28 and misaligned
@@ -188,14 +207,14 @@ __device__ __forceinline__ bool any_nonfinite_lane(const double* src,size_t coun
     if(head && lane==0) bad=!isfinite(src[0]);
     const size_t packets=(count-head)/2;
     for(size_t i=lane;i<packets;i+=step) {
-        const double2 v=load_pair(src+head+2*i);
+        const real2_t v=load_pair(src+head+2*i);
         bad=bad || !isfinite(v.x) || !isfinite(v.y);
     }
     const size_t tail=head+2*packets;
     if(tail<count && lane==0) bad=bad || !isfinite(src[tail]);
     return bad; // Lane-local only; caller supplies its existing vote.
 }
-__device__ __forceinline__ bool any_nonfinite_block_lane(const double* src,size_t count) {
+__device__ __forceinline__ bool any_nonfinite_block_lane(const real_t* src,size_t count) {
     return any_nonfinite_lane(src,count,int(threadIdx.x),int(blockDim.x));
 }
 } // namespace libero_vec

@@ -7,6 +7,7 @@ between stages.  Shapes are static: nworld worlds, nv=43, nM=153, rows/contacts
 capacities fixed at prepare time.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 from pathlib import Path
 
@@ -47,7 +48,7 @@ class NewtonFwdWorkspace:
         d = device
 
         def f2(shape):
-            return wp.zeros(shape, dtype=wp.float64, device=d)
+            return wp.zeros(shape, dtype=scalar.wp_real, device=d)
 
         def i32(shape):
             return wp.zeros(shape, dtype=wp.int32, device=d)
@@ -221,6 +222,8 @@ class NewtonFwdWorkspace:
         scalars = np.ascontiguousarray(np.asarray(model_scalars))
         if scalars.dtype != np.float64 or scalars.shape != (2,):
             raise TypeError(('model_scalars', scalars.shape, scalars.dtype))
+        scalars = scalars.copy()
+        scalars[0] = scalar.solver_tolerance(scalars[0])
         self.model_scalars.assign(scalars)
         from libero.gpu.model.topology import build_packed_mass_plan
         try:

@@ -4,6 +4,7 @@ The retained host launcher performs all admission and binding checks. Its cold
 schedule supplies only pointer bindings and stage order; arithmetic is provided
 by the handwritten headers, with no generated Warp C++ or mathematical lowering.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 import types
@@ -291,8 +292,8 @@ def install(bundle,build_root,*,dataflow_profile='compatible',selected_local_dom
         # These private owners do not enter the frozen original public/atomic
         # field set. Their bindings have an independent checked token inventory.
         c=types.SimpleNamespace(layout=('component_body',1,adapter.nbody))
-        for key,width,dtype in (('acc',adapter.nbody*6,wp.float64),
-            ('body_force',adapter.nbody*6,wp.float64),('status',None,wp.int32),
+        for key,width,dtype in (('acc',adapter.nbody*6,scalar.wp_real),
+            ('body_force',adapter.nbody*6,scalar.wp_real),('status',None,wp.int32),
             ('valid',None,wp.int32),('state_written',None,wp.int64),
             ('forward_written',None,wp.int64)):
             setattr(c,key,wp.zeros((adapter.capacity,width) if width else adapter.capacity,

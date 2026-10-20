@@ -5,6 +5,7 @@ pointers and static descriptors; it does not translate Python arithmetic to CUDA
 Compatible mode keeps public staging diagnostics in the same kernel; fast mode
 leaves these unused diagnostics untouched. Retained sample/cache semantics match.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from types import MethodType
@@ -171,7 +172,7 @@ class DirectSampler:
                      'subtree_com':ob.model.nbody*3}
             for name,length in lengths.items():
                 f=fields[name]
-                if f.dtype!=wp.float64 or f.ndim!=1 or f.size!=length*ob.nworld or not f.is_contiguous or f.device!=ob.lowdim.observed.device:
+                if f.dtype!=scalar.wp_real or f.ndim!=1 or f.size!=length*ob.nworld or not f.is_contiguous or f.device!=ob.lowdim.observed.device:
                     raise ValueError('invalid camera scene field: '+name)
         for n in RAW_FIELDS:
             if not fields[n].is_contiguous:raise ValueError('contiguous observation fields required')

@@ -4,6 +4,7 @@ State writes and forward calls are different events. All counters are int64,
 fail closed at the maximum, and only explicit selected reset clears a cause.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import warp as wp
 wp.set_module_options({"enable_backward": False, "fuse_fp": True, "fast_math": False})
 
@@ -181,7 +182,7 @@ def clock_gate(gate: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def written_finite(active: wp.array(dtype=wp.int32), error: wp.array(dtype=wp.int32),
-                   values: wp.array(dtype=wp.float64, ndim=2)):
+                   values: wp.array(dtype=scalar.wp_real, ndim=2)):
     w=wp.tid()
     if active[w] != 1 or error[w] != 0:
         return

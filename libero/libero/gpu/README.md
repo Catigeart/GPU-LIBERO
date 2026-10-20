@@ -2,6 +2,12 @@
 
 The source tree keeps the GPU implementation under `libero/libero/gpu/`. Both source checkouts and installed packages expose it through the canonical `libero.gpu` namespace.
 
+Automatic batch routing uses native CUDA for FP64 (the default precision) and
+the [upstream MJWarp fast path](host/backends/mjwarp/README.md) for FP32.
+`physics_engine="native"` explicitly selects the retained handwritten FP32
+comparison backend. MJWarp uses its isolated environment and offline profiles;
+native physics remains based on the CPU MuJoCo 2.3.7 semantics.
+
 ## Directory Layout
 
 ```text
@@ -10,7 +16,7 @@ gpu/
     position/        Kinematics, coordinate transforms, and mass matrices
     collision/       Collision detection, contact processing, native geometry
     constraints/     Constraint rows, impedance, reference values, projection
-    dynamics/        Velocity, forces, and smooth acceleration
+    dynamics/        Velocity, forces, smooth acceleration, MJWarp mass leaves
     newton/          Newton iterations, Hessians, line search, MathDx bridges
     control/         Joint and OSC controllers
     integration/     Euler integration
@@ -19,6 +25,7 @@ gpu/
     runtime/         Publication, restoration, copies, and version checks
     common/          Shared mathematical helpers
   host/              Python host code
+    backends/        Lightweight selection and the upstream MJWarp lifecycle
     factory.py       Physics preparation and environment assembly entry points
     bindings/        CUDA argument bindings and component installation
     build/           Compilation, parameter ABI, and kernel construction
@@ -31,6 +38,12 @@ gpu/
 ```
 
 ## Entry Points
+
+FP64 is the default scalar configuration. Optional FP32 native batches use the
+same maintained numerical sources and separate typed products; see
+[Floating-point products](PRECISION.md). The lightweight policy is
+`precision.py`, and the CUDA scalar/bit/intrinsic definitions are in
+`cuda/common/precision.cuh`.
 
 LIBERO users normally create environments through the original public API:
 
@@ -142,8 +155,8 @@ variant offline; load-only runtime continues to reject missing compiled products
 
 With collision diagnostics disabled, the fast path writes one route descriptor
 per live detector call and schedules candidate rows by their actual counts.
-Private candidates contain 28 doubles; transactional commit expands the public
-65-double contact record, including the required zero `mu` and Hessian fields.
+Private candidates contain 28 selected-precision scalars; transactional commit expands the public
+65-scalar contact record, including the required zero `mu` and Hessian fields.
 Exact BoxBox deduplication keeps the last coincident position in original order.
 Immutable model owners precompute ordinary geom-pair material parameters once
 on the GPU, shared across worlds. Native model replacement rebuilds this table;
@@ -176,7 +189,7 @@ The authoritative source files are:
 | `cuda/control/controller_pipeline.cu` | Dimension-general gather, overlapping seed copies, solve scheduling and publication; ordered alias fallback. |
 | `cuda/control/osc_solver.cu` | Independently compiled fixed 7/6 OSC numerical body; collective success return. |
 | `host/runtime/step/controller_copy_plan.py` | Cold packet scheduling and all-world overlap/wiring proof. |
-| `cuda/step/newton_solver.cu` | Independently compiled FP64 Newton numerical call tree. |
+| `cuda/step/newton_solver.cu` | Independently compiled Newton numerical call tree for the selected precision. |
 | `cuda/postprocess/post_solver.cu` | Dimension-general force/acceleration Post, sensor math, publication and internal output demand. |
 | `cuda/postprocess/post_solver.cuh` | Collective Post API; receives the completed qacc and reusable scratch views. |
 | `cuda/postprocess/post_profile.cuh` | Post-only timestamps in the optional instrumented product. |
@@ -500,7 +513,8 @@ The previous componentwise roundoff-residual policy is an explicit comparison
 option. Optional per-world counters/first-event scalars are null by default;
 normal execution performs no residual audit or audit-buffer writes. The opaque
 Newton owner ABI remains 2040 bytes; the maintained substep argument ABI is
-6288 bytes and is checked against ctypes when the library is loaded.
+6288 bytes for FP64 and 6280 bytes for FP32. The scalar width and structure
+sizes are checked against ctypes when the library is loaded.
 
 Newton's H, Ma and other invocation-local vectors are no longer imported from
 or exported to persistent diagnostic scratch on every solve. The direction

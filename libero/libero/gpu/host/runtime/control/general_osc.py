@@ -1,4 +1,5 @@
 """Cold non-default OSC goal semantics; original default math is retained."""
+import libero.gpu.precision as scalar
 import math
 import numpy as np
 import warp as wp
@@ -41,18 +42,18 @@ def prepare_general_osc(c,cfg,*,timestep,policy_freq):
     pos=bounds(cfg.get('position_limits'));ori=bounds(cfg.get('orientation_limits'),True)
     c.position_limited=int(cfg.get('position_limits') is not None)
     c.orientation_limited=int(bool(ori.any()))
-    c.phys_goal_config=wp.array(np.r_[low,high,output_low,output_high,pos.reshape(-1),ori.reshape(-1)],dtype=wp.float64,device=c.device)
+    c.phys_goal_config=wp.array(np.r_[low,high,output_low,output_high,pos.reshape(-1),ori.reshape(-1)],dtype=scalar.wp_real,device=c.device)
     c.WIDTHS=dict(c.WIDTHS)
     c.WIDTHS.update(phys_action=c.raw_action_dim,phys_goal_config=4*d+12,
         current_gains=12,phys_initial_gains=12,goal_effective_pos=3,goal_ori_error=3,
         interp_previous_pos=3,interp_start_pos=3,interp_start_ori=3,interp_target_ori=3,interp_step=2,goal_delta_rot=9)
     c.current_gains=c.gains
-    if not hasattr(c,'phys_action'):c.phys_action=wp.zeros((c.nworld,c.raw_action_dim),dtype=wp.float64,device=c.device)
-    c.phys_initial_gains=wp.array(c.gains.numpy()[0],dtype=wp.float64,device=c.device)
+    if not hasattr(c,'phys_action'):c.phys_action=wp.zeros((c.nworld,c.raw_action_dim),dtype=scalar.wp_real,device=c.device)
+    c.phys_initial_gains=wp.array(c.gains.numpy()[0],dtype=scalar.wp_real,device=c.device)
     for name in ('goal_effective_pos','goal_ori_error','interp_previous_pos','interp_start_pos','interp_start_ori','interp_target_ori'):
-        setattr(c,name,wp.zeros((c.nworld,3),dtype=wp.float64,device=c.device))
-    c.interp_step=wp.zeros((c.nworld,2),dtype=wp.float64,device=c.device)
-    c.goal_delta_rot=wp.zeros((c.nworld,9),dtype=wp.float64,device=c.device)
+        setattr(c,name,wp.zeros((c.nworld,3),dtype=scalar.wp_real,device=c.device))
+    c.interp_step=wp.zeros((c.nworld,2),dtype=scalar.wp_real,device=c.device)
+    c.goal_delta_rot=wp.zeros((c.nworld,9),dtype=scalar.wp_real,device=c.device)
     c.goal_rotate=wp.zeros(c.nworld,dtype=wp.int32,device=c.device)
     c.goal_core_policy=wp.zeros(c.nworld,dtype=wp.int32,device=c.device)
     if c.variable_mode:

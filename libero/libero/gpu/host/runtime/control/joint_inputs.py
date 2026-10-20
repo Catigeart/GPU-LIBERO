@@ -1,4 +1,5 @@
 """Cold verified single-arm selectors and device-native joint input gathering."""
+import libero.gpu.precision as scalar
 import json
 from pathlib import Path
 import numpy as np
@@ -40,9 +41,9 @@ class GenericJointInputsWorkspace:
         self.qi=wp.array(qi,dtype=wp.int32,device=self.device)
         self.vi=wp.array(vi,dtype=wp.int32,device=self.device)
         self.sparse=wp.array(sparse[np.ix_(vi,vi)].reshape(-1),dtype=wp.int32,device=self.device)
-        self.joint_pos=wp.zeros((capacity,n),dtype=wp.float64,device=self.device)
-        self.joint_vel=wp.zeros((capacity,n),dtype=wp.float64,device=self.device)
-        self.M=wp.zeros((capacity,n*n),dtype=wp.float64,device=self.device)
+        self.joint_pos=wp.zeros((capacity,n),dtype=scalar.wp_real,device=self.device)
+        self.joint_vel=wp.zeros((capacity,n),dtype=scalar.wp_real,device=self.device)
+        self.M=wp.zeros((capacity,n*n),dtype=scalar.wp_real,device=self.device)
         self.status=wp.zeros(capacity,dtype=wp.int32,device=self.device)
         self._frozen={k:_token(v) for k,v in vars(self).items() if isinstance(v,wp.array)}
         self._plans=None

@@ -1,5 +1,6 @@
 """Strict host ABI and preallocated CUDA workspace for S07."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import ctypes as ct
 import hashlib
@@ -60,7 +61,7 @@ class NewtonLineSearchWorkspace:
             'eval_trace':(nworld,52,4), 'eval_tag':(nworld,52),
             'LSiter':(nworld,), 'LSresult':(nworld,), 'status':(nworld,)}
         for name, shape in shapes.items():
-            dtype = wp.int32 if name in INT_INPUTS+INT_OUTPUTS else wp.float64
+            dtype = wp.int32 if name in INT_INPUTS+INT_OUTPUTS else scalar.wp_real
             self.arrays[name] = wp.zeros(shape, dtype=dtype, device=device)
         for key in ('dof_Madr','dof_parentid','dof_simplenum'):
             value = np.asarray(static[key])
@@ -70,7 +71,7 @@ class NewtonLineSearchWorkspace:
         scalars = np.asarray(static['model_scalars'])
         if scalars.dtype != np.float64 or scalars.shape != (2,):
             raise TypeError(('model_scalars', scalars.shape, scalars.dtype))
-        self.arrays['model_scalars'] = wp.array(scalars, dtype=wp.float64, device=device)
+        self.arrays['model_scalars'] = wp.array(scalars, dtype=scalar.wp_real, device=device)
         self.static_sha256 = {key: hashlib.sha256(np.ascontiguousarray(
             static[key]).tobytes()).hexdigest() for key in static}
         for key,digest in _MAIN_TOPOLOGY_SHA.items():

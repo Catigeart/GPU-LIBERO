@@ -4,6 +4,7 @@ The explicit paths below refer to the existing numerical adapters. Binding
 copies their prepared argument values, not generated source or launch records.
 No object-graph search, schema loading, CPU physics, or device readback is used.
 """
+import libero.gpu.precision as scalar
 import ctypes as ct
 
 import warp as wp
@@ -80,7 +81,7 @@ def _parallel_channel_flags(floating, integer):
     copying. Independent channels can run concurrently in either direction.
     Spans include all worlds, so shifted cross-world aliases are also excluded.
     """
-    groups = [(tuple((int(a.ptr), int(a.ptr) + a.size * 8) for a in pair))
+    groups = [(tuple((int(a.ptr), int(a.ptr) + a.size * scalar.itemsize) for a in pair))
               for pair in floating]
     groups += [tuple((int(a.ptr), int(a.ptr) + a.size * 4) for a in pair)
                for pair in integer]
@@ -126,7 +127,7 @@ def _validate_forward_reuse(arguments, controller, core, worlds):
         (a.joint_passive.out, nv), (a.bias_commit.pub, nv),
         (a.reference_commit.pv, rows), (a.reference_commit.pa, rows),
     ]
-    cached_spans = [(int(ptr), int(ptr) + worlds * width * 8) for ptr, width in cached]
+    cached_spans = [(int(ptr), int(ptr) + worlds * width * scalar.itemsize) for ptr, width in cached]
     # The hit path republishes epochs but retains these successful stage
     # statuses/readiness flags. They must also be private to their producers.
     for ptr in (a.transmission.status, a.body_velocity.status, a.joint_passive.status,
@@ -143,7 +144,7 @@ def _validate_forward_reuse(arguments, controller, core, worlds):
                       (("smooth", nv), ("seed", nv), ("scratch", nv), ("qfrc", nv),
                        ("ld", smooth.nm), ("inv", nv), ("sqrt_inv", nv),
                        ("solution", 4 * nv), ("rhs", 4 * nv), ("qacc_smooth", nv))]
-    writes.extend((int(ptr), int(ptr) + worlds * width * 8) for ptr, width in force_outputs)
+    writes.extend((int(ptr), int(ptr) + worlds * width * scalar.itemsize) for ptr, width in force_outputs)
     for ptr, width in [(act.status, 1), (smooth.status, 1), (smooth.d02_status, 1),
                        (smooth.solve_status, 1), (smooth.pivot, nv)]:
         writes.append((int(ptr), int(ptr) + worlds * width * 4))
@@ -157,7 +158,7 @@ def _validate_forward_reuse(arguments, controller, core, worlds):
                        (p.external_s_result, p.scalar_245),
                        (p.external_c_pe, p.scalar_244), (p.external_c_ps, p.scalar_245)]:
         if ptr:
-            writes.append((int(ptr), int(ptr) + worlds * width * 8))
+            writes.append((int(ptr), int(ptr) + worlds * width * scalar.itemsize))
     # Newton scratch keeps its prepared allocation extents, rather than a
     # duplicate list of row/cone pitches here. Read-only J/aref/M are excluded.
     scratch = {int(value) for name in
@@ -181,13 +182,13 @@ def _validate_smooth_reuse(arguments, core, worlds):
         raise ValueError('compact world-major smooth payload required')
     cache=[(a.smooth_commit.pf,nv),(a.smooth_commit.pa,nv),
            (a.smooth_acceleration.applied,nv),(a.smooth_acceleration.xfrc,6*nb)]
-    cache=[(int(ptr),int(ptr)+8*worlds*width) for ptr,width in cache]
+    cache=[(int(ptr),int(ptr)+scalar.itemsize*worlds*width) for ptr,width in cache]
     smooth=a.smooth_acceleration
     first_outputs=[(a.smooth_commit.pf,nv),(a.smooth_commit.pa,nv)]
     first_outputs += [(getattr(smooth,name),width) for name,width in
         (("smooth",nv),("seed",nv),("scratch",nv),("qfrc",nv),("ld",smooth.nm),
          ("inv",nv),("sqrt_inv",nv),("solution",4*nv),("rhs",4*nv),("qacc_smooth",nv))]
-    first_spans=[(int(ptr),int(ptr)+8*worlds*width) for ptr,width in first_outputs if ptr]
+    first_spans=[(int(ptr),int(ptr)+scalar.itemsize*worlds*width) for ptr,width in first_outputs if ptr]
     if any(max(l,x)<min(r,y) for l,r in cache[2:] for x,y in first_spans):
         raise ValueError('smooth output overlaps a persistent applied-force input')
     if max(cache[0][0],cache[1][0]) < min(cache[0][1],cache[1][1]):
@@ -201,7 +202,7 @@ def _validate_smooth_reuse(arguments, core, worlds):
              (p.external_r_decoded,a.contact_addresses.capacity*6),
              (p.external_s_result,p.scalar_245),(p.external_c_pe,p.scalar_244),
              (p.external_c_pi,p.scalar_244),(p.external_c_ps,p.scalar_245)]
-    writes=[(int(ptr),int(ptr)+8*worlds*width) for ptr,width in outputs if ptr]
+    writes=[(int(ptr),int(ptr)+scalar.itemsize*worlds*width) for ptr,width in outputs if ptr]
     scratch={int(value) for name in ('efc_b','jar_warm','D','force','jar','oldstate','Hcone','Jv',
              'err_code','state','external_r_status','external_s_status') if (value:=getattr(p,name))}
     for owner in core.owners:
@@ -213,7 +214,7 @@ def _validate_smooth_reuse(arguments, core, worlds):
                 lifetime='Start:first successful forward -> same CTA second forward; no controller or external callbacks before hit; position suspension drops the local flag')
 
 
-def bind(runtime, continuation):
+def bind(runtime, continuation, *, single_solve=False):
     """Return an owned argument aggregate and the numerical holders it borrows."""
     forward = runtime.forward
     dynamics = forward.d
@@ -333,6 +334,12 @@ def bind(runtime, continuation):
     arguments.reference_admission = _pack(t.ReferenceAdmissionData, [
         dynamics.valid["velocity"], dynamics.written["velocity"], forward.expected_forward,
         dynamics.first_error, forward.transport.active])
+    if single_solve:
+        # step1 prepares these actual OSC dependencies without claiming that
+        # actuation, Newton or the complete forward has already executed.
+        arguments.controller_gate.pv = dynamics.valid["bias"].ptr
+        arguments.controller_gate.written = dynamics.written["bias"].ptr
+        arguments.controller_gate.expected = forward.expected_forward.ptr
     arguments.forward_publish = _pack(t.ForwardPublishData, [
         dynamics.active, forward.final_valid, forward.n.ws.err_code, dynamics.first_error,
         forward.projection_status, dynamics.source_state_epoch, dynamics.state_epoch,
@@ -362,8 +369,8 @@ def bind(runtime, continuation):
 
     fields = []
     for name, array in recovery.views.items():
-        if array.dtype != wp.float64:
-            raise ValueError("single-substep reset inventory requires FP64: " + name)
+        if array.dtype != scalar.wp_real:
+            raise ValueError("single-substep reset inventory requires the selected scalar: " + name)
         fields.append(_pack(t.ResetField, [array, recovery.defaults[name], recovery.catalog[name]["width"]]))
     if len(fields) > 14:
         raise ValueError("native reset field inventory exceeds its declared extent")
@@ -464,7 +471,7 @@ def bind(runtime, continuation):
         forward_metadata = wp.zeros((worlds, t.FORWARD_CACHE_WORDS),
                                     dtype=wp.uint64, device=runtime.stream.device)
         fluid_workspace = wp.empty((worlds, 9 * arguments.fluid_passive.nbody + euler.nv),
-                                   dtype=wp.float64, device=runtime.stream.device)
+                                   dtype=scalar.wp_real, device=runtime.stream.device)
         mass_plan = wp.array(mass_values, dtype=wp.int32, device=runtime.stream.device)
     arguments.forward_workspace = _pack(t.ForwardWorkspaceData,
         [forward_metadata, cache.generation, fluid_workspace, mass_plan])

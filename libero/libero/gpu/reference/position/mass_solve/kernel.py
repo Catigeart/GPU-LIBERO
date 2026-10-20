@@ -4,6 +4,7 @@ Apache-2.0 source: src/engine/engine_core_smooth.c:1018-1212,
 commit c9246e1f5006379d599e0bcddf159a8616d31441. The code below
 transcribes the native loop order; it is not an external CPU dependency.
 """
+import libero.gpu.precision as scalar
 
 import hashlib
 import numpy as np
@@ -29,39 +30,39 @@ _TOPOLOGIES = {
 
 @wp.func
 def _clear(w: int, nv: int, nm: int,
-           ld: wp.array(dtype=wp.float64, ndim=2),
-           inv: wp.array(dtype=wp.float64, ndim=2),
-           sqrt_inv: wp.array(dtype=wp.float64, ndim=2),
-           solution: wp.array(dtype=wp.float64, ndim=3),
+           ld: wp.array(dtype=scalar.wp_real, ndim=2),
+           inv: wp.array(dtype=scalar.wp_real, ndim=2),
+           sqrt_inv: wp.array(dtype=scalar.wp_real, ndim=2),
+           solution: wp.array(dtype=scalar.wp_real, ndim=3),
            pivot: wp.array(dtype=wp.int32, ndim=2),
            warning_count: wp.array(dtype=wp.int32),
            warning_last: wp.array(dtype=wp.int32),
            preserve_events: int):
     for a in range(nm):
-        ld[w, a] = wp.float64(0.0)
+        ld[w, a] = scalar.wp_real(0.0)
     for i in range(nv):
-        inv[w, i] = wp.float64(0.0)
-        sqrt_inv[w, i] = wp.float64(0.0)
+        inv[w, i] = scalar.wp_real(0.0)
+        sqrt_inv[w, i] = scalar.wp_real(0.0)
         if preserve_events == 0:
             pivot[w, i] = 0
         for r in range(4):
-            solution[w, r, i] = wp.float64(0.0)
+            solution[w, r, i] = scalar.wp_real(0.0)
     if preserve_events == 0:
         warning_count[w] = 0
         warning_last[w] = -1
 
 
 @wp.kernel(enable_backward=False)
-def _factor_solve(qm: wp.array(dtype=wp.float64, ndim=2),
-                  rhs: wp.array(dtype=wp.float64, ndim=3),
+def _factor_solve(qm: wp.array(dtype=scalar.wp_real, ndim=2),
+                  rhs: wp.array(dtype=scalar.wp_real, ndim=3),
                   count: wp.array(dtype=wp.int32),
                   active: wp.array(dtype=wp.int32),
                   madr: wp.array(dtype=wp.int32),
                   parent: wp.array(dtype=wp.int32),
-                  ld: wp.array(dtype=wp.float64, ndim=2),
-                  inv: wp.array(dtype=wp.float64, ndim=2),
-                  sqrt_inv: wp.array(dtype=wp.float64, ndim=2),
-                  solution: wp.array(dtype=wp.float64, ndim=3),
+                  ld: wp.array(dtype=scalar.wp_real, ndim=2),
+                  inv: wp.array(dtype=scalar.wp_real, ndim=2),
+                  sqrt_inv: wp.array(dtype=scalar.wp_real, ndim=2),
+                  solution: wp.array(dtype=scalar.wp_real, ndim=3),
                   pivot: wp.array(dtype=wp.int32, ndim=2),
                   status: wp.array(dtype=wp.int32),
                   warning_count: wp.array(dtype=wp.int32),
@@ -94,11 +95,11 @@ def _factor_solve(qm: wp.array(dtype=wp.float64, ndim=2),
         ld[w, a] = qm[w, a]
     for k in range(nv - 1, -1, -1):
         kk = madr[k]
-        if ld[w, kk] < wp.float64(1.0e-15):
+        if ld[w, kk] < scalar.wp_real(1.0e-15):
             pivot[w, k] = 1
             warning_count[w] = warning_count[w] + 1
             warning_last[w] = k
-            ld[w, kk] = wp.float64(1.0e-15)
+            ld[w, kk] = scalar.wp_real(1.0e-15)
         ki = kk + 1
         i = parent[k]
         while i >= 0:
@@ -119,8 +120,8 @@ def _factor_solve(qm: wp.array(dtype=wp.float64, ndim=2),
             i = parent[i]
     for i in range(nv):
         diag = ld[w, madr[i]]
-        inv[w, i] = wp.float64(1.0) / diag
-        sqrt_inv[w, i] = wp.float64(1.0) / wp.sqrt(diag)
+        inv[w, i] = scalar.wp_real(1.0) / diag
+        sqrt_inv[w, i] = scalar.wp_real(1.0) / wp.sqrt(diag)
         if not wp.isfinite(inv[w, i]) or not wp.isfinite(sqrt_inv[w, i]):
             bad = 1
     for r in range(4):
@@ -129,7 +130,7 @@ def _factor_solve(qm: wp.array(dtype=wp.float64, ndim=2),
                 solution[w, r, i] = rhs[w, r, i]
     if n == 1:
         for i in range(nv - 1, -1, -1):
-            if solution[w, 0, i] != wp.float64(0.0):
+            if solution[w, 0, i] != scalar.wp_real(0.0):
                 a = madr[i] + 1
                 j = parent[i]
                 while j >= 0:
@@ -159,7 +160,7 @@ def _factor_solve(qm: wp.array(dtype=wp.float64, ndim=2),
                 for r in range(4):
                     if r < n:
                         tmp = solution[w, r, i]
-                        if tmp != wp.float64(0.0):
+                        if tmp != scalar.wp_real(0.0):
                             solution[w, r, j] = solution[w, r, j] - ld[w, a] * tmp
                             if not wp.isfinite(solution[w, r, j]):
                                 bad = 1
@@ -219,14 +220,14 @@ class MassSolveWorkspace:
                 raise ValueError('unsupported model topology: '+name)
             setattr(self, name, wp.array(a, dtype=wp.int32, device=device))
         self.capacity, self.device = capacity, device
-        self.qm = wp.zeros((capacity, self.nM), dtype=wp.float64, device=device)
-        self.rhs = wp.zeros((capacity, 4, self.nv), dtype=wp.float64, device=device)
+        self.qm = wp.zeros((capacity, self.nM), dtype=scalar.wp_real, device=device)
+        self.rhs = wp.zeros((capacity, 4, self.nv), dtype=scalar.wp_real, device=device)
         self.count = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.active = wp.zeros(capacity, dtype=wp.int32, device=device)
-        self.ld = wp.zeros((capacity, self.nM), dtype=wp.float64, device=device)
-        self.inv = wp.zeros((capacity, self.nv), dtype=wp.float64, device=device)
-        self.sqrt_inv = wp.zeros((capacity, self.nv), dtype=wp.float64, device=device)
-        self.solution = wp.zeros((capacity, 4, self.nv), dtype=wp.float64, device=device)
+        self.ld = wp.zeros((capacity, self.nM), dtype=scalar.wp_real, device=device)
+        self.inv = wp.zeros((capacity, self.nv), dtype=scalar.wp_real, device=device)
+        self.sqrt_inv = wp.zeros((capacity, self.nv), dtype=scalar.wp_real, device=device)
+        self.solution = wp.zeros((capacity, 4, self.nv), dtype=scalar.wp_real, device=device)
         self.pivot = wp.zeros((capacity, self.nv), dtype=wp.int32, device=device)
         self.status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.warning_count = wp.zeros(capacity, dtype=wp.int32, device=device)

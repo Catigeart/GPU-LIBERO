@@ -4,6 +4,7 @@ Python binds arrays and compiles handwritten CUDA. It translates no arithmetic.
 This API handles an already assembled H and RHS. It is not a replacement for
 the persistent Newton Hessian builder, line search, or stopping protocol.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 import ctypes as ct
 import warp as wp
@@ -49,7 +50,7 @@ class BlockedFactorPlan:
         shapes=[H.shape,(worlds,capacity),H.shape,(worlds,capacity),(worlds,capacity),
                 (worlds,),(worlds,),(worlds,)]
         for index,(array,shape) in enumerate(zip(bindings,shapes)):
-            dtype=wp.float64 if index<5 else wp.int32
+            dtype=scalar.wp_real if index<5 else wp.int32
             if not isinstance(array,wp.array) or not array.is_contiguous or array.shape!=shape or \
                     array.dtype!=dtype or array.device!=device or not array.device.is_cuda:
                 raise ValueError('blocked factor binding shape/dtype/device/contiguity mismatch')
@@ -61,9 +62,9 @@ class BlockedFactorPlan:
                 if not permitted or left.ptr!=right.ptr or left.shape!=right.shape:
                     raise ValueError('unsupported overlapping blocked factor bindings')
         self.max_nv=capacity;self.ld=ld;self.nworld=worlds;self.device=device
-        self.working=wp.empty(H.shape,dtype=wp.float64,device=device)
-        self.working_x=wp.empty((worlds,capacity),dtype=wp.float64,device=device)
-        self.working_y=wp.empty((worlds,capacity),dtype=wp.float64,device=device)
+        self.working=wp.empty(H.shape,dtype=scalar.wp_real,device=device)
+        self.working_x=wp.empty((worlds,capacity),dtype=scalar.wp_real,device=device)
+        self.working_y=wp.empty((worlds,capacity),dtype=scalar.wp_real,device=device)
         self.diagnostic=wp.zeros((worlds,8),dtype=wp.int32,device=device)
         self._bindings=bindings
         self._tokens=tuple((x.ptr,x.shape,x.dtype,x.device) for x in bindings)

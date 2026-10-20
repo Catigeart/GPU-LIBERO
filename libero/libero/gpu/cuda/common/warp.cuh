@@ -1,3 +1,4 @@
+#include "precision.cuh"
 // Project-written register collectives. Every lane in a full warp participates.
 // Callers pad invalid elements with the operation's identity, never skip lanes.
 // These functions do not synchronize shared or global memory.
@@ -10,12 +11,12 @@ constexpr int no_index = 2147483647;
 __device__ __forceinline__ int lane() { return threadIdx.x & 31; }
 __device__ __forceinline__ int warp() { return threadIdx.x >> 5; }
 // Only lane 0 may consume this result. The FP64 addition tree is unchanged.
-__device__ __forceinline__ double sum_to_leader(double value) {
+__device__ __forceinline__ real_t sum_to_leader(real_t value) {
     for (int offset=16; offset>0; offset>>=1)
         value += __shfl_down_sync(mask, value, offset);
     return value;
 }
-__device__ __forceinline__ double sum(double value) {
+__device__ __forceinline__ real_t sum(real_t value) {
     return __shfl_sync(mask, sum_to_leader(value), 0);
 }
 __device__ __forceinline__ int sum(int value) {
@@ -58,14 +59,14 @@ __device__ __forceinline__ int subgroup_lane() {
     return lane() & (Width-1);
 }
 template<int Width>
-__device__ __forceinline__ double subgroup_sum_to_leader(double value) {
+__device__ __forceinline__ real_t subgroup_sum_to_leader(real_t value) {
     (void)subgroup_lane<Width>();
     for (int offset=Width/2; offset>0; offset>>=1)
         value += __shfl_down_sync(mask, value, offset, Width);
     return value;
 }
 template<int Width>
-__device__ __forceinline__ double subgroup_sum(double value) {
+__device__ __forceinline__ real_t subgroup_sum(real_t value) {
     return __shfl_sync(mask, subgroup_sum_to_leader<Width>(value), 0, Width);
 }
 template<int Width>

@@ -8,8 +8,8 @@ Every device function receives world index first. Opt-in tile stages receive
 (world, blockIdx.x, gridDim.x, args...) and use work_tiles=N. Multiple tiles
 require exclusively tile stages: legacy world stages are never duplicated.
 Cross-tile prepare/worker/commit phases are separate same-stream launches. Arrays are contiguous Warp
-buffers passed as raw typed pointers; Python float/int default to double/int32.
-Explicit specs, e.g. 'const double*', 'int64_t', override those defaults. Global
+buffers passed as raw typed pointers; Python float/int default to the selected real/int32.
+Explicit specs, e.g. 'const real_t*', 'int64_t', override those defaults. Global
 argument_specs is a sequence of per-stage spec lists. Binding ownership, shape,
 dtype, device and addresses are validated. launch(stream=...) allocates nothing,
 uploads no parameter buffer, and is graph-capture compatible. Params are passed
@@ -20,6 +20,7 @@ compile_library accepts handwritten CUDA and optional handwritten bridge units.
 All compilation uses FMA, precise division/sqrt, and no fast-math. MathDx links
 the cuSOLVERDx LTO library; cuBLASDx is header-only.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ctypes as ct
 from functools import lru_cache
@@ -67,7 +68,7 @@ def strict_build_receipts_scope(enabled=True):
     try:yield
     finally:_strict_receipts_scope.reset(token)
 
-_CTYPES = {'double': ct.c_double, 'float': ct.c_float, 'int': ct.c_int32,
+_CTYPES = {'real_t': scalar.ct_real, 'float': ct.c_float, 'int': ct.c_int32,
            'int32_t': ct.c_int32, 'uint32_t': ct.c_uint32, 'int64_t': ct.c_int64,
            'uint64_t': ct.c_uint64, 'bool': ct.c_bool, 'size_t': ct.c_size_t}
 
@@ -362,6 +363,11 @@ def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
                     defines=None,bridges=(),include_dirs=(),extra_flags=(),required_symbols=(),
                     strict_build_receipts=None):
     """Receipted build is explicit until actual cold ABBA clears its overhead."""
+    defines = dict(defines or {})
+    if defines.get('FLASH_REAL_BITS', scalar.bits) != scalar.bits:
+        raise ValueError('native scalar precision differs from the process policy')
+    defines['FLASH_REAL_BITS'] = scalar.bits
+    include_dirs = (*include_dirs, GPU_ROOT / 'cuda/common')
     scoped=_strict_receipts_scope.get()
     enabled=((scoped if scoped is not None else os.environ.get('LIBERO_BUILD_RECEIPTS')=='1')
              if strict_build_receipts is None else bool(strict_build_receipts))
@@ -413,10 +419,11 @@ class NativePlan:
         self.scalar_slots={}; self.pointer_slots={}
         self._retired_owners=[]; self._captured_owners=[]
         self._stage_args=[]
-        dtype_names = {wp.float64:'double', wp.float32:'float', wp.int32:'int32_t',
+        dtype_names = {scalar.wp_real:'real_t', wp.float32:'float', wp.int32:'int32_t',
                        wp.int64:'int64_t', wp.uint32:'uint32_t', wp.uint64:'uint64_t',
                        wp.uint8:'uint8_t', wp.int8:'int8_t', wp.int16:'int16_t',
                        wp.uint16:'uint16_t', wp.bool:'bool'}
+        dtype_names[scalar.wp_real] = 'real_t'
         for si, stage in enumerate(stages):
             fn, args, mode = stage[:3]
             self._stage_args.append(list(args))
@@ -434,6 +441,8 @@ class NativePlan:
                     if not value.is_contiguous or not value.device.is_cuda:
                         raise ValueError('contiguous CUDA arrays required')
                     ctype = spec or dtype_names.get(value.dtype, '')+'*'
+                    if 'real_t' in ctype and value.dtype != scalar.wp_real:
+                        raise TypeError('native real pointer and array precision differ')
                     if ctype == '*' or '*' not in ctype:
                         raise TypeError('unsupported array type; supply a C pointer spec')
                     # Keep an independent slot per argument: equal cold pointers
@@ -442,7 +451,7 @@ class NativePlan:
                     ct_type = ct.c_void_p; raw = value.ptr
                     owner_index=len(self.owners);self.owners.append(value)
                 else:
-                    ctype = spec or ('double' if isinstance(value, (float,np.floating)) else 'int32_t')
+                    ctype = spec or ('real_t' if isinstance(value, (float,np.floating)) else 'int32_t')
                     if ctype not in _CTYPES:
                         raise TypeError('unsupported scalar C type: '+ctype)
                     ct_type = _CTYPES[ctype]; raw = value

@@ -4,6 +4,7 @@ G16, 2K1 and I01 keep ownership of their arithmetic. This adapter only binds
 contiguous device views and routes first failure in the same CUDA stream.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 from types import SimpleNamespace
 import numpy as np
@@ -25,12 +26,12 @@ def _after_body(active: wp.array(dtype=wp.int32), body_status: wp.array(dtype=wp
 
 @wp.kernel
 def _check_frames(active: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
-                  xipos: wp.array(dtype=wp.float64), ximat: wp.array(dtype=wp.float64),
-                  geom_xpos: wp.array(dtype=wp.float64), geom_xmat: wp.array(dtype=wp.float64),
-                  site_xpos: wp.array(dtype=wp.float64), site_xmat: wp.array(dtype=wp.float64),
-                  body_tmpquat: wp.array(dtype=wp.float64),
-                  geom_tmpquat: wp.array(dtype=wp.float64),
-                  site_tmpquat: wp.array(dtype=wp.float64),
+                  xipos: wp.array(dtype=scalar.wp_real), ximat: wp.array(dtype=scalar.wp_real),
+                  geom_xpos: wp.array(dtype=scalar.wp_real), geom_xmat: wp.array(dtype=scalar.wp_real),
+                  site_xpos: wp.array(dtype=scalar.wp_real), site_xmat: wp.array(dtype=scalar.wp_real),
+                  body_tmpquat: wp.array(dtype=scalar.wp_real),
+                  geom_tmpquat: wp.array(dtype=scalar.wp_real),
+                  site_tmpquat: wp.array(dtype=scalar.wp_real),
                   nb: int, ng: int, ns: int):
     w = wp.tid()
     if active[w] != 1 or status[w] != 0:

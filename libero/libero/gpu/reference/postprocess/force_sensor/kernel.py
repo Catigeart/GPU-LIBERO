@@ -4,6 +4,7 @@ Apache-2.0 source: engine_sensor.c:mj_sensorAcc force/torque branches and
 engine_util_spatial.c:mju_transformSpatial. This boundary excludes
 mj_rnePostConstraint and all contact/constraint force production.
 """
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -12,22 +13,22 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True})
 
 
 @wp.kernel(enable_backward=False)
-def _sensor(cfrc: wp.array(dtype=wp.float64, ndim=3),
-            com: wp.array(dtype=wp.float64, ndim=3),
-            site_pos: wp.array(dtype=wp.float64, ndim=3),
-            site_mat: wp.array(dtype=wp.float64, ndim=3),
+def _sensor(cfrc: wp.array(dtype=scalar.wp_real, ndim=3),
+            com: wp.array(dtype=scalar.wp_real, ndim=3),
+            site_pos: wp.array(dtype=scalar.wp_real, ndim=3),
+            site_mat: wp.array(dtype=scalar.wp_real, ndim=3),
             active: wp.array(dtype=wp.int32),
             sensor_type: wp.array(dtype=wp.int32),
             sensor_site: wp.array(dtype=wp.int32),
             sensor_adr: wp.array(dtype=wp.int32),
             site_body: wp.array(dtype=wp.int32),
             body_root: wp.array(dtype=wp.int32),
-            result: wp.array(dtype=wp.float64, ndim=2),
+            result: wp.array(dtype=scalar.wp_real, ndim=2),
             status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(6):
-        result[w, k] = wp.float64(0.0)
+        result[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -116,12 +117,12 @@ class ForceSensorWorkspace:
         if np.any(model.body_rootid < 0) or np.any(model.body_rootid >= 38):
             raise ValueError('root id')
         self.capacity, self.device = capacity, device
-        self.cfrc = wp.zeros((capacity,38,6),dtype=wp.float64,device=device)
-        self.com = wp.zeros((capacity,38,3),dtype=wp.float64,device=device)
-        self.site_pos = wp.zeros((capacity,31,3),dtype=wp.float64,device=device)
-        self.site_mat = wp.zeros((capacity,31,9),dtype=wp.float64,device=device)
+        self.cfrc = wp.zeros((capacity,38,6),dtype=scalar.wp_real,device=device)
+        self.com = wp.zeros((capacity,38,3),dtype=scalar.wp_real,device=device)
+        self.site_pos = wp.zeros((capacity,31,3),dtype=scalar.wp_real,device=device)
+        self.site_mat = wp.zeros((capacity,31,9),dtype=scalar.wp_real,device=device)
         self.active = wp.zeros(capacity,dtype=wp.int32,device=device)
-        self.result = wp.zeros((capacity,6),dtype=wp.float64,device=device)
+        self.result = wp.zeros((capacity,6),dtype=scalar.wp_real,device=device)
         self.status = wp.zeros(capacity,dtype=wp.int32,device=device)
         for attr, src in (('sensor_type',model.sensor_type),
                           ('sensor_site',model.sensor_objid),

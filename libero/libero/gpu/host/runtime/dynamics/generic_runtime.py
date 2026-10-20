@@ -4,6 +4,7 @@ No PRE whitelist or fixed-model licence is borrowed. This adapter requires
 native source admission for the actual model, reuses original arithmetic, and
 publishes only device-successful results. Numerical acceptance is separate.
 """
+import libero.gpu.precision as scalar
 from types import SimpleNamespace
 import numpy as np
 import warp as wp
@@ -14,8 +15,8 @@ from .publication import commit_bias, commit_smooth
 
 
 @wp.kernel(enable_backward=False)
-def _site(pos:wp.array(dtype=wp.float64),mat:wp.array(dtype=wp.float64),active:wp.array(dtype=wp.int32),
-          outp:wp.array(dtype=wp.float64,ndim=2),outm:wp.array(dtype=wp.float64,ndim=2),ns:int,site:int):
+def _site(pos:wp.array(dtype=scalar.wp_real),mat:wp.array(dtype=scalar.wp_real),active:wp.array(dtype=wp.int32),
+          outp:wp.array(dtype=scalar.wp_real,ndim=2),outm:wp.array(dtype=scalar.wp_real,ndim=2),ns:int,site:int):
     w=wp.tid()
     if active[w]==1:
         for k in range(3):outp[w,k]=pos[w*ns*3+site*3+k]
@@ -48,7 +49,7 @@ class GenericRuntimeDynamicsAdapter:
         self.spec,self.registry,self.candidate_ids,self.mode=spec,registry,dict(candidate_ids),mode
         common=dict(registry=registry,source_records=source_records,metadata_record=metadata_record,mode=mode,device=self.device)
         self.position=GenericPositionWorkspace(arrays,metadata,spec,capacity,candidate_ids=candidate_ids,**common)
-        self.qpos=self.position.qpos;self.qvel=wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device)
+        self.qpos=self.position.qpos;self.qvel=wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device)
         for name in ('active','requested_mask','gate_velocity','gate_bias','actuation_active','gate_acceleration','gate_control'):
             setattr(self,name,wp.zeros(capacity,dtype=wp.int32,device=self.device))
         self.gate_position=self.position.active
@@ -56,13 +57,13 @@ class GenericRuntimeDynamicsAdapter:
         self.source_state_epoch=wp.zeros(capacity,dtype=wp.int64,device=self.device)
         self.valid={k:wp.zeros(capacity,dtype=wp.int32,device=self.device) for k in ('position','velocity','bias','smooth')}
         self.written={k:wp.zeros(capacity,dtype=wp.int64,device=self.device) for k in self.valid}
-        self.public={k:wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device) for k in ('qfrc_bias','qfrc_smooth','qacc_smooth')}
+        self.public={k:wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device) for k in ('qfrc_bias','qfrc_smooth','qacc_smooth')}
         self.smooth_repaired=wp.zeros(capacity,dtype=wp.int32,device=self.device)
         self.transmission=GenericTransmissionWorkspace(arrays,metadata,spec,capacity,
             candidate_id=candidate_ids['dynamics'],inputs=dict(qpos=self.qpos,qvel=self.qvel,
             position_active=self.gate_position,velocity_active=self.gate_velocity),**common)
         for name,width in (('cvel',self.nbody*6),('cdof_dot',self.nv*6),('cacc',self.nbody*6),('frc',self.nbody*6),('qfrc_bias',self.nv)):
-            setattr(self,name,wp.zeros((capacity,width),dtype=wp.float64,device=self.device))
+            setattr(self,name,wp.zeros((capacity,width),dtype=scalar.wp_real,device=self.device))
         for name in ('status_comvel','status_rne','status_position','status_velocity'):
             setattr(self,name,wp.zeros(capacity,dtype=wp.int32,device=self.device))
         model=SimpleNamespace(**d,**static,opt_gravity=np.asarray(metadata['options']['gravity'],np.float64),
@@ -77,15 +78,15 @@ class GenericRuntimeDynamicsAdapter:
         self.actuation=GenericActuationWorkspace(arrays,metadata,spec,capacity,candidate_id=candidate_ids['dynamics'],
             inputs=dict(length=self.transmission.length,moment=self.transmission.moment,velocity=self.transmission.velocity,
                 vel_status=self.transmission.velocity_status,active=self.actuation_active),**common)
-        self.qfrc_applied=wp.zeros((capacity,self.nv),dtype=wp.float64,device=self.device)
-        self.xfrc_applied=wp.zeros((capacity,self.nbody,6),dtype=wp.float64,device=self.device)
+        self.qfrc_applied=wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device)
+        self.xfrc_applied=wp.zeros((capacity,self.nbody,6),dtype=scalar.wp_real,device=self.device)
         self.acceleration=GenericSmoothWorkspace(arrays,metadata,spec,capacity,candidate_id=candidate_ids['dynamics'],
             inputs=dict(passive=self.passive.qfrc,bias=self.public['qfrc_bias'],applied=self.qfrc_applied,
                 actuator=self.actuation.qfrc_actuator,xfrc=self.xfrc_applied,xipos=body(self.position.frames.xipos,3),
                 subtree_com=body(self.position.subtree_com,3),cdof=self.position.cdof.reshape((capacity,self.nv,6)),
                 qm=self.position.qM,active=self.gate_acceleration),**common)
-        self.site_position=wp.zeros((capacity,3),dtype=wp.float64,device=self.device)
-        self.site_rotation=wp.zeros((capacity,9),dtype=wp.float64,device=self.device)
+        self.site_position=wp.zeros((capacity,3),dtype=scalar.wp_real,device=self.device)
+        self.site_rotation=wp.zeros((capacity,9),dtype=scalar.wp_real,device=self.device)
         self.joint_controller=robot['controller_config']['type'] in ('JOINT_TORQUE','JOINT_POSITION','JOINT_VELOCITY')
         if self.joint_controller:
             from libero.gpu.host.runtime.control.joint_inputs import GenericJointInputsWorkspace
@@ -207,7 +208,7 @@ class GenericRuntimeDynamicsAdapter:
         self._holds['bias'].restore_unrequested(self.requested_mask,self.stream)
     def launch_force(self,*,ctrl,ctrl_valid,stream=None):
         self.validate(stream);self._holds['smooth'].snapshot(self.stream)
-        r._array(ctrl,(self.capacity,self.nu),wp.float64,self.device);r._array(ctrl_valid,(self.capacity,),wp.int32,self.device)
+        r._array(ctrl,(self.capacity,self.nu),scalar.wp_real,self.device);r._array(ctrl_valid,(self.capacity,),wp.int32,self.device)
         self._gate(self.actuation_active,'bias');self._launch(r._force_gate,[ctrl_valid,self.actuation_active])
         self._launch(r._copy_admitted,[self.actuation_active,ctrl,self.actuation.ctrl,self.nu]);self.actuation.launch(stream=self.stream)
         self._launch(r._actuation_finish,[self.actuation_active,self.actuation.status,self.first_error])

@@ -5,6 +5,7 @@ device kernels.  The two small adapters combine the original N18 velocity
 components and route the first stage error without a host read or device copy.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -21,9 +22,9 @@ def _before_control(source_active: wp.array(dtype=wp.int32),
                     input_status: wp.array(dtype=wp.int32),
                     force_refresh: wp.array(dtype=wp.int32),
                     reset_mask: wp.array(dtype=wp.int32),
-                    velp: wp.array(dtype=wp.float64, ndim=2),
-                    velr: wp.array(dtype=wp.float64, ndim=2),
-                    velocity: wp.array(dtype=wp.float64, ndim=2),
+                    velp: wp.array(dtype=scalar.wp_real, ndim=2),
+                    velr: wp.array(dtype=scalar.wp_real, ndim=2),
+                    velocity: wp.array(dtype=scalar.wp_real, ndim=2),
                     control_active: wp.array(dtype=wp.int32),
                     reset_active: wp.array(dtype=wp.int32),
                     chain_status: wp.array(dtype=wp.int32),

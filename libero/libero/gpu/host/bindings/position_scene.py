@@ -1,4 +1,5 @@
 """Optional handwritten fusion of the environment observer's fixed-mode scene route."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from types import MethodType
@@ -16,7 +17,7 @@ def install_scene(owner,body_xpos,body_xmat,build_root):
     owner._scene_cache={}
     for label,count,stride in (('camera',owner.ncam,36),('light',owner.nlight,24)):
         owner._scene_cache[label]=[
-            wp.zeros(owner.nworld*count*stride,dtype=wp.float64,device=body_xpos.device),
+            wp.zeros(owner.nworld*count*stride,dtype=scalar.wp_real,device=body_xpos.device),
             *[wp.zeros(owner.nworld*count,dtype=wp.int32,device=body_xpos.device) for _ in range(4)]]
 
     if owner.ncam:
@@ -30,7 +31,7 @@ def install_scene(owner,body_xpos,body_xmat,build_root):
         owner.nworld,build_root,device=body_xpos.device)
     def update(self,bp,bm,world_mask=None,stream=None):
         for field,size in ((bp,self.nworld*self.nbody*3),(bm,self.nworld*self.nbody*9)):
-            if field.dtype!=wp.float64 or field.ndim!=1 or field.size!=size or not field.is_contiguous:
+            if field.dtype!=scalar.wp_real or field.ndim!=1 or field.size!=size or not field.is_contiguous:
                 raise ValueError('scene input must be flat contiguous FP64 body arrays')
         mask=self.all_worlds if world_mask is None else world_mask
         if mask.dtype!=wp.int32 or mask.shape!=(self.nworld,) or mask.device!=bp.device:

@@ -6,6 +6,7 @@ thread. This adapter owns only its two segments; contact/equality rows belong
 to later assembly.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import hashlib
 
@@ -27,18 +28,18 @@ _FIXED_STATIC_SHA = {
 
 
 @wp.kernel(enable_backward=False)
-def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
+def _produce(qpos: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32),
              incoming: wp.array(dtype=wp.int32), capacity: wp.array(dtype=wp.int32),
-             frictionloss: wp.array(dtype=wp.float64), jnt_type: wp.array(dtype=wp.int32),
+             frictionloss: wp.array(dtype=scalar.wp_real), jnt_type: wp.array(dtype=wp.int32),
              limited: wp.array(dtype=wp.int32), qposadr: wp.array(dtype=wp.int32),
-             dofadr: wp.array(dtype=wp.int32), ranges: wp.array(dtype=wp.float64),
-             margins: wp.array(dtype=wp.float64),
-             friction_J: wp.array(dtype=wp.float64), friction_pos: wp.array(dtype=wp.float64),
-             friction_margin: wp.array(dtype=wp.float64), friction_loss: wp.array(dtype=wp.float64),
+             dofadr: wp.array(dtype=wp.int32), ranges: wp.array(dtype=scalar.wp_real),
+             margins: wp.array(dtype=scalar.wp_real),
+             friction_J: wp.array(dtype=scalar.wp_real), friction_pos: wp.array(dtype=scalar.wp_real),
+             friction_margin: wp.array(dtype=scalar.wp_real), friction_loss: wp.array(dtype=scalar.wp_real),
              friction_type: wp.array(dtype=wp.int32), friction_id: wp.array(dtype=wp.int32),
              friction_global_adr: wp.array(dtype=wp.int32),
-             limit_J: wp.array(dtype=wp.float64), limit_pos: wp.array(dtype=wp.float64),
-             limit_margin: wp.array(dtype=wp.float64), limit_loss: wp.array(dtype=wp.float64),
+             limit_J: wp.array(dtype=scalar.wp_real), limit_pos: wp.array(dtype=scalar.wp_real),
+             limit_margin: wp.array(dtype=scalar.wp_real), limit_loss: wp.array(dtype=scalar.wp_real),
              limit_type: wp.array(dtype=wp.int32), limit_id: wp.array(dtype=wp.int32),
              limit_global_adr: wp.array(dtype=wp.int32),
              nf_delta: wp.array(dtype=wp.int32), nlimit_delta: wp.array(dtype=wp.int32),
@@ -64,7 +65,7 @@ def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
 
     nf = wp.int32(0)
     for i in range(NV):
-        if frictionloss[i] > wp.float64(0.0):
+        if frictionloss[i] > scalar.wp_real(0.0):
             nf += 1
     nl = wp.int32(0)
     for j in range(NJ):
@@ -75,10 +76,10 @@ def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
                 return
             value = qpos[w * NQ + qposadr[j]]
             margin = margins[j]
-            lower = wp.float64(-1.0) * (ranges[2 * j] - value)
+            lower = scalar.wp_real(-1.0) * (ranges[2 * j] - value)
             if lower < margin:
                 nl += 1
-            upper = wp.float64(1.0) * (ranges[2 * j + 1] - value)
+            upper = scalar.wp_real(1.0) * (ranges[2 * j + 1] - value)
             if upper < margin:
                 nl += 1
     need = nf + nl
@@ -89,14 +90,14 @@ def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
     fr = wp.int32(0)
     for i in range(NV):
         loss = frictionloss[i]
-        if loss > wp.float64(0.0):
+        if loss > scalar.wp_real(0.0):
             base = (w * NF_CAP + fr) * NV
             for k in range(NV):
-                friction_J[base + k] = wp.float64(0.0)
-            friction_J[base + i] = wp.float64(1.0)
+                friction_J[base + k] = scalar.wp_real(0.0)
+            friction_J[base + i] = scalar.wp_real(1.0)
             slot = w * NF_CAP + fr
-            friction_pos[slot] = wp.float64(0.0)
-            friction_margin[slot] = wp.float64(0.0)
+            friction_pos[slot] = scalar.wp_real(0.0)
+            friction_margin[slot] = scalar.wp_real(0.0)
             friction_loss[slot] = loss
             friction_type[slot] = 1
             friction_id[slot] = i
@@ -110,30 +111,30 @@ def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
             margin = margins[j]
             adr = dofadr[j]
             # Literal source order: lower side=-1, then upper side=+1.
-            lower = wp.float64(-1.0) * (ranges[2 * j] - value)
+            lower = scalar.wp_real(-1.0) * (ranges[2 * j] - value)
             if lower < margin:
                 base = (w * NL_CAP + lr) * NV
                 for k in range(NV):
-                    limit_J[base + k] = wp.float64(0.0)
-                limit_J[base + adr] = wp.float64(1.0)
+                    limit_J[base + k] = scalar.wp_real(0.0)
+                limit_J[base + adr] = scalar.wp_real(1.0)
                 slot = w * NL_CAP + lr
                 limit_pos[slot] = lower
                 limit_margin[slot] = margin
-                limit_loss[slot] = wp.float64(0.0)
+                limit_loss[slot] = scalar.wp_real(0.0)
                 limit_type[slot] = 3
                 limit_id[slot] = j
                 limit_global_adr[slot] = offset + nf + lr
                 lr += 1
-            upper = wp.float64(1.0) * (ranges[2 * j + 1] - value)
+            upper = scalar.wp_real(1.0) * (ranges[2 * j + 1] - value)
             if upper < margin:
                 base = (w * NL_CAP + lr) * NV
                 for k in range(NV):
-                    limit_J[base + k] = wp.float64(0.0)
-                limit_J[base + adr] = wp.float64(-1.0)
+                    limit_J[base + k] = scalar.wp_real(0.0)
+                limit_J[base + adr] = scalar.wp_real(-1.0)
                 slot = w * NL_CAP + lr
                 limit_pos[slot] = upper
                 limit_margin[slot] = margin
-                limit_loss[slot] = wp.float64(0.0)
+                limit_loss[slot] = scalar.wp_real(0.0)
                 limit_type[slot] = 3
                 limit_id[slot] = j
                 limit_global_adr[slot] = offset + nf + lr
@@ -144,17 +145,17 @@ def _produce(qpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
 
 
 @wp.kernel(enable_backward=False)
-def _probe_dist(qpos: wp.array(dtype=wp.float64), qposadr: wp.array(dtype=wp.int32),
-                ranges: wp.array(dtype=wp.float64), joint: wp.array(dtype=wp.int32),
-                side: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.float64)):
+def _probe_dist(qpos: wp.array(dtype=scalar.wp_real), qposadr: wp.array(dtype=wp.int32),
+                ranges: wp.array(dtype=scalar.wp_real), joint: wp.array(dtype=wp.int32),
+                side: wp.array(dtype=wp.int32), out: wp.array(dtype=scalar.wp_real)):
     """Diagnostic only: expose the identical source-order arithmetic at equality."""
     w = wp.tid()
     j = joint[w]
     value = qpos[w * NQ + qposadr[j]]
     if side[w] == -1:
-        out[w] = wp.float64(-1.0) * (ranges[2 * j] - value)
+        out[w] = scalar.wp_real(-1.0) * (ranges[2 * j] - value)
     else:
-        out[w] = wp.float64(1.0) * (ranges[2 * j + 1] - value)
+        out[w] = scalar.wp_real(1.0) * (ranges[2 * j + 1] - value)
 
 
 def _require_array(value, shape, dtype, label):
@@ -205,14 +206,14 @@ class ScalarWorkspace:
         for key, arr in checked.items():
             if key == 'jnt_limited':
                 arr = arr.astype(np.int32)
-            self.static[key] = wp.array(arr.ravel(), dtype=wp.float64 if arr.dtype == np.float64 else wp.int32, device=device)
-        self.qpos = wp.zeros(nworld * NQ, dtype=wp.float64, device=device)
+            self.static[key] = wp.array(arr.ravel(), dtype=scalar.wp_real if arr.dtype == np.float64 else wp.int32, device=device)
+        self.qpos = wp.zeros(nworld * NQ, dtype=scalar.wp_real, device=device)
         self.active = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.incoming = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.capacity = wp.zeros(nworld, dtype=wp.int32, device=device)
         for seg, rows in (('friction', NF_CAP), ('limit', NL_CAP)):
             for key in ('J', 'pos', 'margin', 'loss'):
-                setattr(self, f'{seg}_{key}', wp.zeros(nworld * rows * (NV if key == 'J' else 1), dtype=wp.float64, device=device))
+                setattr(self, f'{seg}_{key}', wp.zeros(nworld * rows * (NV if key == 'J' else 1), dtype=scalar.wp_real, device=device))
             for key in ('type', 'id', 'global_adr'):
                 setattr(self, f'{seg}_{key}', wp.zeros(nworld * rows, dtype=wp.int32, device=device))
         for key in ('nf_delta', 'nlimit_delta', 'nefc_delta', 'status'):

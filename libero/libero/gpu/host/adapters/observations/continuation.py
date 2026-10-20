@@ -1,4 +1,5 @@
 """Explicit cold-reprepare boundary byte transport; no sensor recomputation."""
+import libero.gpu.precision as scalar
 import copy
 from contextlib import nullcontext
 import dataclasses
@@ -82,7 +83,7 @@ def restore(adapter, packet, stream=None):
         prepared={}
         for name,target in targets.items():
             value=packet["arrays"][name]
-            dtype=np.dtype(np.float64 if target.dtype==wp.float64 else np.int32)
+            dtype=np.dtype(np.float64 if target.dtype==scalar.wp_real else np.int32)
             if not isinstance(value,np.ndarray) or value.shape!=target.shape or value.dtype!=dtype:
                 raise ValueError("continuation dtype/shape mismatch: "+name)
             # Transport bytes, including untouched scratch, without numerical

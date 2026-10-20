@@ -19,6 +19,7 @@ the new combinator required for nonzero external forces; it does not modify
 any accepted kernel.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 from dataclasses import dataclass
@@ -73,20 +74,20 @@ class RnNodes:
 
 
 @wp.kernel(enable_backward=False)
-def _three_rn(passive: wp.array(dtype=wp.float64, ndim=2),
-              bias: wp.array(dtype=wp.float64, ndim=2),
-              applied: wp.array(dtype=wp.float64, ndim=2),
-              actuator: wp.array(dtype=wp.float64, ndim=2),
+def _three_rn(passive: wp.array(dtype=scalar.wp_real, ndim=2),
+              bias: wp.array(dtype=scalar.wp_real, ndim=2),
+              applied: wp.array(dtype=scalar.wp_real, ndim=2),
+              actuator: wp.array(dtype=scalar.wp_real, ndim=2),
               active: wp.array(dtype=wp.int32),
               entry_status: wp.array(dtype=wp.int32),
-              smooth: wp.array(dtype=wp.float64, ndim=2),
-              seed: wp.array(dtype=wp.float64, ndim=2),
+              smooth: wp.array(dtype=scalar.wp_real, ndim=2),
+              seed: wp.array(dtype=scalar.wp_real, ndim=2),
               nv: int):
     w = wp.tid()
     entry_status[w] = 0
     for i in range(nv):
-        smooth[w, i] = wp.float64(0.0)
-        seed[w, i] = wp.float64(0.0)
+        smooth[w, i] = scalar.wp_real(0.0)
+        seed[w, i] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -110,8 +111,8 @@ def _three_rn(passive: wp.array(dtype=wp.float64, ndim=2),
 
 
 @wp.kernel(enable_backward=False)
-def _seed_rhs(qfrc: wp.array(dtype=wp.float64, ndim=2),
-              rhs: wp.array(dtype=wp.float64, ndim=3),
+def _seed_rhs(qfrc: wp.array(dtype=scalar.wp_real, ndim=2),
+              rhs: wp.array(dtype=scalar.wp_real, ndim=3),
               active: wp.array(dtype=wp.int32),
               entry_status: wp.array(dtype=wp.int32),
               d02_status: wp.array(dtype=wp.int32),
@@ -120,7 +121,7 @@ def _seed_rhs(qfrc: wp.array(dtype=wp.float64, ndim=2),
     w = wp.tid()
     for r in range(4):
         for i in range(nv):
-            rhs[w, r, i] = wp.float64(0.0)
+            rhs[w, r, i] = scalar.wp_real(0.0)
     if active[w] != 1 or entry_status[w] != 0 or d02_status[w] != 0:
         return
     for i in range(nv):
@@ -132,10 +133,10 @@ def _route(entry_status: wp.array(dtype=wp.int32),
            d02_status: wp.array(dtype=wp.int32),
            solve_status: wp.array(dtype=wp.int32),
            active: wp.array(dtype=wp.int32),
-           solution: wp.array(dtype=wp.float64, ndim=3),
-           smooth_force: wp.array(dtype=wp.float64, ndim=2),
-           smooth_rn: wp.array(dtype=wp.float64, ndim=2),
-           qacc_smooth: wp.array(dtype=wp.float64, ndim=2),
+           solution: wp.array(dtype=scalar.wp_real, ndim=3),
+           smooth_force: wp.array(dtype=scalar.wp_real, ndim=2),
+           smooth_rn: wp.array(dtype=scalar.wp_real, ndim=2),
+           qacc_smooth: wp.array(dtype=scalar.wp_real, ndim=2),
            status: wp.array(dtype=wp.int32),
            nv: int):
     """Publish only trustworthy fields: every failed world's declared output
@@ -144,9 +145,9 @@ def _route(entry_status: wp.array(dtype=wp.int32),
     if active[w] == 0:
         status[w] = 0
         for i in range(nv):
-            smooth_force[w, i] = wp.float64(0.0)
-            smooth_rn[w, i] = wp.float64(0.0)
-            qacc_smooth[w, i] = wp.float64(0.0)
+            smooth_force[w, i] = scalar.wp_real(0.0)
+            smooth_rn[w, i] = scalar.wp_real(0.0)
+            qacc_smooth[w, i] = scalar.wp_real(0.0)
         return
     s = 0
     if entry_status[w] != 0:
@@ -163,9 +164,9 @@ def _route(entry_status: wp.array(dtype=wp.int32),
         if ok:
             qacc_smooth[w, i] = solution[w, 0, i]
         else:
-            qacc_smooth[w, i] = wp.float64(0.0)
-            smooth_force[w, i] = wp.float64(0.0)
-            smooth_rn[w, i] = wp.float64(0.0)
+            qacc_smooth[w, i] = scalar.wp_real(0.0)
+            smooth_force[w, i] = scalar.wp_real(0.0)
+            smooth_rn[w, i] = scalar.wp_real(0.0)
 
 
 class SmoothXfrcSolveWorkspace:
@@ -203,7 +204,7 @@ class SmoothXfrcSolveWorkspace:
         # publish uninitialized bytes before _route zeroes them).
         self.d02.qfrc.fill_(0.0)
         self.d02.scratch.fill_(0.0)
-        F, I = wp.float64, wp.int32
+        F, I = scalar.wp_real, wp.int32
         self.passive = wp.zeros((capacity, self.nv), dtype=F, device=device)
         self.bias = wp.zeros((capacity, self.nv), dtype=F, device=device)
         self.applied = wp.zeros((capacity, self.nv), dtype=F, device=device)

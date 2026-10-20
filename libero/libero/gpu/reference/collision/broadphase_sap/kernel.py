@@ -6,6 +6,7 @@ frozen CPU is stable for equal endpoint values; the insertion sort below has
 that same tie order.  The CPU capture verifies that claim for every real row.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -32,7 +33,7 @@ def _signature(b1: int, b2: int) -> int:
 
 @wp.kernel(enable_backward=False)
 def _sap(
-    aabb: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
+    aabb: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32),
     maxpair: wp.array(dtype=wp.int32),
     geomadr: wp.array(dtype=wp.int32), geomnum: wp.array(dtype=wp.int32),
     weldid: wp.array(dtype=wp.int32), parentid: wp.array(dtype=wp.int32),
@@ -233,7 +234,7 @@ class SAPWorkspace:
                         for k in required[4:7]]
         self.can = wp.array(can,dtype=wp.int32,device=device)
         self.plane = wp.array(plane,dtype=wp.int32,device=device)
-        self.aabb = wp.empty(nworld*B*6,dtype=wp.float64,device=device)
+        self.aabb = wp.empty(nworld*B*6,dtype=scalar.wp_real,device=device)
         self.active = wp.empty(nworld,dtype=wp.int32,device=device)
         self.maxpair = wp.empty(nworld,dtype=wp.int32,device=device)
         self.sort_value = wp.zeros(nworld*2*B,dtype=wp.float32,device=device)

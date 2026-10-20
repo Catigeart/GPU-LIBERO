@@ -6,6 +6,7 @@ public results.  Preparation is outside capture; enqueue paths perform no host
 array reads, uploads, allocation, or reconstruction of a device view.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -138,9 +139,9 @@ def _actuation_finish(gate: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.
 
 @wp.kernel(enable_backward=False)
 def _selected_velocity(gate: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
-                       vp: wp.array(dtype=wp.float64, ndim=2),
-                       vo: wp.array(dtype=wp.float64, ndim=2),
-                       target: wp.array(dtype=wp.float64, ndim=2),
+                       vp: wp.array(dtype=scalar.wp_real, ndim=2),
+                       vo: wp.array(dtype=scalar.wp_real, ndim=2),
+                       target: wp.array(dtype=scalar.wp_real, ndim=2),
                        first: wp.array(dtype=wp.int32)):
     w = wp.tid()
     if gate[w] == 1:
@@ -158,8 +159,8 @@ def _live_bias_input(mask: wp.array(dtype=wp.int32), first: wp.array(dtype=wp.in
                      state: wp.array(dtype=wp.int64), source: wp.array(dtype=wp.int64),
                      epoch: wp.array(dtype=wp.int64), valid: wp.array(dtype=wp.int32),
                      written: wp.array(dtype=wp.int64),
-                     bias: wp.array(dtype=wp.float64, ndim=2),
-                     selected: wp.array(dtype=wp.float64, ndim=2),
+                     bias: wp.array(dtype=scalar.wp_real, ndim=2),
+                     selected: wp.array(dtype=scalar.wp_real, ndim=2),
                      indices: wp.array(dtype=wp.int32),
                      parent_valid: wp.array(dtype=wp.int32),
                      parent_written: wp.array(dtype=wp.int64)):
@@ -175,8 +176,8 @@ def _live_bias_input(mask: wp.array(dtype=wp.int32), first: wp.array(dtype=wp.in
 
 @wp.kernel(enable_backward=False)
 def _copy_admitted(gate: wp.array(dtype=wp.int32),
-                   source: wp.array(dtype=wp.float64, ndim=2),
-                   target: wp.array(dtype=wp.float64, ndim=2), width: int):
+                   source: wp.array(dtype=scalar.wp_real, ndim=2),
+                   target: wp.array(dtype=scalar.wp_real, ndim=2), width: int):
     w = wp.tid()
     if gate[w] == 1:
         for i in range(width):
@@ -297,7 +298,7 @@ class LiveDynamicsAdapter:
                       for k in ("position", "velocity", "bias", "smooth")}
         self.written = {k: wp.zeros(n, dtype=wp.int64, device=self.device) for k in self.valid}
         nv = int(stages.model_pack.model.nv)
-        self.public = {k: wp.zeros((n, nv), dtype=wp.float64, device=self.device)
+        self.public = {k: wp.zeros((n, nv), dtype=scalar.wp_real, device=self.device)
                        for k in ("qfrc_bias", "qfrc_smooth", "qacc_smooth")}
         self.smooth_repaired = wp.zeros(n, dtype=wp.int32, device=self.device)
         self.controller_parent_valid = wp.zeros(n, dtype=wp.int32, device=self.device)
@@ -497,7 +498,7 @@ class LiveDynamicsAdapter:
         self.validate(stream)
         s = self.stages
         self._holds["smooth"].snapshot(self.stream)
-        _array(ctrl, (self.capacity, 9), wp.float64, self.device)
+        _array(ctrl, (self.capacity, 9), scalar.wp_real, self.device)
         _array(ctrl_valid, (self.capacity,), wp.int32, self.device)
         self._gate(s.actuation_active, "bias")
         self._launch(_force_gate, [ctrl_valid, s.actuation_active])
@@ -640,8 +641,8 @@ def _copy_i32(mask: wp.array(dtype=wp.int32), source: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _reset_ctrl_public(mask: wp.array(dtype=wp.int32), first: wp.array(dtype=wp.int32),
-                       source: wp.array(dtype=wp.float64, ndim=2),
-                       ctrl: wp.array(dtype=wp.float64, ndim=2),
+                       source: wp.array(dtype=scalar.wp_real, ndim=2),
+                       ctrl: wp.array(dtype=scalar.wp_real, ndim=2),
                        valid: wp.array(dtype=wp.int32), written: wp.array(dtype=wp.int64),
                        event: wp.array(dtype=wp.int64)):
     w = wp.tid()
@@ -754,7 +755,7 @@ class RuntimeControllerAdapter:
         """
         self.validate(stream)
         _array(mask, (self.capacity,), wp.int32, self.device)
-        _array(initial_ctrl, (self.capacity, 9), wp.float64, self.device)
+        _array(initial_ctrl, (self.capacity, 9), scalar.wp_real, self.device)
         wp.launch(_reset_ctrl_public, dim=self.capacity,
             inputs=[mask, self.first_error, initial_ctrl, self.public["ctrl"],
                     self.valid, self.written, self.event],
@@ -920,10 +921,10 @@ def _post_gate(active: wp.array(dtype=wp.int32), first: wp.array(dtype=wp.int32)
 @wp.kernel(enable_backward=False)
 def _post_commit(gate: wp.array(dtype=wp.int32), status: wp.array(dtype=wp.int32),
                  sensor_status: wp.array(dtype=wp.int32), first: wp.array(dtype=wp.int32),
-                 epoch: wp.array(dtype=wp.int64), ext: wp.array(dtype=wp.float64, ndim=2),
-                 intr: wp.array(dtype=wp.float64, ndim=2), sensor: wp.array(dtype=wp.float64, ndim=2),
-                 pub_ext: wp.array(dtype=wp.float64, ndim=2), pub_int: wp.array(dtype=wp.float64, ndim=2),
-                 pub_sensor: wp.array(dtype=wp.float64, ndim=2), valid: wp.array(dtype=wp.int32),
+                 epoch: wp.array(dtype=wp.int64), ext: wp.array(dtype=scalar.wp_real, ndim=2),
+                 intr: wp.array(dtype=scalar.wp_real, ndim=2), sensor: wp.array(dtype=scalar.wp_real, ndim=2),
+                 pub_ext: wp.array(dtype=scalar.wp_real, ndim=2), pub_int: wp.array(dtype=scalar.wp_real, ndim=2),
+                 pub_sensor: wp.array(dtype=scalar.wp_real, ndim=2), valid: wp.array(dtype=wp.int32),
                  written: wp.array(dtype=wp.int64), body_width: int, sensor_width: int):
     w = wp.tid()
     valid[w] = 0

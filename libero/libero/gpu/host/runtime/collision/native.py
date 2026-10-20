@@ -4,6 +4,7 @@ The library is prepared before capture. launch() uses device pointers and the
 caller's current Warp CUDA stream; device counts decide which slots enter.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path
 import ctypes as ct
@@ -86,7 +87,7 @@ def _prepare_native(device):
     root = collision_build_root(root, MODULE, GPU_ROOT)
     vector_header=(GPU_ROOT / 'cuda/common/vector.cuh').resolve()
     sources=_native_source_bindings(vector_header)
-    key=hashlib.sha256(json.dumps({'sources':sources,'fma':True,'forced_include':str(vector_header)},sort_keys=True).encode()).hexdigest()
+    key=hashlib.sha256(json.dumps({'sources':sources,'fma':True,'real_bits':scalar.bits,'forced_include':str(vector_header)},sort_keys=True).encode()).hexdigest()
     cache_key=(str(Path(root).resolve()),key,dev.arch,str(dev))
     authority=current_product_authority()
     from libero.gpu.host.runtime.core.product_paths import record_build
@@ -97,7 +98,7 @@ def _prepare_native(device):
     if authority is not None:target=target.with_name(target.name+'_'+uuid.uuid4().hex)
     nvcc=Path(os.environ.get('P06C_NVCC') or nvcc_path()).resolve()
     gcc=Path(os.environ.get('P06C_CCBIN','/usr/bin/g++')).resolve()
-    flags=['-std=c++17','-O2','-arch=sm_'+str(dev.arch),'--fmad=true',
+    flags=[*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-std=c++17','-O2','-arch=sm_'+str(dev.arch),'--fmad=true',
            '--ftz=false','--prec-div=true','--prec-sqrt=true','-rdc=true',
            '-include',str(vector_header),
            '-ccbin',str(gcc)]
@@ -202,9 +203,9 @@ def _bind_native_product(target,record,nvcc,dev,sources):
     lib.native_private_abi.argtypes=[ct.POINTER(ct.c_int)]
     lib.native_private_abi.restype=ct.c_int
     sizes=(ct.c_int*7)()
-    if lib.native_private_abi(sizes)!=7 or list(sizes)!=[8,4,4,104,0,8,32]:
+    if lib.native_private_abi(sizes)!=7 or list(sizes)!=[scalar.itemsize,4,4,13*scalar.itemsize,0,scalar.itemsize,4*scalar.itemsize]:
         raise ValueError('private native contact adapter ABI mismatch')
-    ptr=ct.c_void_p;ci=ct.c_int;cd=ct.c_double
+    ptr=ct.c_void_p;ci=ct.c_int;cd=scalar.ct_real
     lib.launch_native.argtypes=[ptr]*17+[ci]*7+[cd,ci]+[ptr]*7
     lib.launch_native.restype=ci
     # Resolve the exact registered CUDA kernel while this image and Warp context
@@ -259,7 +260,7 @@ def _bind_native_product(target,record,nvcc,dev,sources):
                'binding_program_sha256':_sha(__file__),
                'scope':'actual cudaGetFuncBySymbol/native stub/image preparation; no CUDA API argument values captured by Nsight'}
     obj={'library':lib,'build_path':str(target),'build_sha256':_sha(target/'BUILD.json'),
-         'adapter_abi':[8,4,4,104,0,8,32],'device':str(dev),'execution_binding':execution}
+         'adapter_abi':[scalar.itemsize,4,4,13*scalar.itemsize,0,scalar.itemsize,4*scalar.itemsize],'device':str(dev),'execution_binding':execution}
     from libero.gpu.host.runtime.core.product_paths import record_module_binding
     obj['module_identity_file'] = record_module_binding(target, execution)
     return obj

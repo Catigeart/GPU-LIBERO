@@ -1,4 +1,5 @@
 """Compose accepted N01/N04/N05 kernels without host intermediate payloads."""
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 from dataclasses import dataclass
@@ -54,7 +55,7 @@ class Workspace:
         if nb != model.vel.nbody or nb != model.bias.nbody or nv != model.vel.nv or nv != model.bias.nv:
             raise ValueError("model dimension mismatch")
         def f(width):
-            return wp.empty((capacity, width), dtype=wp.float64, device=device)
+            return wp.empty((capacity, width), dtype=scalar.wp_real, device=device)
         def i():
             return wp.empty(capacity, dtype=wp.int32, device=device)
         self.subtree_com = f(nb * 3)
@@ -104,20 +105,20 @@ def launch(model: ChainModel, work: Workspace, active, xipos, ximat,
         raise ValueError("workspace belongs to a different prepared model")
     nb, nj, nv = model.pos.nbody, model.pos.njnt, model.pos.nv
     schema = {'active': (active, (n,), wp.int32),
-              'xipos': (xipos, (n, nb * 3), wp.float64),
-              'ximat': (ximat, (n, nb * 9), wp.float64),
-              'xanchor': (xanchor, (n, nj * 3), wp.float64),
-              'xmat': (xmat, (n, nb * 9), wp.float64),
-              'xaxis': (xaxis, (n, nj * 3), wp.float64),
-              'qvel': (qvel, (n, nv), wp.float64),
-              'subtree_com': (work.subtree_com, (n, nb * 3), wp.float64),
-              'cinert': (work.cinert, (n, nb * 10), wp.float64),
-              'cdof': (work.cdof, (n, nv * 6), wp.float64),
-              'cvel': (work.cvel, (n, nb * 6), wp.float64),
-              'cdof_dot': (work.cdof_dot, (n, nv * 6), wp.float64),
-              'cacc': (work.cacc, (n, nb * 6), wp.float64),
-              'frc': (work.frc, (n, nb * 6), wp.float64),
-              'qfrc_bias': (work.qfrc_bias, (n, nv), wp.float64)}
+              'xipos': (xipos, (n, nb * 3), scalar.wp_real),
+              'ximat': (ximat, (n, nb * 9), scalar.wp_real),
+              'xanchor': (xanchor, (n, nj * 3), scalar.wp_real),
+              'xmat': (xmat, (n, nb * 9), scalar.wp_real),
+              'xaxis': (xaxis, (n, nj * 3), scalar.wp_real),
+              'qvel': (qvel, (n, nv), scalar.wp_real),
+              'subtree_com': (work.subtree_com, (n, nb * 3), scalar.wp_real),
+              'cinert': (work.cinert, (n, nb * 10), scalar.wp_real),
+              'cdof': (work.cdof, (n, nv * 6), scalar.wp_real),
+              'cvel': (work.cvel, (n, nb * 6), scalar.wp_real),
+              'cdof_dot': (work.cdof_dot, (n, nv * 6), scalar.wp_real),
+              'cacc': (work.cacc, (n, nb * 6), scalar.wp_real),
+              'frc': (work.frc, (n, nb * 6), scalar.wp_real),
+              'qfrc_bias': (work.qfrc_bias, (n, nv), scalar.wp_real)}
     schema.update({name: (getattr(work, name), (n,), wp.int32)
                    for name in ('status_pos', 'status_vel', 'status_bias',
                                 'active_vel', 'active_bias', 'status')})
@@ -128,7 +129,7 @@ def launch(model: ChainModel, work: Workspace, active, xipos, ximat,
                 or not arr.device.is_cuda or not arr.is_contiguous or not int(arr.ptr)):
             raise ValueError(f"device array schema/layout mismatch: {name}")
         start = int(arr.ptr)
-        intervals.append((start, start + prod(shape) * (8 if dtype == wp.float64 else 4), name))
+        intervals.append((start, start + prod(shape) * (scalar.itemsize if dtype == scalar.wp_real else 4), name))
     intervals.sort()
     for left, right in zip(intervals, intervals[1:]):
         if left[1] > right[0]:
@@ -145,7 +146,7 @@ def launch(model: ChainModel, work: Workspace, active, xipos, ximat,
         if arr.device != device or not arr.is_contiguous or not int(arr.ptr):
             raise ValueError("static model device/layout mismatch")
         start = int(arr.ptr)
-        end = start + arr.size * (8 if arr.dtype == wp.float64 else 4)
+        end = start + arr.size * (scalar.itemsize if arr.dtype == scalar.wp_real else 4)
         if any(start < dynamic_end and end > dynamic_start
                for dynamic_start, dynamic_end, _ in intervals):
             raise ValueError("static model aliases dynamic buffer")

@@ -4,6 +4,7 @@ Arithmetic admission is not a claim that every task has been GPU tested.
 Resources depending on the compiled descriptor must still pass compilation
 and cudaFuncGetAttributes at installation, rather than a fixed NV whitelist.
 """
+import libero.gpu.precision as scalar
 import hashlib
 import json
 import os
@@ -61,7 +62,7 @@ def qualify(nv, nM, *, rows=None, contacts=None, nworld=1, blas_backend='cublasd
         raise ValueError('negative row capacity')
     if contacts is not None and int(contacts) < 0:
         raise ValueError('negative contact capacity')
-    budget = newton_shared_budget(nv, blas_backend=blas_backend,
+    budget = newton_shared_budget(nv, blas_backend=blas_backend, scalar_bytes=scalar.itemsize,
                                   shared_limit_bytes=shared_limit_bytes,newton_islands=newton_islands)
     matrix = budget['potrf_matrix_bytes']
     assembly = budget['hessian_workspace_bytes']

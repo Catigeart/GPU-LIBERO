@@ -1,5 +1,6 @@
 """Preallocated Warp/native-CUDA BoxBox pipeline workspace."""
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import ctypes as ct
 from pathlib import Path
@@ -29,19 +30,19 @@ class BoxBoxPipelineWorkspace:
         self.N,self.P,self.device=nworld,pairs,device
         t=nworld*pairs
         self.stream=wp.Stream(device)
-        self.pair_f=wp.empty(t*31,dtype=wp.float64,device=device)
+        self.pair_f=wp.empty(t*31,dtype=scalar.wp_real,device=device)
         self.active=wp.empty(nworld,dtype=wp.int32,device=device)
         self.counts=wp.empty(nworld,dtype=wp.int32,device=device)
-        self.prefix55=wp.empty(t*55,dtype=wp.float64,device=device)
+        self.prefix55=wp.empty(t*55,dtype=scalar.wp_real,device=device)
         self.prefix_meta=wp.empty(t*5,dtype=wp.int32,device=device)
-        self.prefix38=wp.empty(t*38,dtype=wp.float64,device=device)
+        self.prefix38=wp.empty(t*38,dtype=scalar.wp_real,device=device)
         self.prefix_state=wp.empty(t*3,dtype=wp.int32,device=device)
         self.cross=BoxCrossWorkspace(nworld,pairs,device=device)
         self.cross.prefix=self.prefix38
         self.cross.prefix_state=self.prefix_state
         self.cross.active=self.active
         self.cross.counts=self.counts
-        self.sat_f=wp.empty(t*45,dtype=wp.float64,device=device)
+        self.sat_f=wp.empty(t*45,dtype=scalar.wp_real,device=device)
         self.sat_i=wp.empty(t*6,dtype=wp.int32,device=device)
         self.face=BoxFaceContactWorkspace(nworld,pairs,device=device)
         self.face.pair_f=self.pair_f
@@ -55,14 +56,14 @@ class BoxBoxPipelineWorkspace:
             if name in ("pair_f","sat_f","sat_i","active","counts"):
                 continue
             self.edge_view[name]=wp.array(ptr=ptr.value,shape=(length,),
-                                          dtype=wp.float64 if code=="d" else wp.int32,
+                                          dtype=scalar.wp_real if code=="d" else wp.int32,
                                           device=device)
         self.out_count=wp.empty(t,dtype=wp.int32,device=device)
-        self.out_raw=wp.empty(t*500,dtype=wp.float64,device=device)
+        self.out_raw=wp.empty(t*500,dtype=scalar.wp_real,device=device)
         self.write_mask=wp.empty(t*500,dtype=wp.int32,device=device)
         self.state=wp.empty(t*4,dtype=wp.int32,device=device)
         self.frame_written=wp.empty(t,dtype=wp.int32,device=device)
-        self.frame0=wp.empty(t*6,dtype=wp.float64,device=device)
+        self.frame0=wp.empty(t*6,dtype=scalar.wp_real,device=device)
         b=self.edge.buffers
         self._edge_launch_args=tuple(
             [ct.c_void_p(a.ptr) for a in (self.pair_f,self.sat_f,self.sat_i,self.active,self.counts)]

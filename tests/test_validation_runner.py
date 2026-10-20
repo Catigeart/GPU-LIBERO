@@ -41,7 +41,7 @@ class ValidationRunnerTests(unittest.TestCase):
             np.save(root / 'initial_states.npy', bank)
             task = dict(suite='libero_10', task_id=0, key='libero_10/test.bddl',
                         model_sha256='fixture-model', directory=str(root))
-            args = SimpleNamespace(backend='gpu', worlds=2, case='varying', warmup=5,
+            args = SimpleNamespace(backend='gpu', precision='fp64', worlds=2, case='varying', warmup=5,
                 steps=20, seed=0, performance=True, record_reference=False,
                 output=root / 'output', cpu_reference=root / 'cpu', baseline_reference=root / 'old',
                 baseline_sample_reference=[], build_root=root / 'build', device='cuda:0',
@@ -54,8 +54,13 @@ class ValidationRunnerTests(unittest.TestCase):
                 save_json(folder / (stem + '.json'), dict(status='recorded_' + backend, input=protocol))
                 np.savez(folder / (stem + '.npz'), **state(value))
             env = SimpleNamespace(stream=object(), substeps=25, num_envs=2, steps=0)
+            env.built = SimpleNamespace(metadata=dict(model_sha256='fixture-model',
+                static_arrays_sha256='fixture-arrays', decoder_pin={'fixture': True}))
             env._physics = SimpleNamespace(_control_graph=None, _substep_fusion=None)
-            fusion = SimpleNamespace(manifest={'config': {'fixture': True}})
+            native_library = root / 'fixture-native.so'
+            native_library.write_bytes(b'fixture-library')
+            fusion = SimpleNamespace(manifest={'config': {'fixture': True}, 'library': str(native_library)},
+                                     resources={'fixture': True})
 
             def reset(**kwargs):
                 env.steps = 0
@@ -87,6 +92,10 @@ class ValidationRunnerTests(unittest.TestCase):
 
             compilation.compilation_scope = scope
             compilation.install_warp_guard = lambda: None
+            aot = ModuleType('libero.gpu.host.build.aot')
+            aot.source_identity = lambda: 'fixture-source'
+            paths = ModuleType('libero.gpu.host.build.project_paths')
+            paths.project_paths = lambda root: SimpleNamespace(cmake=root / 'cmake-control')
 
             def status(_):
                 return dict(integration_count=[env.steps * 25] * 2, state_epoch=[env.steps * 25] * 2,
@@ -94,11 +103,14 @@ class ValidationRunnerTests(unittest.TestCase):
                             newton_attempts=[env.steps * 75] * 2, position_math=[env.steps * 25] * 2)
 
             with patch.dict(sys.modules, {'libero.libero': library, 'libero.libero.envs': environments,
-                                          'warp': warp, 'libero.gpu.host.build.compilation': compilation}), \
+                                          'warp': warp, 'libero.gpu.host.build.compilation': compilation,
+                                          'libero.gpu.host.build.aot': aot,
+                                          'libero.gpu.host.build.project_paths': paths}), \
                     patch.object(runner, 'gpu_status', side_effect=status), \
+                    patch.object(runner, 'gpu_load_snapshot', return_value={'fixture': True}), \
                     patch.object(runner, 'gpu_endpoint', return_value=state(endpoint)):
                 code = runner.run_task(args, task)
-            self.assertEqual(code, expected_code)
+            self.assertEqual(code, expected_code, (args.output / (stem + '.json')).read_text())
             self.assertEqual(env.step.call_count, expected_steps)
             env.prepare_substep_fusion.assert_called_once()
             env.close.assert_called_once()
@@ -129,18 +141,22 @@ class ValidationRunnerTests(unittest.TestCase):
                 stem = f'libero_10__{index:03d}_n2_varying'
                 base = dict(task=str(index), suite='libero_10', task_id=index, worlds=2,
                             case='varying', passed=True, performance_measured=True,
-                            input=dict(signature=str(index), steps=20))
+                            substeps=25, input=dict(signature=str(index), steps=20))
                 for folder, elapsed, status, stage in [(cpu, .2, 'recorded_cpu', 'endpoint'),
                                                        (gpu, gpu_s, 'qualified', 'performance')]:
                     stats = dict(elapsed_s=elapsed, throughput=40 / elapsed,
                                  mean_ms=elapsed * 50, std_ms=0)
+                    if stage == 'performance':
+                        stats.update(counters=dict(integration_count=[500, 500], reset_events=[0, 0]),
+                                     status=dict(first_error=[0, 0]))
                     save_json(folder / (stem + '.json'), dict(base, status=status, runs={stage: stats}))
                 np.savez(cpu / (stem + '.npz'), time=np.ones(2))
                 np.savez(gpu / (stem + '-performance.npz'), time=np.ones(2) * (1 if index == 0 else 2))
             result = summarize(cpu, gpu, root / 'summary')
             self.assertAlmostEqual(result['all_tasks']['gpu_speedup'], .8)
-            self.assertEqual(result['time_event_consistent']['tasks'], 1)
-            self.assertEqual(result['time_event_consistent']['gpu_speedup'], 2.)
+            self.assertEqual(result['simulation_time_consistent']['tasks'], 1)
+            self.assertEqual(result['simulation_time_consistent']['gpu_speedup'], 2.)
+            self.assertEqual(result['work_event_consistent']['tasks'], 2)
 
 
 if __name__ == '__main__':

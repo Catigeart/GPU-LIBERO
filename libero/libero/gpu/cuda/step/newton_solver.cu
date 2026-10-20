@@ -1,4 +1,5 @@
-// FP64 Newton numerical implementation, independently compiled by CMake.
+#include "precision.cuh"
+// Precision-generic Newton implementation, independently compiled by CMake.
 // No source generation, header-body inclusion, or cross-TU forced inlining.
 #include <cuda_runtime.h>
 #include <cstddef>
@@ -9,6 +10,7 @@
 #include "newton_workspace.cuh"
 #include "newton_coefficient_layout.cuh"
 #include "newton_profile.cuh"
+#include "newton_rank_update.cuh"
 #include "newton_gemv.cuh"
 #include "newton_atomic.cuh"
 #include "newton_transpose.cuh"
@@ -41,11 +43,11 @@ static __device__ __forceinline__ NewtonControl &newton_control(unsigned char *s
 
 namespace physics_newton {
 
-static __device__ inline double *coefficient_plane(unsigned char *base, std::size_t offset) {
-  return reinterpret_cast<double *>(base + offset);
+static __device__ inline real_t *coefficient_plane(unsigned char *base, std::size_t offset) {
+  return reinterpret_cast<real_t *>(base + offset);
 }
-static __device__ inline double *atomic_workspace(const NewtonWorldData &p) {
-  return reinterpret_cast<double *>(p.precomputed + NewtonDeviceWorkspaceLayout::atomic);
+static __device__ inline real_t *atomic_workspace(const NewtonWorldData &p) {
+  return reinterpret_cast<real_t *>(p.precomputed + NewtonDeviceWorkspaceLayout::atomic);
 }
 static __device__ inline jacobian_cache::View jacobian_view(const NewtonWorldData &p) {
   return {p.precomputed + NewtonDeviceWorkspaceLayout::jacobian, SubstepShape::rows, SubstepShape::nv};
@@ -62,17 +64,17 @@ static __device__ void prepare_row_coefficients(unsigned char *shared, const New
   if (!ctl.invariant_valid() || !refresh)
     return;
   CF_NEWTON_PROFILE_SCOPE(Coefficients);
-  double *sqrt_d = coefficient_plane(p.precomputed, NewtonCoefficientLayout::sqrt_d);
-  double *friction_limit = coefficient_plane(p.precomputed, NewtonCoefficientLayout::friction_limit);
-  double *cone_dm = coefficient_plane(p.precomputed, NewtonCoefficientLayout::cone_dm);
+  real_t *sqrt_d = coefficient_plane(p.precomputed, NewtonCoefficientLayout::sqrt_d);
+  real_t *friction_limit = coefficient_plane(p.precomputed, NewtonCoefficientLayout::friction_limit);
+  real_t *cone_dm = coefficient_plane(p.precomputed, NewtonCoefficientLayout::cone_dm);
   const int n = ctl.count();
   const int ne = ctl.ne(), end_friction = ne + ctl.nf();
   for (int r = threadIdx.x; r < n; r += blockDim.x) {
-    sqrt_d[r] = r >= ne ? sqrt(p.D[r]) : 0.0;
-    friction_limit[r] = r >= ne && r < end_friction ? p.R[r] * p.loss[r] : 0.0;
-    double dm = 0.0;
+    sqrt_d[r] = r >= ne ? sqrt(p.D[r]) : REAL_C(0.0);
+    friction_limit[r] = r >= ne && r < end_friction ? p.R[r] * p.loss[r] : REAL_C(0.0);
+    real_t dm = REAL_C(0.0);
     if (r >= end_friction && p.constraint_group_heads[r] == r && p.efc_type[r] == 7) {
-      const double mu = p.contact_mu[p.efc_id[r]];
+      const real_t mu = p.contact_mu[p.efc_id[r]];
       dm = p.D[r] / (mu * mu * (1 + mu * mu));
     }
     cone_dm[r] = dm;
@@ -81,10 +83,10 @@ static __device__ void prepare_row_coefficients(unsigned char *shared, const New
     *reinterpret_cast<uint64_t *>(p.precomputed + NewtonCoefficientLayout::generation) = generation;
 }
 
-static __device__ inline double row_friction_limit(const NewtonWorldData &p, int row) {
+static __device__ inline real_t row_friction_limit(const NewtonWorldData &p, int row) {
   return coefficient_plane(p.precomputed, NewtonCoefficientLayout::friction_limit)[row];
 }
-static __device__ inline double row_sqrt_d(const NewtonWorldData &p, int row) {
+static __device__ inline real_t row_sqrt_d(const NewtonWorldData &p, int row) {
   return coefficient_plane(p.precomputed, NewtonCoefficientLayout::sqrt_d)[row];
 }
 
@@ -93,16 +95,16 @@ static __device__ inline double row_sqrt_d(const NewtonWorldData &p, int row) {
 // engine_util_blas.c:631-694. Apache 2.0, DeepMind Technologies Limited.
 
 struct P {
-  double alpha, cost, d0, d1;
+  real_t alpha, cost, d0, d1;
 };
 
 // Mirrors engine_util_blas.c mju_dot, including four independent lanes and
 // its 1/2/3-element tail grouping. The CMake FP64 policy permits FMA contraction.
-static __device__ double dot_strided(const double *a, int astride, const double *b, int bstride, int n) {
-  double res = 0.0;
+static __device__ real_t dot_strided(const real_t *a, int astride, const real_t *b, int bstride, int n) {
+  real_t res = REAL_C(0.0);
   int i = 0;
   int n4 = n - 4;
-  double r0 = 0.0, r1 = 0.0, r2 = 0.0, r3 = 0.0;
+  real_t r0 = REAL_C(0.0), r1 = REAL_C(0.0), r2 = REAL_C(0.0), r3 = REAL_C(0.0);
   if (n4 >= 0) {
     r0 = a[0] * b[0];
     r1 = a[astride] * b[bstride];
@@ -128,73 +130,73 @@ static __device__ double dot_strided(const double *a, int astride, const double 
   return res;
 }
 
-static __device__ void add3(double *total, const double *q) {
+static __device__ void add3(real_t *total, const real_t *q) {
   total[0] += q[0];
   total[1] += q[1];
   total[2] += q[2];
 }
 
 static __device__ P eval_point(unsigned char *shared, const NewtonModelData &model,
-                               const NewtonWorldData &world, const double *smooth_force, int w, int rows,
-                               int nefc, int ne, int nf, double alpha, int tag, int *niter) {
+                               const NewtonWorldData &world, const real_t *smooth_force, int w, int rows,
+                               int nefc, int ne, int nf, real_t alpha, int tag, int *niter) {
   auto &ctl = newton_control(shared);
   const int qbase = w * rows * 3, base = w * rows;
-  double total[3] = {(&ctl.quad0())[w], world.quadGauss[w * 3 + 1], world.quadGauss[w * 3 + 2]};
-  double cost = 0.0, deriv0 = 0.0, deriv1 = 0.0;
+  real_t total[3] = {(&ctl.quad0())[w], world.quadGauss[w * 3 + 1], world.quadGauss[w * 3 + 2]};
+  real_t cost = REAL_C(0.0), deriv0 = REAL_C(0.0), deriv1 = REAL_C(0.0);
   for (int i = 0; i < ne; i++)
     add3(total, world.quad + qbase + 3 * i);
   for (int i = ne; i < ne + nf; i++) {
-    double start = world.jar[base + i], dir = world.Jv[base + i];
-    double x = start + alpha * dir;
-    double f = world.loss[base + i], Rf = row_friction_limit(world, base + i);
+    real_t start = world.jar[base + i], dir = world.Jv[base + i];
+    real_t x = start + alpha * dir;
+    real_t f = world.loss[base + i], Rf = row_friction_limit(world, base + i);
     if (-Rf < x && x < Rf)
       add3(total, world.quad + qbase + 3 * i);
     else if (x <= -Rf) {
-      double qf[3] = {f * (-0.5 * Rf - start), -f * dir, 0.0};
+      real_t qf[3] = {f * (-REAL_C(0.5) * Rf - start), -f * dir, REAL_C(0.0)};
       add3(total, qf);
     } else {
-      double qf[3] = {f * (-0.5 * Rf + start), f * dir, 0.0};
+      real_t qf[3] = {f * (-REAL_C(0.5) * Rf + start), f * dir, REAL_C(0.0)};
       add3(total, qf);
     }
   }
   for (int i = ne + nf; i < nefc; i++) {
     if (world.efc_type[base + i] == 7) { // mjCNSTR_CONTACT_ELLIPTIC
-      const double *q = world.quad + qbase + 3 * i;
+      const real_t *q = world.quad + qbase + 3 * i;
       int dim = world.cone_dim[base + i];
-      double mu = world.cone_mu[base + i];
-      double U0 = q[3], V0 = q[4], UU = q[5], UV = q[6], VV = q[7], Dm = q[8];
-      double N = U0 + alpha * V0;
-      double Tsqr = UU + alpha * (2.0 * UV + alpha * VV);
-      if (Tsqr <= 0.0) {
-        if (N < 0.0)
+      real_t mu = world.cone_mu[base + i];
+      real_t U0 = q[3], V0 = q[4], UU = q[5], UV = q[6], VV = q[7], Dm = q[8];
+      real_t N = U0 + alpha * V0;
+      real_t Tsqr = UU + alpha * (REAL_C(2.0) * UV + alpha * VV);
+      if (Tsqr <= REAL_C(0.0)) {
+        if (N < REAL_C(0.0))
           add3(total, q);
       } else {
-        double T = __dsqrt_rn(Tsqr);
+        real_t T = real_sqrt_rn(Tsqr);
         if (N >= mu * T) {
           // top zone
-        } else if (mu * N + T <= 0.0) {
+        } else if (mu * N + T <= REAL_C(0.0)) {
           add3(total, q);
         } else {
-          double N1 = V0;
-          double T1 = __ddiv_rn(UV + alpha * VV, T);
-          double T2 = __ddiv_rn(VV, T) - __ddiv_rn((UV + alpha * VV) * T1, T * T);
-          cost += 0.5 * Dm * (N - mu * T) * (N - mu * T);
+          real_t N1 = V0;
+          real_t T1 = real_div_rn(UV + alpha * VV, T);
+          real_t T2 = real_div_rn(VV, T) - real_div_rn((UV + alpha * VV) * T1, T * T);
+          cost += REAL_C(0.5) * Dm * (N - mu * T) * (N - mu * T);
           deriv0 += Dm * (N - mu * T) * (N1 - mu * T1);
           deriv1 += Dm * ((N1 - mu * T1) * (N1 - mu * T1) + (N - mu * T) * (-mu * T2));
         }
       }
       i += dim - 1;
     } else {
-      double x = world.jar[base + i] + alpha * world.Jv[base + i];
-      if (x < 0.0)
+      real_t x = world.jar[base + i] + alpha * world.Jv[base + i];
+      if (x < REAL_C(0.0))
         add3(total, world.quad + qbase + 3 * i);
     }
   }
   cost += alpha * alpha * total[2] + alpha * total[1] + total[0];
-  deriv0 += 2.0 * alpha * total[2] + total[1];
-  deriv1 += 2.0 * total[2];
-  if (deriv1 <= 0.0)
-    deriv1 = 1.0e-15;
+  deriv0 += REAL_C(2.0) * alpha * total[2] + total[1];
+  deriv1 += REAL_C(2.0) * total[2];
+  if (deriv1 <= REAL_C(0.0))
+    deriv1 = REAL_C(1.0e-15);
   if (!isfinite(alpha) || !isfinite(cost) || !isfinite(deriv0) || !isfinite(deriv1))
     (&ctl.s07_status())[w] = 5;
   P p = {alpha, cost, deriv0, deriv1};
@@ -211,29 +213,29 @@ static __device__ P eval_point(unsigned char *shared, const NewtonModelData &mod
 }
 
 static __device__ int update_bracket(unsigned char *shared, const NewtonModelData &model,
-                                     const NewtonWorldData &world, const double *smooth_force, int w,
+                                     const NewtonWorldData &world, const real_t *smooth_force, int w,
                                      int rows, int nefc, int ne, int nf, P *p, const P *candidates, P *next,
                                      int *niter, int tag) {
   int flag = 0;
   for (int i = 0; i < 3; i++) {
-    if (p->d0 < 0.0 && candidates[i].d0 < 0.0 && p->d0 < candidates[i].d0) {
+    if (p->d0 < REAL_C(0.0) && candidates[i].d0 < REAL_C(0.0) && p->d0 < candidates[i].d0) {
       *p = candidates[i];
       flag = 1;
-    } else if (p->d0 > 0.0 && candidates[i].d0 > 0.0 && p->d0 > candidates[i].d0) {
+    } else if (p->d0 > REAL_C(0.0) && candidates[i].d0 > REAL_C(0.0) && p->d0 > candidates[i].d0) {
       *p = candidates[i];
       flag = 2;
     }
   }
   if (flag) {
-    double alpha = p->alpha - __ddiv_rn(p->d0, p->d1);
+    real_t alpha = p->alpha - real_div_rn(p->d0, p->d1);
     *next = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf, alpha, tag, niter);
   }
   return flag;
 }
 
 static __device__ void finish(unsigned char *shared, const NewtonModelData &model,
-                              const NewtonWorldData &world, const double *smooth_force, int w, double alpha,
-                              int niter, int result, double slope) {
+                              const NewtonWorldData &world, const real_t *smooth_force, int w, real_t alpha,
+                              int niter, int result, real_t slope) {
   auto &ctl = newton_control(shared);
   (&ctl.alpha())[w] = alpha;
   (&ctl.LSiter())[w] = niter;
@@ -242,12 +244,12 @@ static __device__ void finish(unsigned char *shared, const NewtonModelData &mode
 }
 
 static __device__ void search_kernel(int w, unsigned char *shared, const NewtonModelData &model,
-                                     const NewtonWorldData &world, const double *smooth_force, int nworld,
+                                     const NewtonWorldData &world, const real_t *smooth_force, int nworld,
                                      int nv, int nM, int rows, int tracecap) {
   auto &ctl = newton_control(shared);
-  double *shared_search = shared_at<double>(shared, NewtonLayout::search);
-  double *shared_mass_search = shared_at<double>(shared, NewtonLayout::mass_search);
-  double *shared_mass_acceleration = shared_at<double>(shared, NewtonLayout::mass_acceleration);
+  real_t *shared_search = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *shared_mass_search = shared_at<real_t>(shared, NewtonLayout::mass_search);
+  real_t *shared_mass_acceleration = shared_at<real_t>(shared, NewtonLayout::mass_acceleration);
 
   if (w >= nworld)
     return;
@@ -272,15 +274,15 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
     if (world.efc_type[base + i] == 7) {
       int dim = world.cone_dim[base + i];
       if (i < ne + nf || (dim != 3 && dim != 4 && dim != 6) || i + dim > nefc ||
-          world.cone_mu[base + i] <= 0.0) {
+          world.cone_mu[base + i] <= REAL_C(0.0)) {
         (&ctl.s07_status())[w] = 4;
         return;
       }
       i += dim - 1;
     }
   }
-  const double *v = shared_search + w * nv;
-  double snorm = __dsqrt_rn(dot_strided(v, 1, v, 1, nv));
+  const real_t *v = shared_search + w * nv;
+  real_t snorm = real_sqrt_rn(dot_strided(v, 1, v, 1, nv));
   if (!isfinite(snorm)) {
     (&ctl.s07_status())[w] = 5;
     return;
@@ -288,21 +290,21 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
   // The CPU context carries quadGauss[0] on entry; the device ABI stores that
   // frozen input separately, so materialize its unchanged value in the output.
   world.quadGauss[w * 3] = (&ctl.quad0())[w];
-  if (snorm < 1.0e-15) {
-    finish(shared, model, world, smooth_force, w, 0.0, 0, 1, 1.0);
+  if (snorm < REAL_C(1.0e-15)) {
+    finish(shared, model, world, smooth_force, w, REAL_C(0.0), 0, 1, REAL_C(1.0));
     return;
   }
-  double mean = model.model_scalars[1];
-  double gtol = model.model_scalars[0] * 0.01 * snorm * mean * (nv > 1 ? nv : 1);
-  double slopescl = __ddiv_rn(1.0, snorm * mean * (nv > 1 ? nv : 1));
+  real_t mean = model.model_scalars[1];
+  real_t gtol = real_linesearch_tolerance(model.model_scalars[0] * REAL_C(0.01) * snorm * mean * (nv > 1 ? nv : 1));
+  real_t slopescl = real_div_rn(REAL_C(1.0), snorm * mean * (nv > 1 ? nv : 1));
   if (!isfinite(gtol) || !isfinite(slopescl)) {
     (&ctl.s07_status())[w] = 5;
     return;
   }
-  double *Mv = shared_mass_search + w * nv;
-  const double *M = world.qM + w * nM;
+  real_t *Mv = shared_mass_search + w * nv;
+  const real_t *M = world.qM + w * nM;
   for (int i = 0; i < nv; i++)
-    Mv[i] = 0.0;
+    Mv[i] = REAL_C(0.0);
   for (int i = 0; i < nv; i++) {
     int adr = model.madr[i];
     if (model.simplenum[i]) {
@@ -324,8 +326,8 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
       (&ctl.s07_status())[w] = 5;
       return;
     }
-  double *Jv = world.Jv + base;
-  const double *J = world.J + w * rows * nv;
+  real_t *Jv = world.Jv + base;
+  const real_t *J = world.J + w * rows * nv;
   for (int i = 0; i < nefc; i++)
     Jv[i] = dot_strided(J + i * nv, 1, v, 1, nv);
   for (int i = 0; i < nefc; i++)
@@ -333,36 +335,36 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
       (&ctl.s07_status())[w] = 5;
       return;
     }
-  double *qG = world.quadGauss + w * 3;
+  real_t *qG = world.quadGauss + w * 3;
   qG[1] = dot_strided(v, 1, shared_mass_acceleration + w * nv, 1, nv) -
           dot_strided(v, 1, smooth_force + w * nv, 1, nv);
-  qG[2] = 0.5 * dot_strided(v, 1, Mv, 1, nv);
+  qG[2] = REAL_C(0.5) * dot_strided(v, 1, Mv, 1, nv);
   if (!isfinite(qG[1]) || !isfinite(qG[2])) {
     (&ctl.s07_status())[w] = 5;
     return;
   }
-  double *qbase = world.quad + w * rows * 3;
+  real_t *qbase = world.quad + w * rows * 3;
   for (int i = 0; i < nefc; i++) {
-    double *q = qbase + 3 * i;
+    real_t *q = qbase + 3 * i;
     bool elliptic = world.efc_type[base + i] == 7;
-    double DJ0 = world.D[base + i] * world.jar[base + i];
+    real_t DJ0 = world.D[base + i] * world.jar[base + i];
     q[0] = world.jar[base + i] * DJ0;
     q[1] = Jv[i] * DJ0;
     q[2] = Jv[i] * world.D[base + i] * Jv[i];
     if (elliptic) {
       int dim = world.cone_dim[base + i];
-      double mu = world.cone_mu[base + i];
+      real_t mu = world.cone_mu[base + i];
       for (int j = 1; j < dim; j++) {
-        double DJj = world.D[base + i + j] * world.jar[base + i + j];
+        real_t DJj = world.D[base + i + j] * world.jar[base + i + j];
         q[0] += world.jar[base + i + j] * DJj;
         q[1] += Jv[i + j] * DJj;
         q[2] += Jv[i + j] * world.D[base + i + j] * Jv[i + j];
       }
-      double U0 = world.jar[base + i] * mu, V0 = Jv[i] * mu;
-      double UU = 0.0, UV = 0.0, VV = 0.0;
+      real_t U0 = world.jar[base + i] * mu, V0 = Jv[i] * mu;
+      real_t UU = REAL_C(0.0), UV = REAL_C(0.0), VV = REAL_C(0.0);
       for (int j = 1; j < dim; j++) {
-        double U = world.jar[base + i + j] * world.cone_friction[(base + i) * 5 + j - 1];
-        double V = Jv[i + j] * world.cone_friction[(base + i) * 5 + j - 1];
+        real_t U = world.jar[base + i + j] * world.cone_friction[(base + i) * 5 + j - 1];
+        real_t V = Jv[i + j] * world.cone_friction[(base + i) * 5 + j - 1];
         UU += U * U;
         UV += U * V;
         VV += V * V;
@@ -372,11 +374,11 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
       q[5] = UU;
       q[6] = UV;
       q[7] = VV;
-      q[8] = __ddiv_rn(world.D[base + i], mu * mu * (1.0 + mu * mu));
+      q[8] = real_div_rn(world.D[base + i], mu * mu * (REAL_C(1.0) + mu * mu));
       i += dim - 1;
     }
-    q[0] *= 0.5;
-    q[2] *= 0.5;
+    q[0] *= REAL_C(0.5);
+    q[2] *= REAL_C(0.5);
     for (int k = 0; k < 3; k++)
       if (!isfinite(q[k])) {
         (&ctl.s07_status())[w] = 5;
@@ -391,24 +393,24 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
     }
   }
   int niter = 0;
-  P p0 = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf, 0.0, 1, &niter);
+  P p0 = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf, REAL_C(0.0), 1, &niter);
   P p1 = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                    p0.alpha - __ddiv_rn(p0.d0, p0.d1), 2, &niter);
+                    p0.alpha - real_div_rn(p0.d0, p0.d1), 2, &niter);
   if (p0.cost < p1.cost)
     p1 = p0;
   if (fabs(p1.d0) < gtol) {
-    finish(shared, model, world, smooth_force, w, p1.alpha, niter, p1.alpha == 0.0 ? 2 : 0,
+    finish(shared, model, world, smooth_force, w, p1.alpha, niter, p1.alpha == REAL_C(0.0) ? 2 : 0,
            fabs(p1.d0) * slopescl);
     return;
   }
-  int dir = p1.d0 < 0.0 ? 1 : -1;
+  int dir = p1.d0 < REAL_C(0.0) ? 1 : -1;
   int p2update = 0;
   P p2 = {};
   while (p1.d0 * dir <= -gtol && niter < 50) {
     p2 = p1;
     p2update = 1;
     p1 = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                    p1.alpha - __ddiv_rn(p1.d0, p1.d1), 3, &niter);
+                    p1.alpha - real_div_rn(p1.d0, p1.d1), 3, &niter);
     if (fabs(p1.d0) < gtol) {
       finish(shared, model, world, smooth_force, w, p1.alpha, niter, 0, fabs(p1.d0) * slopescl);
       return;
@@ -424,12 +426,12 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
   }
   P p2next = p1;
   P p1next = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                        p1.alpha - __ddiv_rn(p1.d0, p1.d1), 4, &niter);
+                        p1.alpha - real_div_rn(p1.d0, p1.d1), 4, &niter);
   while (niter < 50) {
     P pmid = eval_point(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                        0.5 * (p1.alpha + p2.alpha), 5, &niter);
+                        REAL_C(0.5) * (p1.alpha + p2.alpha), 5, &niter);
     P candidates[3] = {p1next, p2next, pmid};
-    double bestcost = 0.0;
+    real_t bestcost = REAL_C(0.0);
     int bestind = -1;
     for (int i = 0; i < 3; i++) {
       if (fabs(candidates[i].d0) < gtol && (bestind == -1 || candidates[i].cost < bestcost)) {
@@ -457,7 +459,7 @@ static __device__ void search_kernel(int w, unsigned char *shared, const NewtonM
   } else if (p2.cost <= p1.cost && p2.cost < p0.cost) {
     finish(shared, model, world, smooth_force, w, p2.alpha, niter, 4, fabs(p2.d0) * slopescl);
   } else {
-    finish(shared, model, world, smooth_force, w, 0.0, niter, 5, 1.0);
+    finish(shared, model, world, smooth_force, w, REAL_C(0.0), niter, 5, REAL_C(1.0));
   }
 }
 
@@ -473,11 +475,11 @@ namespace libero_packed_mass {
 // All block threads call. Each output has one owner, so no atomics or shared
 // scratch are needed. Preserve the scalar scatter's contribution order,
 // including simple-row assignment rather than addition.
-static __device__ __forceinline__ void multiply_gather(const double *x, const double *qM, const int *madr,
-                                                       const int *parent, const int *simple, double *result,
+static __device__ __forceinline__ void multiply_gather(const real_t *x, const real_t *qM, const int *madr,
+                                                       const int *parent, const int *simple, real_t *result,
                                                        int nv) {
   for (int row = int(threadIdx.x); row < nv; row += int(blockDim.x)) {
-    double value = 0.0;
+    real_t value = REAL_C(0.0);
     for (int i = 0; i < nv; ++i) {
       int adr = madr[i];
       if (simple && simple[i]) {
@@ -504,17 +506,17 @@ static __device__ __forceinline__ void multiply_gather(const double *x, const do
 // and uniform entry. Inactive output lanes still participate in every shuffle.
 // No floating-point reduction/reassociation and no implicit memory barrier.
 // Keep opt-in until whole-kernel timing justifies the repeated warp traversal.
-static __device__ __forceinline__ void multiply_gather_warp(const double *x, const double *qM,
+static __device__ __forceinline__ void multiply_gather_warp(const real_t *x, const real_t *qM,
                                                             const int *madr, const int *parent,
-                                                            const int *simple, double *result, int nv) {
+                                                            const int *simple, real_t *result, int nv) {
   const int lane = int(threadIdx.x) & 31;
   const int warp_base = int(threadIdx.x) & ~31;
   for (int base = warp_base; base < nv; base += int(blockDim.x)) {
     const int row = base + lane;
-    double value = 0.0;
+    real_t value = REAL_C(0.0);
     for (int i = 0; i < nv; ++i) {
       int adr = 0, row_simple = 0;
-      double diagonal = 0.0, xi = 0.0;
+      real_t diagonal = REAL_C(0.0), xi = REAL_C(0.0);
       if (lane == 0) {
         adr = madr[i];
         row_simple = simple && simple[i];
@@ -534,7 +536,7 @@ static __device__ __forceinline__ void multiply_gather_warp(const double *x, con
         value += diagonal * xi;
       ++adr;
       for (int j = parent[i]; j >= 0; j = parent[j], ++adr) {
-        double coefficient = 0.0, xj = 0.0;
+        real_t coefficient = REAL_C(0.0), xj = REAL_C(0.0);
         if (lane == 0) {
           coefficient = qM[adr];
           xj = x[j];
@@ -557,11 +559,11 @@ static __device__ __forceinline__ void multiply_gather_warp(const double *x, con
 // emits events in the original scalar i/ancestor traversal order. A simple
 // diagonal event assigns, including overwriting earlier descendant additions.
 // No floating point reduction, no scratch, and no topology traversal at runtime.
-static __device__ __forceinline__ void multiply_plan(const double *x, const double *qM, const int *offsets,
+static __device__ __forceinline__ void multiply_plan(const real_t *x, const real_t *qM, const int *offsets,
                                                      const int *coefficient, const int *source,
-                                                     const int *assign, double *result, int nv) {
+                                                     const int *assign, real_t *result, int nv) {
   for (int row = int(threadIdx.x); row < nv; row += int(blockDim.x)) {
-    double value = 0.0;
+    real_t value = REAL_C(0.0);
     for (int e = offsets[row]; e < offsets[row + 1]; ++e) {
       if (assign[e])
         value = qM[coefficient[e]] * x[source[e]];
@@ -574,13 +576,13 @@ static __device__ __forceinline__ void multiply_plan(const double *x, const doub
 
 // Generic non-simple packed storage. Newton passes its dof_simple array to
 // the overload above; dropping that array there would change semantics.
-static __device__ __forceinline__ void multiply_gather(const double *x, const double *qM, const int *madr,
-                                                       const int *parent, double *result, int nv) {
+static __device__ __forceinline__ void multiply_gather(const real_t *x, const real_t *qM, const int *madr,
+                                                       const int *parent, real_t *result, int nv) {
   multiply_gather(x, qM, madr, parent, nullptr, result, nv);
 }
-static __device__ __forceinline__ void multiply_gather_warp(const double *x, const double *qM,
+static __device__ __forceinline__ void multiply_gather_warp(const real_t *x, const real_t *qM,
                                                             const int *madr, const int *parent,
-                                                            double *result, int nv) {
+                                                            real_t *result, int nv) {
   multiply_gather_warp(x, qM, madr, parent, nullptr, result, nv);
 }
 } // namespace libero_packed_mass
@@ -629,8 +631,8 @@ template <class T> static __device__ __forceinline__ void fill_serial(T *dst, si
 
 // Compile-time reference path for rank-update performance comparisons only.
 // Both choices retain pivot order, zero skips and rank regularization.
-static __device__ inline double dot4(const double *a, const double *b, int n) {
-  double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+static __device__ inline real_t dot4(const real_t *a, const real_t *b, int n) {
+  real_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
   int k = 0;
 #if LIBERO_NEWTON_SCALAR_IO
   if (n >= 4) {
@@ -650,8 +652,8 @@ static __device__ inline double dot4(const double *a, const double *b, int n) {
   // Pair only the loads: accumulator lanes, initialization, and tails retain
   // the source expression order. Each pair lies inside a full four-wide chunk.
   if (n >= 4) {
-    const double2 a01 = libero_vec::load_pair(a), b01 = libero_vec::load_pair(b);
-    const double2 a23 = libero_vec::load_pair(a + 2), b23 = libero_vec::load_pair(b + 2);
+    const real2_t a01 = libero_vec::load_pair(a), b01 = libero_vec::load_pair(b);
+    const real2_t a23 = libero_vec::load_pair(a + 2), b23 = libero_vec::load_pair(b + 2);
     s0 = a01.x * b01.x;
     s1 = a01.y * b01.y;
     s2 = a23.x * b23.x;
@@ -659,15 +661,15 @@ static __device__ inline double dot4(const double *a, const double *b, int n) {
     k = 4;
   }
   for (; k + 4 <= n; k += 4) {
-    const double2 a01 = libero_vec::load_pair(a + k), b01 = libero_vec::load_pair(b + k);
-    const double2 a23 = libero_vec::load_pair(a + k + 2), b23 = libero_vec::load_pair(b + k + 2);
+    const real2_t a01 = libero_vec::load_pair(a + k), b01 = libero_vec::load_pair(b + k);
+    const real2_t a23 = libero_vec::load_pair(a + k + 2), b23 = libero_vec::load_pair(b + k + 2);
     s0 += a01.x * b01.x;
     s1 += a01.y * b01.y;
     s2 += a23.x * b23.x;
     s3 += a23.y * b23.y;
   }
 #endif // LIBERO_NEWTON_SCALAR_IO
-  double s = (s0 + s2) + (s1 + s3);
+  real_t s = (s0 + s2) + (s1 + s3);
   if (n - k == 3)
     s += a[k] * b[k] + a[k + 1] * b[k + 1] + a[k + 2] * b[k + 2];
   else if (n - k == 2)
@@ -686,10 +688,10 @@ static __device__ inline int mass_index(int i, int j, const int *madr, const int
   }
   return -1;
 }
-static __device__ inline void mass_multiply(const double *v, const double *M, const int *madr,
-                                            const int *parent, const int *simple, double *out) {
+static __device__ inline void mass_multiply(const real_t *v, const real_t *M, const int *madr,
+                                            const int *parent, const int *simple, real_t *out) {
   for (int i = 0; i < SubstepShape::nv; ++i)
-    out[i] = 0.0;
+    out[i] = REAL_C(0.0);
   for (int i = 0; i < SubstepShape::nv; ++i) {
     int adr = madr[i];
     if (simple[i])
@@ -704,96 +706,35 @@ static __device__ inline void mass_multiply(const double *v, const double *M, co
     }
   }
 }
-static __device__ inline int chol_factor(double *H, int n, int stride) {
+static __device__ inline int chol_factor(real_t *H, int n, int stride) {
   int rank = n;
   for (int j = 0; j < n; ++j) {
-    double d = H[j * stride + j];
+    real_t d = H[j * stride + j];
     if (j)
       d -= dot4(H + j * stride, H + j * stride, j);
-    if (d < 1e-15) {
-      d = 1e-15;
+    if (d < REAL_C(1e-15)) {
+      d = REAL_C(1e-15);
       --rank;
     }
     H[j * stride + j] = sqrt(d);
-    double inv = 1.0 / H[j * stride + j];
+    real_t inv = REAL_C(1.0) / H[j * stride + j];
     for (int i = j + 1; i < n; ++i)
       H[i * stride + j] = (H[i * stride + j] - dot4(H + i * stride, H + j * stride, j)) * inv;
   }
   return rank;
 }
-static __device__ inline int chol_update(double *H, double *v, int plus) {
-  int rank = SubstepShape::nv;
-  for (int k = 0; k < SubstepShape::nv; ++k) {
-    double x = v[k];
-    if (x == 0.0)
-      continue;
-    double L = H[k * SubstepShape::nv + k], tmp = L * L;
-    tmp = plus ? tmp + x * x : tmp - x * x;
-    if (tmp < 1e-15) {
-      tmp = 1e-15;
-      --rank;
-    }
-    double r = sqrt(tmp), c = r / L, inv = 1.0 / c, s = x / L;
-    H[k * SubstepShape::nv + k] = r;
-    for (int i = k + 1; i < SubstepShape::nv; ++i)
-      H[i * SubstepShape::nv + k] =
-          (plus ? H[i * SubstepShape::nv + k] + s * v[i] : H[i * SubstepShape::nv + k] - s * v[i]) * inv;
-    for (int i = k + 1; i < SubstepShape::nv; ++i)
-      v[i] = c * v[i] - s * H[i * SubstepShape::nv + k];
-  }
-  return rank;
+static __device__ inline int chol_update(real_t *H, real_t *v, int plus) {
+  return rank_update::serial<SubstepShape::nv>(H, v, plus);
 }
 // All block threads enter. Only warp 0 touches the update; the final block
 // barrier publishes its complete private factor/vector before another phase.
 // Pivot order and each element's arithmetic match chol_update exactly.
-static __device__ inline int chol_update_block(double *H, double *v, int plus) {
-  CF_NEWTON_PROFILE_SCOPE(RankUpdate);
-  __shared__ int result;
-  if constexpr (SubstepShape::nv <= 32) {
-    if (threadIdx.x == 0)
-      result = chol_update(H, v, plus);
-  } else if (threadIdx.x < 32) {
-    const int lane = threadIdx.x;
-    int rank = SubstepShape::nv;
-    for (int k = 0; k < SubstepShape::nv; ++k) {
-      double x = lane == 0 ? v[k] : 0.0;
-      x = __shfl_sync(0xffffffffu, x, 0);
-      if (x == 0.0)
-        continue; // uniform warp branch, including signed zero
-      double c = 0.0, inv = 0.0, s = 0.0;
-      if (lane == 0) {
-        double L = H[k * SubstepShape::nv + k], tmp = L * L;
-        tmp = plus ? tmp + x * x : tmp - x * x;
-        if (tmp < 1e-15) {
-          tmp = 1e-15;
-          --rank;
-        }
-        double r = sqrt(tmp);
-        c = r / L;
-        inv = 1.0 / c;
-        s = x / L;
-        H[k * SubstepShape::nv + k] = r;
-      }
-      c = __shfl_sync(0xffffffffu, c, 0);
-      inv = __shfl_sync(0xffffffffu, inv, 0);
-      s = __shfl_sync(0xffffffffu, s, 0);
-      for (int i = k + 1 + lane; i < SubstepShape::nv; i += 32) {
-        double updated =
-            (plus ? H[i * SubstepShape::nv + k] + s * v[i] : H[i * SubstepShape::nv + k] - s * v[i]) * inv;
-        H[i * SubstepShape::nv + k] = updated;
-        v[i] = c * v[i] - s * updated;
-      }
-      __syncwarp(0xffffffffu); // next pivot may read another lane's v[k]
-    }
-    if (lane == 0)
-      result = rank;
-  }
-  __syncthreads();
-  return result;
+static __device__ inline int chol_update_block(real_t *H, real_t *v, int plus) {
+  return rank_update::collective<SubstepShape::nv>(H, v, plus);
 }
 
-static __device__ inline double cone_norm(const double *jar, const double *f, int d) {
-  double u1 = 0, u2 = 0, u3 = 0, u4 = 0, u5 = 0, s = 0;
+static __device__ inline real_t cone_norm(const real_t *jar, const real_t *f, int d) {
+  real_t u1 = 0, u2 = 0, u3 = 0, u4 = 0, u5 = 0, s = 0;
   if (d > 1) {
     u1 = jar[1] * f[0];
     u2 = jar[2] * f[1];
@@ -811,9 +752,9 @@ static __device__ inline double cone_norm(const double *jar, const double *f, in
   return sqrt(s);
 }
 static __device__ void
-constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, int *flag, double *jar,
-                  double *D, double *R, double *loss, int *typ, int *cid, double *J, double *mu, double *fr,
-                  int *dim, double *force, int *state, double *H, double *cost, int *status, int rows,
+constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, int *flag, real_t *jar,
+                  real_t *D, real_t *R, real_t *loss, int *typ, int *cid, real_t *J, real_t *mu, real_t *fr,
+                  int *dim, real_t *force, int *state, real_t *H, real_t *cost, int *status, int rows,
                   int contacts, int nv, int *invariant_valid = nullptr, int *active_count = nullptr,
                   int *cone_count = nullptr, int *old_state = nullptr, int *changed_count = nullptr,
                   bool validate_only = false, int *group_head = nullptr, int *hessian_owner = nullptr,
@@ -884,7 +825,7 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
     for (int r = 0; r < n; ++r) {
       int z = rb + r;
       if (jar[z] > 10000 || jar[z] < -10000 ||
-          (!cached && (D[z] > 2e16 || D[z] < -10000 || R[z] > 10000 || R[z] < -10000 || loss[z] > 10000 ||
+          (!cached && (D[z] > REAL_C(2e16) || D[z] < -10000 || R[z] > 10000 || R[z] < -10000 || loss[z] > 10000 ||
                        loss[z] < -10000))) {
         status[w] = 10;
         return;
@@ -905,21 +846,21 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
       continue;
     }
     int c = cb + cid[rb + i], d = dim[c];
-    double m = mu[c];
+    real_t m = mu[c];
     if (!cached) {
-      if (m < .0001 || m > 10000) {
+      if (m < REAL_C(.0001) || m > 10000) {
         status[w] = 10;
         return;
       }
       for (int j = 0; j < d - 1; ++j)
-        if (fr[c * 5 + j] < .0001 || fr[c * 5 + j] > 10000) {
+        if (fr[c * 5 + j] < REAL_C(.0001) || fr[c * 5 + j] > 10000) {
           status[w] = 10;
           return;
         }
     }
-    double T = cone_norm(jar + rb + i, fr + c * 5, d), N = jar[rb + i] * m;
+    real_t T = cone_norm(jar + rb + i, fr + c * 5, d), N = jar[rb + i] * m;
     bool top = N >= m * T || (T <= 0 && N >= 0), bottom = m * N + T <= 0 || (T <= 0 && N < 0);
-    if (!top && !bottom && T < 1e-12) {
+    if (!top && !bottom && T < REAL_C(1e-12)) {
       status[w] = 10;
       return;
     }
@@ -946,30 +887,30 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
     invariant_valid[0] = 1;
   if (validate_only)
     return;
-  double s = 0;
+  real_t s = 0;
   int na = eq + fc, nco = 0, nchanged = 0;
   for (int r = 0; r < n; ++r)
-    force[rb + r] = (-1.0 * D[rb + r]) * jar[rb + r];
+    force[rb + r] = (-REAL_C(1.0) * D[rb + r]) * jar[rb + r];
   for (int r = 0; r < eq; ++r) {
-    s += .5 * D[rb + r] * jar[rb + r] * jar[rb + r];
+    s += REAL_C(.5) * D[rb + r] * jar[rb + r] * jar[rb + r];
     if (old_state && old_state[rb + r] != 1)
       ++nchanged;
     state[rb + r] = 1;
   }
   for (int r = eq; r < eq + fc; ++r) {
     int z = rb + r;
-    double v = jar[z], rr = R[z], f = loss[z];
+    real_t v = jar[z], rr = R[z], f = loss[z];
     int next;
-    if (v <= (-1.0 * rr) * f) {
-      s += -.5 * rr * f * f - f * v;
+    if (v <= (-REAL_C(1.0) * rr) * f) {
+      s += -REAL_C(.5) * rr * f * f - f * v;
       force[z] = f;
       next = 2;
     } else if (v >= rr * f) {
-      s += -.5 * rr * f * f + f * v;
-      force[z] = -1.0 * f;
+      s += -REAL_C(.5) * rr * f * f + f * v;
+      force[z] = -REAL_C(1.0) * f;
       next = 3;
     } else {
-      s += .5 * D[z] * v * v;
+      s += REAL_C(.5) * D[z] * v * v;
       next = 1;
     }
     if (old_state && old_state[z] != next)
@@ -981,10 +922,10 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
     if (typ[z] != 7) {
       int next;
       if (jar[z] >= 0) {
-        force[z] = 0.0;
+        force[z] = REAL_C(0.0);
         next = 0;
       } else {
-        s += .5 * D[z] * jar[z] * jar[z];
+        s += REAL_C(.5) * D[z] * jar[z] * jar[z];
         next = 1;
         ++na;
       }
@@ -995,31 +936,31 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
       continue;
     }
     int c = cb + cid[z], d = dim[c], fb = c * 5;
-    double m = mu[c], N = jar[z] * m, T = cone_norm(jar + z, fr + fb, d);
+    real_t m = mu[c], N = jar[z] * m, T = cone_norm(jar + z, fr + fb, d);
     if (N >= m * T || (T <= 0 && N >= 0)) {
       for (int j = 0; j < d; ++j)
-        force[z + j] = 0.0;
+        force[z + j] = REAL_C(0.0);
       state[z] = 0;
     } else if (m * N + T <= 0 || (T <= 0 && N < 0)) {
       for (int j = 0; j < d; ++j)
-        s += .5 * D[z + j] * jar[z + j] * jar[z + j];
+        s += REAL_C(.5) * D[z + j] * jar[z + j] * jar[z + j];
       state[z] = 1;
     } else {
-      double dm = D[z] / (m * m * (1 + m * m)), nm = N - m * T;
-      s += .5 * dm * nm * nm;
-      force[z] = (-1.0 * dm) * nm * m;
+      real_t dm = D[z] / (m * m * (1 + m * m)), nm = N - m * T;
+      s += REAL_C(.5) * dm * nm * nm;
+      force[z] = (-REAL_C(1.0) * dm) * nm * m;
       for (int j = 1; j < d; ++j)
-        force[z + j] = (-1.0 * force[z]) / T * (jar[z + j] * fr[fb + j - 1]) * fr[fb + j - 1];
+        force[z + j] = (-REAL_C(1.0) * force[z]) / T * (jar[z + j] * fr[fb + j - 1]) * fr[fb + j - 1];
       state[z] = 4;
       if (flag[w]) {
-        double *h = H + c * 36;
-        double scale = (-1.0 * m) / T;
+        real_t *h = H + c * 36;
+        real_t scale = (-REAL_C(1.0) * m) / T;
         h[0] = 1;
         for (int j = 1; j < d; ++j)
           h[j] = scale * (jar[z + j] * fr[fb + j - 1]);
         scale = m * N / (T * T * T);
         for (int k = 1; k < d; ++k) {
-          double uk = jar[z + k] * fr[fb + k - 1];
+          real_t uk = jar[z + k] * fr[fb + k - 1];
           for (int j = k; j < d; ++j)
             h[k * d + j] = scale * (jar[z + j] * fr[fb + j - 1]) * uk;
         }
@@ -1027,7 +968,7 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
         for (int j = 1; j < d; ++j)
           h[j * (d + 1)] += scale;
         for (int k = 0; k < d; ++k) {
-          double a = dm * (k == 0 ? m : fr[fb + k - 1]);
+          real_t a = dm * (k == 0 ? m : fr[fb + k - 1]);
           for (int j = k; j < d; ++j)
             h[k * d + j] *= a * (j == 0 ? m : fr[fb + j - 1]);
         }
@@ -1059,29 +1000,29 @@ constraint_update(int w, int *active, int *count, int *ne, int *nf, int *ncon, i
 
 // Runtime span qualification preserves the admitted alias domain: overlapping
 // outputs use the retained direct read/write equations below, never staging.
-static __device__ inline bool constraint_spans_overlap(const double *a, int an, const double *b, int bn) {
+static __device__ inline bool constraint_spans_overlap(const real_t *a, int an, const real_t *b, int bn) {
   const unsigned long long ab = (unsigned long long)a, bb = (unsigned long long)b;
-  return an > 0 && bn > 0 && ab < bb + (unsigned long long)bn * sizeof(double) &&
-         bb < ab + (unsigned long long)an * sizeof(double);
+  return an > 0 && bn > 0 && ab < bb + (unsigned long long)bn * sizeof(real_t) &&
+         bb < ab + (unsigned long long)an * sizeof(real_t);
 }
 
 // Fixed dimension kernels keep the middle-cone's at-most-six component work
 // local to its owning lane. Typed passes make the dimension uniform per warp;
 // no shuffle or barrier occurs inside a numeric zone branch.
 template <int d>
-static __device__ inline double constraint_middle_cone(double *jar, double *fr, double dm, double m, double N,
-                                                       double T, double *force, double *h, bool write_h) {
+static __device__ inline real_t constraint_middle_cone(real_t *jar, real_t *fr, real_t dm, real_t m, real_t N,
+                                                       real_t T, real_t *force, real_t *h, bool write_h) {
   // The sole middle-cone owner writes its mathematical d*d block directly.
   // Avoid an address-taken local matrix and a second full copy; held tails,
   // input staging and overlapping-buffer fallback retain their existing rules.
-  double nm = N - m * T;
-  double cost = .5 * dm * nm * nm;
-  force[0] = (-1.0 * dm) * nm * m;
+  real_t nm = N - m * T;
+  real_t cost = REAL_C(.5) * dm * nm * nm;
+  force[0] = (-REAL_C(1.0) * dm) * nm * m;
 #pragma unroll
   for (int j = 1; j < d; ++j)
-    force[j] = (-1.0 * force[0]) / T * (jar[j] * fr[j - 1]) * fr[j - 1];
+    force[j] = (-REAL_C(1.0) * force[0]) / T * (jar[j] * fr[j - 1]) * fr[j - 1];
   if (write_h) {
-    double scale = (-1.0 * m) / T;
+    real_t scale = (-REAL_C(1.0) * m) / T;
     h[0] = 1;
 #pragma unroll
     for (int j = 1; j < d; ++j)
@@ -1089,7 +1030,7 @@ static __device__ inline double constraint_middle_cone(double *jar, double *fr, 
     scale = m * N / (T * T * T);
 #pragma unroll
     for (int k = 1; k < d; ++k) {
-      double uk = jar[k] * fr[k - 1];
+      real_t uk = jar[k] * fr[k - 1];
 #pragma unroll
       for (int j = k; j < d; ++j)
         h[k * d + j] = scale * (jar[j] * fr[j - 1]) * uk;
@@ -1100,7 +1041,7 @@ static __device__ inline double constraint_middle_cone(double *jar, double *fr, 
       h[j * (d + 1)] += scale;
 #pragma unroll
     for (int k = 0; k < d; ++k) {
-      double a = dm * (k == 0 ? m : fr[k - 1]);
+      real_t a = dm * (k == 0 ? m : fr[k - 1]);
 #pragma unroll
       for (int j = k; j < d; ++j)
         h[k * d + j] *= a * (j == 0 ? m : fr[j - 1]);
@@ -1155,11 +1096,11 @@ static __device__ inline void constraint_tile_head_offsets_block(int n, int eq, 
 static __device__ void constraint_head_metadata_gate(
     const int *active, const int *status, const int *invariant_valid, const int *count, const int *nefc,
     const int *ne, const int *nf, const int *ncon, const int *typ, const int *cid, const int *dim,
-    const double *mu, const double *fr, const int *row_dim, const double *row_mu, const double *row_fr,
+    const real_t *mu, const real_t *fr, const int *row_dim, const real_t *row_mu, const real_t *row_fr,
     const int *group_head, const int *head_rows, const int *head_count, const int *source_counts,
     const int *source_ncon, const int *compact_heads, const int *compact_count, const int *compact_valid,
-    const int *head_type, const int *head_id, const int *head_dim, const double *head_mu,
-    const double *head_friction, const int *head_valid, int *selected, int rows, int contacts, int nv) {
+    const int *head_type, const int *head_id, const int *head_dim, const real_t *head_mu,
+    const real_t *head_friction, const int *head_valid, int *selected, int rows, int contacts, int nv) {
   if (threadIdx.x != 0)
     return;
   selected[0] = 0;
@@ -1193,14 +1134,14 @@ static __device__ void constraint_head_metadata_gate(
         return;
       // Compare both current N views against S's ordinal view. Positive finite
       // operands were already admitted by the original ordered N validation.
-      const long long m_bits = __double_as_longlong(head_mu[k]);
-      if (m_bits != __double_as_longlong(mu[c]) || m_bits != __double_as_longlong(row_mu[r]))
+      const long long m_bits = real_bits(head_mu[k]);
+      if (m_bits != real_bits(mu[c]) || m_bits != real_bits(row_mu[r]))
         return;
       for (int j = 0; j < d - 1; ++j) {
-        const double f = head_friction[j * rows + k];
-        const long long f_bits = __double_as_longlong(f);
-        if (f_bits != __double_as_longlong(fr[c * 5 + j]) ||
-            f_bits != __double_as_longlong(row_fr[r * 5 + j]))
+        const real_t f = head_friction[j * rows + k];
+        const long long f_bits = real_bits(f);
+        if (f_bits != real_bits(fr[c * 5 + j]) ||
+            f_bits != real_bits(row_fr[r * 5 + j]))
           return;
       }
       for (int j = 1; j < d; ++j)
@@ -1228,8 +1169,8 @@ static __device__ void constraint_head_metadata_gate(
 // per-cone numerical admission and last-middle-cone ownership over CTA lanes.
 static __device__ inline void
 fused_numeric_admission_block(int w, int n, int eq, int fc, int rb, int cb, bool cached, const int *typ,
-                              const int *cid, const int *dim, const double *jar, const double *mu,
-                              const double *fr, int *group_head, int *hessian_owner, int *invariant_valid,
+                              const int *cid, const int *dim, const real_t *jar, const real_t *mu,
+                              const real_t *fr, int *group_head, int *hessian_owner, int *invariant_valid,
                               int *status, int *warp_bad) {
   if (threadIdx.x == 0 && !cached) {
     for (int r = 0; r < eq + fc; ++r)
@@ -1248,18 +1189,18 @@ fused_numeric_admission_block(int w, int n, int eq, int fc, int rb, int cb, bool
     if (group_head[rb + r] != r || typ[rb + r] != 7)
       continue;
     const int c = cb + cid[rb + r], d = dim[c];
-    const double m = mu[c];
+    const real_t m = mu[c];
     if (!cached) {
-      if (m < .0001 || m > 10000)
+      if (m < REAL_C(.0001) || m > 10000)
         bad = 0;
       for (int j = 0; j < d - 1; ++j)
-        if (fr[c * 5 + j] < .0001 || fr[c * 5 + j] > 10000)
+        if (fr[c * 5 + j] < REAL_C(.0001) || fr[c * 5 + j] > 10000)
           bad = 0;
     }
-    const double T = cone_norm(jar + rb + r, fr + c * 5, d), N = jar[rb + r] * m;
+    const real_t T = cone_norm(jar + rb + r, fr + c * 5, d), N = jar[rb + r] * m;
     const bool top = N >= m * T || (T <= 0 && N >= 0), bottom = m * N + T <= 0 || (T <= 0 && N < 0);
     if (!top && !bottom) {
-      if (T < 1e-12)
+      if (T < REAL_C(1e-12))
         bad = 0;
       // Repeated ids are legal: later top/bottom groups leave the earlier H
       // intact. Only the last middle group is a mathematical Hessian writer.
@@ -1283,14 +1224,14 @@ fused_numeric_admission_block(int w, int n, int eq, int fc, int rb, int cb, bool
 }
 
 static __device__ void constraint_apply_block(
-    int w, int *active, int *count, int *ne, int *nf, int *ncon, bool write_hessian, double *jar, double *D,
-    double *R, double *loss, int *typ, int *cid, double *J, double *mu, double *fr, int *dim, double *force,
-    int *state, double *H, double *cost, int *status, int rows, int contacts, int nv, int *invariant_valid,
+    int w, int *active, int *count, int *ne, int *nf, int *ncon, bool write_hessian, real_t *jar, real_t *D,
+    real_t *R, real_t *loss, int *typ, int *cid, real_t *J, real_t *mu, real_t *fr, int *dim, real_t *force,
+    int *state, real_t *H, real_t *cost, int *status, int rows, int contacts, int nv, int *invariant_valid,
     int *active_count, int *cone_count, int *old_state, int *changed_count, int *group_head,
     int *hessian_owner, int *head_rows, int *head_count, int *tile_head_offset, int *typed_head_rows,
-    int *typed_head_offsets, const int *head_dim, const double *head_mu, const double *head_friction,
-    const double *cone_norms, bool trusted, unsigned char *precomputed = nullptr) {
-  __shared__ double cost_warp[4];
+    int *typed_head_offsets, const int *head_dim, const real_t *head_mu, const real_t *head_friction,
+    const real_t *cone_norms, bool trusted, unsigned char *precomputed = nullptr) {
+  __shared__ real_t cost_warp[4];
   __shared__ int active_warp[4], cone_warp[4], change_warp[4];
   const int n = count[w], eq = ne[w], fc = nf[w], rb = w * rows, cb = w * contacts;
   // Use one warp only for small compiled models with at most one warp of rows.
@@ -1298,7 +1239,7 @@ static __device__ void constraint_apply_block(
   const bool small = SubstepShape::nv <= 32 && n <= 32;
   if (small && threadIdx.x >= 32)
     return;
-  double sum = 0.;
+  real_t sum = REAL_C(0.);
   int na = 0, nco = 0, nchanged = 0;
   const bool compact = head_rows && head_count;
   const bool typed = compact && typed_head_rows && typed_head_offsets;
@@ -1315,8 +1256,8 @@ static __device__ void constraint_apply_block(
        !constraint_spans_overlap(H + cb * 36, ncon[w] * 36, force + rb, n) &&
        !constraint_spans_overlap(force + rb, n, mu + cb, ncon[w]) &&
        !constraint_spans_overlap(H + cb * 36, ncon[w] * 36, mu + cb, ncon[w]) &&
-       !constraint_spans_overlap(force + rb, n, (const double *)(dim + cb), (ncon[w] + 1) / 2) &&
-       !constraint_spans_overlap(H + cb * 36, ncon[w] * 36, (const double *)(dim + cb), (ncon[w] + 1) / 2));
+       !constraint_spans_overlap(force + rb, n, (const real_t *)(dim + cb), (ncon[w] + 1) / 2) &&
+       !constraint_spans_overlap(H + cb * 36, ncon[w] * 36, (const real_t *)(dim + cb), (ncon[w] + 1) / 2));
 
   for (int bucket = 0; bucket < (typed ? 7 : 1); ++bucket) {
     int begin = typed ? typed_head_offsets[bucket] : 0;
@@ -1327,32 +1268,32 @@ static __device__ void constraint_apply_block(
         continue;
       int z = rb + r, next = 1;
       if (r < eq) {
-        force[z] = (-1.0 * D[z]) * jar[z];
-        sum += .5 * D[z] * jar[z] * jar[z];
+        force[z] = (-REAL_C(1.0) * D[z]) * jar[z];
+        sum += REAL_C(.5) * D[z] * jar[z] * jar[z];
         ++na;
       } else if (r < eq + fc) {
-        double v = jar[z], rr = R[z], f = loss[z];
-        const double limit = precomputed
+        real_t v = jar[z], rr = R[z], f = loss[z];
+        const real_t limit = precomputed
             ? coefficient_plane(precomputed, NewtonCoefficientLayout::friction_limit)[r] : rr * f;
-        force[z] = (-1.0 * D[z]) * v;
+        force[z] = (-REAL_C(1.0) * D[z]) * v;
         if (v <= -limit) {
-          sum += -.5 * rr * f * f - f * v;
+          sum += -REAL_C(.5) * rr * f * f - f * v;
           force[z] = f;
           next = 2;
         } else if (v >= limit) {
-          sum += -.5 * rr * f * f + f * v;
-          force[z] = -1.0 * f;
+          sum += -REAL_C(.5) * rr * f * f + f * v;
+          force[z] = -REAL_C(1.0) * f;
           next = 3;
         } else
-          sum += .5 * D[z] * v * v;
+          sum += REAL_C(.5) * D[z] * v * v;
         ++na;
       } else if (typ[z] != 7) {
-        force[z] = (-1.0 * D[z]) * jar[z];
+        force[z] = (-REAL_C(1.0) * D[z]) * jar[z];
         if (jar[z] >= 0) {
-          force[z] = 0.0;
+          force[z] = REAL_C(0.0);
           next = 0;
         } else {
-          sum += .5 * D[z] * jar[z] * jar[z];
+          sum += REAL_C(.5) * D[z] * jar[z] * jar[z];
           ++na;
         }
       } else {
@@ -1360,13 +1301,13 @@ static __device__ void constraint_apply_block(
                              ? constraint_head_rank(head_rows, head_count[0], r)
                              : -1;
         int c = cb + cid[z], d = stage_inputs && head_dim && rank >= 0 ? head_dim[rank] : dim[c], fb = c * 5;
-        double m = stage_inputs && head_mu && rank >= 0 ? head_mu[rank] : mu[c];
+        real_t m = stage_inputs && head_mu && rank >= 0 ? head_mu[rank] : mu[c];
         // At most six components remain in registers through force, norm, cost
         // and the middle-cone Hessian producer. Scatter retains original row IDs.
-        double local_jar[6], local_D[6], local_fr[5];
-        double *input_jar = jar + z;
-        double *input_D = D + z;
-        double *input_fr = fr + fb;
+        real_t local_jar[6], local_D[6], local_fr[5];
+        real_t *input_jar = jar + z;
+        real_t *input_D = D + z;
+        real_t *input_fr = fr + fb;
         if (stage_inputs) {
           for (int j = 0; j < d; ++j) {
             local_jar[j] = jar[z + j];
@@ -1378,14 +1319,14 @@ static __device__ void constraint_apply_block(
           input_D = local_D;
           input_fr = local_fr;
         }
-        double N = input_jar[0] * m, T = cone_norms ? cone_norms[rb + r] : cone_norm(input_jar, input_fr, d);
+        real_t N = input_jar[0] * m, T = cone_norms ? cone_norms[rb + r] : cone_norm(input_jar, input_fr, d);
         const int zone = cone_norms ? state[z] : -1;
 #if LIBERO_NEWTON_SCALAR_IO
         for (int j = 0; j < d; ++j)
-          force[z + j] = (-1.0 * input_D[j]) * input_jar[j];
+          force[z + j] = (-REAL_C(1.0) * input_D[j]) * input_jar[j];
         if (cone_norms ? zone == 0 : (N >= m * T || (T <= 0 && N >= 0))) {
           for (int j = 0; j < d; ++j)
-            force[z + j] = 0.0;
+            force[z + j] = REAL_C(0.0);
           next = 0;
         }
 #else
@@ -1394,31 +1335,31 @@ static __device__ void constraint_apply_block(
         if (stage_inputs) {
           int j = 0;
           for (; j + 1 < d; j += 2) {
-            double2 dv = libero_vec::load_pair(input_D + j), jv = libero_vec::load_pair(input_jar + j);
-            libero_vec::store_pair(force + z + j, (-1.0 * dv.x) * jv.x, (-1.0 * dv.y) * jv.y);
+            real2_t dv = libero_vec::load_pair(input_D + j), jv = libero_vec::load_pair(input_jar + j);
+            libero_vec::store_pair(force + z + j, (-REAL_C(1.0) * dv.x) * jv.x, (-REAL_C(1.0) * dv.y) * jv.y);
           }
           if (j < d)
-            force[z + j] = (-1.0 * input_D[j]) * input_jar[j];
+            force[z + j] = (-REAL_C(1.0) * input_D[j]) * input_jar[j];
         } else
           for (int j = 0; j < d; ++j)
-            force[z + j] = (-1.0 * input_D[j]) * input_jar[j];
+            force[z + j] = (-REAL_C(1.0) * input_D[j]) * input_jar[j];
         if (cone_norms ? zone == 0 : (N >= m * T || (T <= 0 && N >= 0))) {
           if (stage_inputs)
-            libero_newton_io::fill_serial(force + z, d, 0.0);
+            libero_newton_io::fill_serial(force + z, d, REAL_C(0.0));
           else
             for (int j = 0; j < d; ++j)
-              force[z + j] = 0.0;
+              force[z + j] = REAL_C(0.0);
           next = 0;
         }
 #endif // LIBERO_NEWTON_SCALAR_IO
         else if (cone_norms ? zone == 1 : (m * N + T <= 0 || (T <= 0 && N < 0))) {
           for (int j = 0; j < d; ++j)
-            sum += .5 * input_D[j] * input_jar[j] * input_jar[j];
+            sum += REAL_C(.5) * input_D[j] * input_jar[j] * input_jar[j];
           next = 1;
         } else {
           bool write_h = write_hessian && hessian_owner[c] == r;
-          double *h = H + c * 36;
-          const double dm = precomputed
+          real_t *h = H + c * 36;
+          const real_t dm = precomputed
               ? coefficient_plane(precomputed, NewtonCoefficientLayout::cone_dm)[r]
               : input_D[0] / (m * m * (1 + m * m));
           if (d == 3)
@@ -1492,7 +1433,7 @@ static __device__ void constraint_apply_block(
   }
   __syncthreads();
   if (wid == 0) {
-    sum = libero_warp::sum(lane < warps ? cost_warp[lane] : 0.);
+    sum = libero_warp::sum(lane < warps ? cost_warp[lane] : REAL_C(0.));
     na = libero_warp::sum(lane < warps ? active_warp[lane] : 0);
     nco = libero_warp::sum(lane < warps ? cone_warp[lane] : 0);
     nchanged = libero_warp::sum(lane < warps ? change_warp[lane] : 0);
@@ -1509,13 +1450,13 @@ static __device__ void constraint_apply_block(
 }
 
 static __device__ void constraint_update_block(
-    int w, int *active, int *count, int *ne, int *nf, int *ncon, int *flag, double *jar, double *D, double *R,
-    double *loss, int *typ, int *cid, double *J, double *mu, double *fr, int *dim, double *force, int *state,
-    double *H, double *cost, int *status, int rows, int contacts, int nv, int *invariant_valid,
+    int w, int *active, int *count, int *ne, int *nf, int *ncon, int *flag, real_t *jar, real_t *D, real_t *R,
+    real_t *loss, int *typ, int *cid, real_t *J, real_t *mu, real_t *fr, int *dim, real_t *force, int *state,
+    real_t *H, real_t *cost, int *status, int rows, int contacts, int nv, int *invariant_valid,
     int *active_count, int *cone_count, int *old_state, int *changed_count, int *group_head,
     int *hessian_owner, int *head_rows = nullptr, int *head_count = nullptr, int *tile_head_offset = nullptr,
     int *typed_head_rows = nullptr, int *typed_head_offsets = nullptr, const int *head_dim = nullptr,
-    const double *head_mu = nullptr, const double *head_friction = nullptr) {
+    const real_t *head_mu = nullptr, const real_t *head_friction = nullptr) {
   __shared__ int check_warp[4], check_result;
   // Topology parsing stays ordered: variable-size cone groups and original
   // error precedence must be established before any parallel row access.
@@ -1535,13 +1476,13 @@ static __device__ void constraint_update_block(
     if (!isfinite(jar[z]) || (!cached && (!isfinite(D[z]) || !isfinite(R[z]) || !isfinite(loss[z]))))
       bad = min(bad, 2 * r);
     if (jar[z] > 10000 || jar[z] < -10000 ||
-        (!cached && (D[z] > 2e16 || D[z] < -10000 || R[z] > 10000 || R[z] < -10000 || loss[z] > 10000 ||
+        (!cached && (D[z] > REAL_C(2e16) || D[z] < -10000 || R[z] > 10000 || R[z] < -10000 || loss[z] > 10000 ||
                      loss[z] < -10000)))
       bad = min(bad, 2 * n);
   }
   if (!cached)
     for (int k = threadIdx.x; k < n * nv; k += blockDim.x) {
-      double v = J[rb * nv + k];
+      real_t v = J[rb * nv + k];
       if (!isfinite(v))
         bad = min(bad, 2 * (k / nv) + 1);
       if (v > 10000 || v < -10000)
@@ -1663,7 +1604,7 @@ static __device__ void constraint_update_block(
       if (group_head[rb + r] != r || typ[rb + r] != 7)
         continue;
       int c = cb + cid[rb + r], d = dim[c];
-      double m = mu[c], T = cone_norm(jar + rb + r, fr + c * 5, d), N = jar[rb + r] * m;
+      real_t m = mu[c], T = cone_norm(jar + rb + r, fr + c * 5, d), N = jar[rb + r] * m;
       bool top = N >= m * T || (T <= 0 && N >= 0), bottom = m * N + T <= 0 || (T <= 0 && N < 0);
       // The scalar contract is the last middle-cone writer, not the last
       // group with this contact id. Atomic max only reduces integer ownership.
@@ -1682,7 +1623,7 @@ static __device__ void constraint_update_block(
 
 // Entry owns the layout; this stage only updates quantities depending on jar.
 static __device__ void constraint_update_core_block(unsigned char *shared, const NewtonWorldData &p,
-                                                    bool write_hessian, double *jar, bool collect_counts,
+                                                    bool write_hessian, real_t *jar, bool collect_counts,
                                                     bool track_changes) {
   auto &ctl = newton_control(shared);
   // Only the admitted solve body calls this stage. Entry already established
@@ -1698,7 +1639,7 @@ static __device__ void constraint_update_core_block(unsigned char *shared, const
     if (r < eq + fc || p.efc_type[z] != 7)
       continue;
     const int c = cb + p.efc_id[z], d = p.contact_dim[c];
-    const double m = p.contact_mu[c], T = cone_norm(jar + z, p.contact_friction + c * 5, d), N = jar[z] * m;
+    const real_t m = p.contact_mu[c], T = cone_norm(jar + z, p.contact_friction + c * 5, d), N = jar[z] * m;
     const bool top = N >= m * T || (T <= 0 && N >= 0);
     const bool bottom = m * N + T <= 0 || (T <= 0 && N < 0);
     const int zone = top ? 0 : (bottom ? 1 : 4);
@@ -1722,27 +1663,27 @@ static __device__ void constraint_update_core_block(unsigned char *shared, const
       p.precomputed);
 }
 
-static __device__ void constraint_transpose(int tid, int *active, int *count, double *J, double *force,
-                                            double *qfrc, int *status, int rows, int nv) {
+static __device__ void constraint_transpose(int tid, int *active, int *count, real_t *J, real_t *force,
+                                            real_t *qfrc, int *status, int rows, int nv) {
   int w = tid / nv, j = tid % nv;
   if (!active[w] || status[w])
     return;
-  double s = 0;
+  real_t s = 0;
   for (int r = 0; r < count[w]; ++r) {
-    double f = force[w * rows + r];
+    real_t f = force[w * rows + r];
     if (f != 0)
       s += J[(w * rows + r) * nv + j] * f;
   }
   qfrc[tid] = s;
 }
 
-static __device__ double assembly_cell(int w, int i, int j, int rows, int *count, double *J, double *D,
-                                       int *state, double *qm, int *madr, int *parent, int *simple) {
-  double s = 0;
+static __device__ real_t assembly_cell(int w, int i, int j, int rows, int *count, real_t *J, real_t *D,
+                                       int *state, real_t *qm, int *madr, int *parent, int *simple) {
+  real_t s = 0;
   for (int r = 0; r < count[w]; ++r) {
     int z = w * rows + r;
     if (state[z] == 1 && D[z] != 0) {
-      double v = J[z * SubstepShape::nv + i];
+      real_t v = J[z * SubstepShape::nv + i];
       if (v != 0)
         s += J[z * SubstepShape::nv + j] * (v * D[z]);
     }
@@ -1753,8 +1694,8 @@ static __device__ double assembly_cell(int w, int i, int j, int rows, int *count
   return s;
 }
 static __device__ void hessian_validate(int w, int *count, int *ncon, int *active, int *kind, int *state,
-                                        int *oldstate, double *D, double *J, double *qm, double *H, int *id,
-                                        int *dim, double *contact_H, int *ncone, int *nnz, int *status,
+                                        int *oldstate, real_t *D, real_t *J, real_t *qm, real_t *H, int *id,
+                                        int *dim, real_t *contact_H, int *ncone, int *nnz, int *status,
                                         int *route, int rows, int contacts, int *invariant_valid = nullptr) {
   status[w] = 0;
   route[w] = 0;
@@ -1845,8 +1786,8 @@ static __device__ void hessian_validate(int w, int *count, int *ncon, int *activ
 // All block threads enter; only the first full warp performs validation.
 // The caller must retain its stage barrier before consuming status/route.
 static __device__ void hessian_validate_block(int w, int *count, int *ncon, int *active, int *kind,
-                                              int *state, int *oldstate, double *D, double *J, double *qm,
-                                              double *H, int *id, int *dim, double *contact_H, int *ncone,
+                                              int *state, int *oldstate, real_t *D, real_t *J, real_t *qm,
+                                              real_t *H, int *id, int *dim, real_t *contact_H, int *ncone,
                                               int *nnz, int *status, int *route, int rows, int contacts,
                                               int *invariant_valid = nullptr) {
   if (libero_warp::warp() != 0)
@@ -1961,21 +1902,21 @@ static __device__ void hessian_validate_block(int w, int *count, int *ncon, int 
   if (libero_warp::any(bad) && lane == 0)
     status[w] = 4;
 }
-static __device__ void hessian_assemble(int tid, int *count, int *active, int *kind, double *J, double *D,
-                                        int *state, double *qm, int *madr, int *parent, int *simple,
-                                        double *H, int *status, int rows) {
+static __device__ void hessian_assemble(int tid, int *count, int *active, int *kind, real_t *J, real_t *D,
+                                        int *state, real_t *qm, int *madr, int *parent, int *simple,
+                                        real_t *H, int *status, int rows) {
   int w = tid / (SubstepShape::nv * SubstepShape::nv), i = (tid / SubstepShape::nv) % SubstepShape::nv,
       j = tid % SubstepShape::nv;
   if (!active[w] || kind[w] != 1 || status[w] || j > i)
     return;
-  double v = assembly_cell(w, i, j, rows, count, J, D, state, qm, madr, parent, simple);
+  real_t v = assembly_cell(w, i, j, rows, count, J, D, state, qm, madr, parent, simple);
   H[w * SubstepShape::nv * SubstepShape::nv + i * SubstepShape::nv + j] = v;
   if (i != j)
     H[w * SubstepShape::nv * SubstepShape::nv + j * SubstepShape::nv + i] = v;
 }
 static __device__ void hessian_cone(int w, int rows, int contacts, int *count, int *state, int *id, int *dim,
-                                    double *contact_H, double *J, double *H, double *HC, double *local,
-                                    double *ltj, double *vec, int *nupdate) {
+                                    real_t *contact_H, real_t *J, real_t *H, real_t *HC, real_t *local,
+                                    real_t *ltj, real_t *vec, int *nupdate) {
   int rb = w * rows;
   H += w * SubstepShape::nv * SubstepShape::nv;
   HC += w * SubstepShape::nv * SubstepShape::nv;
@@ -1994,10 +1935,10 @@ static __device__ void hessian_cone(int w, int rows, int contacts, int *count, i
       local[z] = contact_H[c * 36 + z];
     chol_factor(local, d, d);
     for (int z = 0; z < d * SubstepShape::nv; ++z)
-      ltj[z] = 0.0;
+      ltj[z] = REAL_C(0.0);
     for (int r = 0; r < d; ++r)
       for (int c0 = 0; c0 <= r; ++c0) {
-        double s = local[r * d + c0];
+        real_t s = local[r * d + c0];
         for (int k = 0; k < SubstepShape::nv; ++k)
           ltj[c0 * SubstepShape::nv + k] += J[(rb + i + r) * SubstepShape::nv + k] * s;
       }
@@ -2010,11 +1951,11 @@ static __device__ void hessian_cone(int w, int rows, int contacts, int *count, i
     i += d;
   }
 }
-static __device__ void hessian_factor_update(int w, int *count, int *ncon, int *active, int *kind, double *J,
-                                             double *D, int *state, int *oldstate, double *qm, int *madr,
-                                             int *parent, int *simple, int *id, int *dim, double *contact_H,
-                                             int *ncone, double *H, double *HC, int *nnz, int *nupdate,
-                                             double *local, double *ltj, double *vec, int *status, int *route,
+static __device__ void hessian_factor_update(int w, int *count, int *ncon, int *active, int *kind, real_t *J,
+                                             real_t *D, int *state, int *oldstate, real_t *qm, int *madr,
+                                             int *parent, int *simple, int *id, int *dim, real_t *contact_H,
+                                             int *ncone, real_t *H, real_t *HC, int *nnz, int *nupdate,
+                                             real_t *local, real_t *ltj, real_t *vec, int *status, int *route,
                                              int rows, int contacts) {
   if (!active[w] || status[w])
     return;
@@ -2039,7 +1980,7 @@ static __device__ void hessian_factor_update(int w, int *count, int *ncon, int *
       int z = w * rows + r;
       bool before = oldstate[z] == 1, after = state[z] == 1;
       if (before != after) {
-        double s = sqrt(D[z]);
+        real_t s = sqrt(D[z]);
         for (int j = 0; j < SubstepShape::nv; ++j)
           vec[vb + j] = J[z * SubstepShape::nv + j] * s;
         int rank = chol_update(H + hb, vec + vb, after ? 1 : 0);
@@ -2073,7 +2014,7 @@ static __device__ void hessian_factor_update(int w, int *count, int *ncon, int *
       }
       for (int i = 0; i < SubstepShape::nv; ++i)
         for (int j = 0; j <= i; ++j) {
-          double v = assembly_cell(w, i, j, rows, count, J, D, state, qm, madr, parent, simple);
+          real_t v = assembly_cell(w, i, j, rows, count, J, D, state, qm, madr, parent, simple);
           H[hb + i * SubstepShape::nv + j] = v;
           if (i != j)
             H[hb + j * SubstepShape::nv + i] = v;
@@ -2105,10 +2046,10 @@ static __device__ void hessian_factor_update(int w, int *count, int *ncon, int *
     }
   }
 }
-static __device__ void direction(int w, double *Ma, double *smooth, double *constraint, double *H, double *HC,
-                                 int *ncone, int *nefc, int *active, int *upstream, double *grad,
-                                 double *Mgrad, double *candidate, int *status, double *scratch_grad,
-                                 double *x, double *fwd) {
+static __device__ void direction(int w, real_t *Ma, real_t *smooth, real_t *constraint, real_t *H, real_t *HC,
+                                 int *ncone, int *nefc, int *active, int *upstream, real_t *grad,
+                                 real_t *Mgrad, real_t *candidate, int *status, real_t *scratch_grad,
+                                 real_t *x, real_t *fwd) {
   if (upstream[w]) {
     status[w] = upstream[w];
     return;
@@ -2124,7 +2065,7 @@ static __device__ void direction(int w, double *Ma, double *smooth, double *cons
     status[w] = 2;
     return;
   }
-  double *L = (ncone[w] > 0 ? HC : H) + w * SubstepShape::nv * SubstepShape::nv;
+  real_t *L = (ncone[w] > 0 ? HC : H) + w * SubstepShape::nv * SubstepShape::nv;
   int vb = w * SubstepShape::nv;
   for (int i = 0; i < SubstepShape::nv; ++i) {
     if (!isfinite(Ma[vb + i]) || !isfinite(smooth[vb + i]) || !isfinite(constraint[vb + i])) {
@@ -2143,7 +2084,7 @@ static __device__ void direction(int w, double *Ma, double *smooth, double *cons
       return;
     }
   for (int i = 0; i < SubstepShape::nv; ++i) {
-    double v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
+    real_t v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
     if (!isfinite(v)) {
       status[w] = 5;
       return;
@@ -2152,7 +2093,7 @@ static __device__ void direction(int w, double *Ma, double *smooth, double *cons
     x[vb + i] = v;
   }
   for (int i = 0; i < SubstepShape::nv; ++i) {
-    double v = x[vb + i];
+    real_t v = x[vb + i];
     if (i)
       v -= dot4(L + i * SubstepShape::nv, x + vb, i);
     v /= L[i * SubstepShape::nv + i];
@@ -2164,7 +2105,7 @@ static __device__ void direction(int w, double *Ma, double *smooth, double *cons
     fwd[vb + i] = v;
   }
   for (int i = SubstepShape::nv - 1; i >= 0; --i) {
-    double v = x[vb + i];
+    real_t v = x[vb + i];
     for (int j = i + 1; j < SubstepShape::nv; ++j)
       v -= L[j * SubstepShape::nv + i] * x[vb + j];
     v /= L[i * SubstepShape::nv + i];
@@ -2177,7 +2118,7 @@ static __device__ void direction(int w, double *Ma, double *smooth, double *cons
   for (int i = 0; i < SubstepShape::nv; ++i) {
     grad[vb + i] = scratch_grad[vb + i];
     Mgrad[vb + i] = x[vb + i];
-    candidate[vb + i] = copysign(x[vb + i], -copysign(1.0, x[vb + i]));
+    candidate[vb + i] = copysign(x[vb + i], -copysign(REAL_C(1.0), x[vb + i]));
   }
 }
 
@@ -2189,11 +2130,11 @@ static __device__ inline bool n_state_disjoint(const void *a, size_t an, const v
   const uintptr_t x = (uintptr_t)a, y = (uintptr_t)b;
   return !an || !bn || (x <= y ? y - x >= an : x - y >= bn);
 }
-static __device__ inline void n_state_axpy(double *dst, const double *src, int n, double a) {
-  if (dst == src || n_state_disjoint(dst, size_t(n) * 8, src, size_t(n) * 8)) {
+static __device__ inline void n_state_axpy(real_t *dst, const real_t *src, int n, real_t a) {
+  if (dst == src || n_state_disjoint(dst, size_t(n) * sizeof(real_t), src, size_t(n) * sizeof(real_t))) {
     int i = 2 * int(threadIdx.x);
     for (; i + 1 < n; i += 2 * int(blockDim.x)) {
-      double2 x = libero_vec::load_pair(dst + i), y = libero_vec::load_pair(src + i);
+      real2_t x = libero_vec::load_pair(dst + i), y = libero_vec::load_pair(src + i);
       libero_vec::store_pair(dst + i, x.x + a * y.x, x.y + a * y.y);
     }
     if (i < n)
@@ -2203,9 +2144,9 @@ static __device__ inline void n_state_axpy(double *dst, const double *src, int n
       dst[i] += a * src[i];
 }
 #endif // LIBERO_NEWTON_SCALAR_IO
-static __device__ void warm_select(int w, int *active, int *nefc, double *wc, double *sc, double *warm,
-                                   double *smooth, double *sf, int *ss, double *sq, double *qacc,
-                                   double *force, int *state, double *qfrc, int *choice, int *status, int nv,
+static __device__ void warm_select(int w, int *active, int *nefc, real_t *wc, real_t *sc, real_t *warm,
+                                   real_t *smooth, real_t *sf, int *ss, real_t *sq, real_t *qacc,
+                                   real_t *force, int *state, real_t *qfrc, int *choice, int *status, int nv,
                                    int rows) {
   if (status[w] || !active[w])
     return;
@@ -2243,8 +2184,8 @@ static __device__ void warm_select(int w, int *active, int *nefc, double *wc, do
     state[r + i] = ss[r + i];
   }
 }
-static __device__ void commit_step(int w, int *active, int *nefc, double *alpha, double *search, double *mv,
-                                   double *jv, double *qacc, double *ma, double *jar, int *committed,
+static __device__ void commit_step(int w, int *active, int *nefc, real_t *alpha, real_t *search, real_t *mv,
+                                   real_t *jv, real_t *qacc, real_t *ma, real_t *jar, int *committed,
                                    int *status, int nv, int rows) {
   if (status[w] || !active[w])
     return;
@@ -2257,7 +2198,7 @@ static __device__ void commit_step(int w, int *active, int *nefc, double *alpha,
     status[w] = 2;
     return;
   }
-  double a = alpha[w];
+  real_t a = alpha[w];
   if (!isfinite(a)) {
     status[w] = 3;
     return;
@@ -2286,12 +2227,12 @@ static __device__ void commit_step(int w, int *active, int *nefc, double *alpha,
     jar[r + i] += a * jv[r + i];
 }
 static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int *committed, int *oldstate,
-                                  int *state, double *grad, double *oldcost, double *cost, double *inertia,
-                                  double *tolerance, double *slope, int *nactive, int *nupdate, int *neval,
-                                  int *iteration, int *base, int *maxiter, double *sf, int *si, int *nchange,
-                                  double *improvement, double *gradient, int *stop, int *reason,
+                                  int *state, real_t *grad, real_t *oldcost, real_t *cost, real_t *inertia,
+                                  real_t *tolerance, real_t *slope, int *nactive, int *nupdate, int *neval,
+                                  int *iteration, int *base, int *maxiter, real_t *sf, int *si, int *nchange,
+                                  real_t *improvement, real_t *gradient, int *stop, int *reason,
                                   int *out_iter, int *status, int nv, int rows,
-                                  int *precomputed_change = nullptr, double *precomputed_norm = nullptr,
+                                  int *precomputed_change = nullptr, real_t *precomputed_norm = nullptr,
                                   bool gradient_scanned = false, const int *residual_roundoff_ok = nullptr,
                                   const NewtonOptions *options = nullptr) {
   if (status[w] || !active[w])
@@ -2333,14 +2274,14 @@ static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int
         status[w] = 3;
         return;
       }
-  double d;
+  real_t d;
   if (precomputed_norm)
     d = precomputed_norm[0];
   else {
     // Stats starts each lane at +0 (unlike mju_dot's lane priming).
-    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    real_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
     int j = 0;
-    double *g = grad + w * nv;
+    real_t *g = grad + w * nv;
     for (; j <= nv - 4; j += 4) {
       s0 += g[j] * g[j];
       s1 += g[j + 1] * g[j + 1];
@@ -2359,7 +2300,7 @@ static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int
     status[w] = 3;
     return;
   }
-  double scale = inertia[w] * double(nv), imp = (oldcost[w] - cost[w]) / scale, gn = sqrt(d) / scale;
+  real_t scale = inertia[w] * real_t(nv), imp = (oldcost[w] - cost[w]) / scale, gn = sqrt(d) / scale;
   if (!isfinite(imp) || !isfinite(gn)) {
     status[w] = 3;
     return;
@@ -2385,11 +2326,11 @@ static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int
   const bool audit = options && options->audit;
   const bool legacy = options && options->stop_policy == int(StopPolicy::RoundoffResidual);
   if (legacy || audit) {
-    const double magnitude = fmax(fabs(oldcost[w]), fabs(cost[w]));
-    const double resolution = 8.0 * 2.2204460492503131e-16 * magnitude;
-    const double delta = oldcost[w] - cost[w];
+    const real_t magnitude = fmax(fabs(oldcost[w]), fabs(cost[w]));
+    const real_t resolution = REAL_C(8.0) * real_t(REAL_EPSILON) * magnitude;
+    const real_t delta = oldcost[w] - cost[w];
     const bool ambiguous = fabs(delta) <= resolution;
-    const bool resolved_small = delta >= 0.0 && !ambiguous && imp < tolerance[w];
+    const bool resolved_small = delta >= REAL_C(0.0) && !ambiguous && imp < tolerance[w];
     const bool roundoff_small = ambiguous && residual_roundoff_ok && residual_roundoff_ok[0];
     const bool legacy_stop = resolved_small || roundoff_small || gn < tolerance[w];
     if (legacy)
@@ -2399,7 +2340,7 @@ static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int
       ++counters[1];            // committed iterations
       counters[3] += ambiguous; // residual admission triggers
       if (cpu_stop != legacy_stop && counters[4] + counters[5] == 0 && options->first_disagreement) {
-        double *event = options->first_disagreement;
+        real_t *event = options->first_disagreement;
         event[0] = oldcost[w];
         event[1] = cost[w];
         event[2] = imp;
@@ -2433,14 +2374,14 @@ static __device__ void stats_stop(int w, int *active, int *nefc, int *stage, int
 // stopping remain in stats_stop, so legal stop tests and write priority stay put.
 static __device__ void
 stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int *oldstate, int *state,
-                 double *grad, double *oldcost, double *cost, double *inertia, double *tolerance,
-                 double *slope, int *nactive, int *nupdate, int *neval, int *iteration, int *base,
-                 int *maxiter, double *sf, int *si, int *nchange, double *improvement, double *gradient,
+                 real_t *grad, real_t *oldcost, real_t *cost, real_t *inertia, real_t *tolerance,
+                 real_t *slope, int *nactive, int *nupdate, int *neval, int *iteration, int *base,
+                 int *maxiter, real_t *sf, int *si, int *nchange, real_t *improvement, real_t *gradient,
                  int *stop, int *reason, int *out_iter, int *status, int nv, int rows,
-                 int *precomputed_change = nullptr, const double *residual_Ma = nullptr,
-                 const double *residual_smooth = nullptr, const double *residual_J = nullptr,
-                 const double *residual_force = nullptr, const NewtonOptions *options = nullptr) {
-  __shared__ double norm_warp[4], norm;
+                 int *precomputed_change = nullptr, const real_t *residual_Ma = nullptr,
+                 const real_t *residual_smooth = nullptr, const real_t *residual_J = nullptr,
+                 const real_t *residual_force = nullptr, const NewtonOptions *options = nullptr) {
+  __shared__ real_t norm_warp[4], norm;
   __shared__ int changes_warp[4], changes;
   __shared__ int residual_bad_warp[4], residual_ok;
   if (status[w] || !active[w])
@@ -2449,7 +2390,7 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
   constexpr int warps = flash_libero::SubstepShape::threads / 32;
   // Counts may be malformed: don't dereference any rows until bounds are safe.
   const int n = nefc[w];
-  double value = 0.;
+  real_t value = REAL_C(0.);
   int change = 0;
   // The componentwise residual is experimental policy/audit work, not a
   // requirement of CPU Newton. The predicate is uniform for the whole world.
@@ -2459,18 +2400,18 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
     // A standard gamma_k bound covers the product/accumulation in J^T f,
     // the packed Mq product and the two residual subtractions. This is a
     // componentwise backward-error contract, not a claim of small forward error.
-    const double mag = fmax(fabs(oldcost[w]), fabs(cost[w]));
-    const bool ambiguous = fabs(oldcost[w] - cost[w]) <= 8.0 * 2.2204460492503131e-16 * mag;
+    const real_t mag = fmax(fabs(oldcost[w]), fabs(cost[w]));
+    const bool ambiguous = fabs(oldcost[w] - cost[w]) <= REAL_C(8.0) * real_t(REAL_EPSILON) * mag;
     int bad = 0;
     if (ambiguous && residual_Ma && residual_smooth && residual_J && residual_force && n > 0 && n <= rows) {
-      const double eps = 1.1102230246251565e-16;
-      const double k = double(n + 2 * nv + 8), gamma = (k * eps) / (1.0 - k * eps);
+      const real_t eps = REAL_C(1.1102230246251565e-16);
+      const real_t k = real_t(n + 2 * nv + 8), gamma = (k * eps) / (REAL_C(1.0) - k * eps);
       for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-        double sum = fabs(residual_Ma[w * nv + j]) + fabs(residual_smooth[w * nv + j]);
+        real_t sum = fabs(residual_Ma[w * nv + j]) + fabs(residual_smooth[w * nv + j]);
         for (int r = 0; r < n; ++r)
           sum += fabs(residual_J[(w * rows + r) * nv + j] * residual_force[w * rows + r]);
         // Bound the positive summation's own rounding before using its scale.
-        const double limit = tolerance[w] * inertia[w] * double(nv) + gamma * sum / (1.0 - gamma);
+        const real_t limit = tolerance[w] * inertia[w] * real_t(nv) + gamma * sum / (REAL_C(1.0) - gamma);
         if (!isfinite(sum) || !isfinite(limit) || !isfinite(grad[w * nv + j]) ||
             fabs(grad[w * nv + j]) > limit)
           bad = 1;
@@ -2498,7 +2439,7 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
       return;
     if (active[w] == 1 && n > 0 && n <= rows) {
       for (int j = lane; j < nv; j += 32) {
-        double g = grad[w * nv + j];
+        real_t g = grad[w * nv + j];
         value += g * g;
       }
       if (!precomputed_change)
@@ -2519,7 +2460,7 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
   }
   if (active[w] == 1 && n > 0 && n <= rows) {
     for (int j = threadIdx.x; j < nv; j += blockDim.x) {
-      double g = grad[w * nv + j];
+      real_t g = grad[w * nv + j];
       value += g * g;
     }
     if (!precomputed_change)
@@ -2534,7 +2475,7 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
   }
   __syncthreads();
   if (wid == 0) {
-    value = libero_warp::sum(lane < warps ? norm_warp[lane] : 0.);
+    value = libero_warp::sum(lane < warps ? norm_warp[lane] : REAL_C(0.));
     change = libero_warp::sum(lane < warps ? changes_warp[lane] : 0);
     if (lane == 0) {
       norm = value;
@@ -2550,7 +2491,7 @@ stats_stop_block(int w, int *active, int *nefc, int *stage, int *committed, int 
                options);
 }
 
-static __device__ void finalize(int w, int *active, int *exit, int *iteration, double *qacc, double *warm,
+static __device__ void finalize(int w, int *active, int *exit, int *iteration, real_t *qacc, real_t *warm,
                                 int *iter, int *nnz, int *status, int nv) {
   if (status[w] || !active[w])
     return;
@@ -2586,9 +2527,9 @@ static __device__ void finalize(int w, int *active, int *exit, int *iteration, d
 static __device__ bool n5_any_bad(bool bad) {
   return __syncthreads_or(bad) != 0;
 }
-static __device__ void warm_select_block(int w, int *active, int *nefc, double *wc, double *sc, double *warm,
-                                         double *smooth, double *sf, int *ss, double *sq, double *qacc,
-                                         double *force, int *state, double *qfrc, int *choice, int *status,
+static __device__ void warm_select_block(int w, int *active, int *nefc, real_t *wc, real_t *sc, real_t *warm,
+                                         real_t *smooth, real_t *sf, int *ss, real_t *sq, real_t *qacc,
+                                         real_t *force, int *state, real_t *qfrc, int *choice, int *status,
                                          int nv, int rows) {
   __shared__ int run;
   if (threadIdx.x == 0) {
@@ -2632,13 +2573,13 @@ static __device__ void warm_select_block(int w, int *active, int *nefc, double *
     state[r + i] = ss[r + i];
   }
 #else
-  const double *selected = select ? smooth + v : warm + v;
+  const real_t *selected = select ? smooth + v : warm + v;
   const bool independent =
-      n_state_disjoint(qacc + v, size_t(nv) * 8, qfrc + v, size_t(nv) * 8) &&
-      n_state_disjoint(qacc + v, size_t(nv) * 8, sq + v, size_t(nv) * 8) &&
-      n_state_disjoint(qfrc + v, size_t(nv) * 8, selected, size_t(nv) * 8) &&
-      (qacc + v == selected || n_state_disjoint(qacc + v, size_t(nv) * 8, selected, size_t(nv) * 8)) &&
-      (qfrc + v == sq + v || n_state_disjoint(qfrc + v, size_t(nv) * 8, sq + v, size_t(nv) * 8));
+      n_state_disjoint(qacc + v, size_t(nv) * sizeof(real_t), qfrc + v, size_t(nv) * sizeof(real_t)) &&
+      n_state_disjoint(qacc + v, size_t(nv) * sizeof(real_t), sq + v, size_t(nv) * sizeof(real_t)) &&
+      n_state_disjoint(qfrc + v, size_t(nv) * sizeof(real_t), selected, size_t(nv) * sizeof(real_t)) &&
+      (qacc + v == selected || n_state_disjoint(qacc + v, size_t(nv) * sizeof(real_t), selected, size_t(nv) * sizeof(real_t))) &&
+      (qfrc + v == sq + v || n_state_disjoint(qfrc + v, size_t(nv) * sizeof(real_t), sq + v, size_t(nv) * sizeof(real_t)));
   if (independent) {
     libero_newton_io::copy_block(selected, qacc + v, nv);
     libero_newton_io::copy_block(sq + v, qfrc + v, nv);
@@ -2648,10 +2589,10 @@ static __device__ void warm_select_block(int w, int *active, int *nefc, double *
       qfrc[v + i] = sq[v + i];
     }
   const bool row_independent =
-      n_state_disjoint(force + r, size_t(n) * 8, state + r, size_t(n) * 4) &&
-      n_state_disjoint(force + r, size_t(n) * 8, ss + r, size_t(n) * 4) &&
-      n_state_disjoint(state + r, size_t(n) * 4, sf + r, size_t(n) * 8) &&
-      (force + r == sf + r || n_state_disjoint(force + r, size_t(n) * 8, sf + r, size_t(n) * 8)) &&
+      n_state_disjoint(force + r, size_t(n) * sizeof(real_t), state + r, size_t(n) * 4) &&
+      n_state_disjoint(force + r, size_t(n) * sizeof(real_t), ss + r, size_t(n) * 4) &&
+      n_state_disjoint(state + r, size_t(n) * 4, sf + r, size_t(n) * sizeof(real_t)) &&
+      (force + r == sf + r || n_state_disjoint(force + r, size_t(n) * sizeof(real_t), sf + r, size_t(n) * sizeof(real_t))) &&
       (state + r == ss + r || n_state_disjoint(state + r, size_t(n) * 4, ss + r, size_t(n) * 4));
   if (row_independent) {
     libero_newton_io::copy_block(sf + r, force + r, n);
@@ -2663,8 +2604,8 @@ static __device__ void warm_select_block(int w, int *active, int *nefc, double *
     }
 #endif // LIBERO_NEWTON_SCALAR_IO
 }
-static __device__ void commit_step_block(int w, int *active, int *nefc, double *alpha, double *search,
-                                         double *mv, double *jv, double *qacc, double *ma, double *jar,
+static __device__ void commit_step_block(int w, int *active, int *nefc, real_t *alpha, real_t *search,
+                                         real_t *mv, real_t *jv, real_t *qacc, real_t *ma, real_t *jar,
                                          int *committed, int *status, int nv, int rows) {
   __shared__ int run;
   if (threadIdx.x == 0) {
@@ -2685,7 +2626,7 @@ static __device__ void commit_step_block(int w, int *active, int *nefc, double *
   if (status[w])
     return;
   const int n = nefc[w], v = w * nv, r = w * rows;
-  const double a = alpha[w];
+  const real_t a = alpha[w];
   if (a == 0) {
     if (threadIdx.x == 0)
       committed[w] = 0;
@@ -2713,12 +2654,12 @@ static __device__ void commit_step_block(int w, int *active, int *nefc, double *
   for (int i = threadIdx.x; i < n; i += blockDim.x)
     jar[r + i] += a * jv[r + i];
 #else
-  const double *spans[6] = {qacc + v, search + v, ma + v, mv + v, jar + r, jv + r};
+  const real_t *spans[6] = {qacc + v, search + v, ma + v, mv + v, jar + r, jv + r};
   bool independent = true;
   for (int x = 0; x < 6; ++x)
     for (int y = x + 1; y < 6; ++y)
       independent &=
-          n_state_disjoint(spans[x], size_t(x < 4 ? nv : n) * 8, spans[y], size_t(y < 4 ? nv : n) * 8);
+          n_state_disjoint(spans[x], size_t(x < 4 ? nv : n) * sizeof(real_t), spans[y], size_t(y < 4 ? nv : n) * sizeof(real_t));
   if (independent) {
     n_state_axpy(qacc + v, search + v, nv, a);
     n_state_axpy(ma + v, mv + v, nv, a);
@@ -2736,17 +2677,17 @@ static __device__ void commit_step_block(int w, int *active, int *nefc, double *
 // Fused-owned views are disjoint and entry counts have already been admitted.
 // CPU mj_solCGNewton updates these three vectors directly; error recovery is
 // performed by the enclosing mj_step-equivalent path, not a preflight AXPY.
-static __device__ void commit_step_core_block(int w, int *active, int *nefc, const double *alpha,
-                                              const double *search, const double *mv, const double *jv,
-                                              double *qacc, double *ma, double *jar, int *committed,
+static __device__ void commit_step_core_block(int w, int *active, int *nefc, const real_t *alpha,
+                                              const real_t *search, const real_t *mv, const real_t *jv,
+                                              real_t *qacc, real_t *ma, real_t *jar, int *committed,
                                               int nv, int rows) {
   if (!active[w])
     return;
   const int n = nefc[w], v = w * nv, r = w * rows;
-  const double a = alpha[w];
+  const real_t a = alpha[w];
   if (threadIdx.x == 0)
-    committed[w] = a != 0.0;
-  if (a == 0.0)
+    committed[w] = a != REAL_C(0.0);
+  if (a == REAL_C(0.0))
     return;
   n_state_axpy(qacc + v, search + v, nv, a);
   n_state_axpy(ma + v, mv + v, nv, a);
@@ -2762,8 +2703,8 @@ static __device__ void hessian_prepare_core_block(int w, int *status, int *route
   }
 }
 
-static __device__ void finalize_block(int w, int *active, int *exit, int *iteration, double *qacc,
-                                      double *warm, int *iter, int *nnz, int *status, int nv) {
+static __device__ void finalize_block(int w, int *active, int *exit, int *iteration, real_t *qacc,
+                                      real_t *warm, int *iter, int *nnz, int *status, int nv) {
   __shared__ int run;
   if (threadIdx.x == 0) {
     run = !status[w] && active[w];
@@ -2798,7 +2739,7 @@ static __device__ void finalize_block(int w, int *active, int *exit, int *iterat
   for (int j = threadIdx.x; j < nv; j += blockDim.x)
     warm[w * nv + j] = qacc[w * nv + j];
 #else
-  if (warm == qacc || n_state_disjoint(warm + w * nv, size_t(nv) * 8, qacc + w * nv, size_t(nv) * 8))
+  if (warm == qacc || n_state_disjoint(warm + w * nv, size_t(nv) * sizeof(real_t), qacc + w * nv, size_t(nv) * sizeof(real_t)))
     libero_newton_io::copy_block(qacc + w * nv, warm + w * nv, nv);
   else
     for (int j = threadIdx.x; j < nv; j += blockDim.x)
@@ -2806,7 +2747,7 @@ static __device__ void finalize_block(int w, int *active, int *exit, int *iterat
 #endif // LIBERO_NEWTON_SCALAR_IO
 }
 
-static __device__ void jacvec_sub(int w, int *active, int *n, double *J, double *q, double *aref, double *out,
+static __device__ void jacvec_sub(int w, int *active, int *n, real_t *J, real_t *q, real_t *aref, real_t *out,
                                   int rows) {
   if (!active[w])
     return;
@@ -2815,8 +2756,8 @@ static __device__ void jacvec_sub(int w, int *active, int *n, double *J, double 
         dot4(J + (w * rows + r) * SubstepShape::nv, q + w * SubstepShape::nv, SubstepShape::nv) -
         aref[w * rows + r];
 }
-static __device__ void mulM(int w, int *active, double *q, double *M, int *madr, int *parent, int *simple,
-                            double *out) {
+static __device__ void mulM(int w, int *active, real_t *q, real_t *M, int *madr, int *parent, int *simple,
+                            real_t *out) {
   if (active[w])
     mass_multiply(q + w * SubstepShape::nv, M + w * SubstepShape::packed_mass, madr, parent, simple,
                   out + w * SubstepShape::nv);
@@ -2832,23 +2773,23 @@ static __device__ inline bool mass_spans_overlap(const void *a, unsigned long lo
 }
 // Collective planned product. Preserve original scalar behavior for exact or
 // shifted input/output aliases; the qualification does not read any payload.
-static __device__ void mulM_plan_block(int w, const int *active, const double *q, const double *M,
-                                       const int *madr, const int *parent, const int *simple, double *out,
+static __device__ void mulM_plan_block(int w, const int *active, const real_t *q, const real_t *M,
+                                       const int *madr, const int *parent, const int *simple, real_t *out,
                                        const int *offsets, const int *coefficient, const int *source,
                                        const int *assign) {
   if (!active[w])
     return;
-  const double *x = q + w * SubstepShape::nv;
-  const double *qm = M + w * SubstepShape::packed_mass;
-  double *result = out + w * SubstepShape::nv;
+  const real_t *x = q + w * SubstepShape::nv;
+  const real_t *qm = M + w * SubstepShape::packed_mass;
+  real_t *result = out + w * SubstepShape::nv;
   const bool disjoint =
-      !mass_spans_overlap(result, SubstepShape::nv * sizeof(double), x, SubstepShape::nv * sizeof(double)) &&
-      !mass_spans_overlap(result, SubstepShape::nv * sizeof(double), qm,
-                          SubstepShape::packed_mass * sizeof(double)) &&
-      !mass_spans_overlap(result, SubstepShape::nv * sizeof(double), madr, SubstepShape::nv * sizeof(int)) &&
-      !mass_spans_overlap(result, SubstepShape::nv * sizeof(double), parent,
+      !mass_spans_overlap(result, SubstepShape::nv * sizeof(real_t), x, SubstepShape::nv * sizeof(real_t)) &&
+      !mass_spans_overlap(result, SubstepShape::nv * sizeof(real_t), qm,
+                          SubstepShape::packed_mass * sizeof(real_t)) &&
+      !mass_spans_overlap(result, SubstepShape::nv * sizeof(real_t), madr, SubstepShape::nv * sizeof(int)) &&
+      !mass_spans_overlap(result, SubstepShape::nv * sizeof(real_t), parent,
                           SubstepShape::nv * sizeof(int)) &&
-      !mass_spans_overlap(result, SubstepShape::nv * sizeof(double), simple, SubstepShape::nv * sizeof(int));
+      !mass_spans_overlap(result, SubstepShape::nv * sizeof(real_t), simple, SubstepShape::nv * sizeof(int));
   if (offsets && disjoint)
     libero_packed_mass::multiply_plan(x, qm, offsets, coefficient, source, assign, result, SubstepShape::nv);
   else if (threadIdx.x == 0)
@@ -2856,16 +2797,16 @@ static __device__ void mulM_plan_block(int w, const int *active, const double *q
 }
 // The warm and smooth candidates have already consumed exactly these operands.
 // Reuse the selected candidate, without replacing M*q by an approximate force.
-static __device__ void warm_init_jacvec(int *active, int *count, int *choice, double *warm, double *smooth,
-                                        double *out) {
+static __device__ void warm_init_jacvec(int *active, int *count, int *choice, real_t *warm, real_t *smooth,
+                                        real_t *out) {
   if (!active[0])
     return;
-  const double *selected = choice[0] ? smooth : warm;
+  const real_t *selected = choice[0] ? smooth : warm;
   for (int r = threadIdx.x; r < count[0]; r += blockDim.x)
     out[r] = selected[r];
 }
-static __device__ void warm_init_mass_prepared(const int *active, const int *choice, const double *warm,
-                                               const double *q, const double *M, double *out,
+static __device__ void warm_init_mass_prepared(const int *active, const int *choice, const real_t *warm,
+                                               const real_t *q, const real_t *M, real_t *out,
                                                const NewtonModelData &m) {
   if (!active[0])
     return;
@@ -2876,14 +2817,14 @@ static __device__ void warm_init_mass_prepared(const int *active, const int *cho
     libero_packed_mass::multiply_plan(q, M, m.mass_plan_offsets, m.mass_plan_coefficient, m.mass_plan_source,
                                       m.mass_plan_assign, out, SubstepShape::nv);
 }
-static __device__ void gauss_compute(int w, int *active, double *Ma, double *smooth, double *q, double *qs,
-                                     double *cost, double *quad0, int *add) {
+static __device__ void gauss_compute(int w, int *active, real_t *Ma, real_t *smooth, real_t *q, real_t *qs,
+                                     real_t *cost, real_t *quad0, int *add) {
   if (!active[w])
     return;
-  double s = 0;
+  real_t s = 0;
   for (int j = 0; j < SubstepShape::nv; ++j) {
     int i = w * SubstepShape::nv + j;
-    s += .5 * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
+    s += REAL_C(.5) * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
   }
   quad0[w] = s;
   if (add[w])
@@ -2894,18 +2835,18 @@ static __device__ void gauss_compute(int w, int *active, double *Ma, double *smo
 // operation is replaced. Small vectors stay in warp 0; each lane accumulates
 // one DOF. Larger vectors retain the measured block reduction. The caller's
 // stage barrier publishes the lane-0 result.
-static __device__ void gauss_compute_block(int w, int *active, double *Ma, double *smooth, double *q,
-                                           double *qs, double *cost, double *quad0, bool add_cost) {
-  __shared__ double warp_partial[4];
+static __device__ void gauss_compute_block(int w, int *active, real_t *Ma, real_t *smooth, real_t *q,
+                                           real_t *qs, real_t *cost, real_t *quad0, bool add_cost) {
+  __shared__ real_t warp_partial[4];
   if (!active[w])
     return;
-  double value = 0.;
+  real_t value = REAL_C(0.);
   if (SubstepShape::nv <= 64) {
     if (threadIdx.x >= 32)
       return;
     for (int j = threadIdx.x; j < SubstepShape::nv; j += 32) {
       int i = w * SubstepShape::nv + j;
-      value += .5 * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
+      value += REAL_C(.5) * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
     }
     value = libero_warp::sum(value);
     if (threadIdx.x == 0) {
@@ -2917,7 +2858,7 @@ static __device__ void gauss_compute_block(int w, int *active, double *Ma, doubl
   }
   for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x) {
     int i = w * SubstepShape::nv + j;
-    value += .5 * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
+    value += REAL_C(.5) * (Ma[i] - smooth[i]) * (q[i] - qs[i]);
   }
   value = libero_warp::sum(value);
   const int lane = libero_warp::lane(), wid = libero_warp::warp(), warps = blockDim.x / 32;
@@ -2925,7 +2866,7 @@ static __device__ void gauss_compute_block(int w, int *active, double *Ma, doubl
     warp_partial[wid] = value;
   __syncthreads();
   if (wid == 0) {
-    value = libero_warp::sum(lane < warps ? warp_partial[lane] : 0.);
+    value = libero_warp::sum(lane < warps ? warp_partial[lane] : REAL_C(0.));
     if (lane == 0) {
       quad0[w] = value;
       if (add_cost)
@@ -2948,8 +2889,8 @@ static __device__ void count_active_cone(int w, int *active, int *state, int *n,
   na[w] = a;
   nc[w] = c;
 }
-static __device__ void save_old(int w, int *active, int *n, int *state, double *cost, int *old,
-                                double *oldcost, int rows) {
+static __device__ void save_old(int w, int *active, int *n, int *state, real_t *cost, int *old,
+                                real_t *oldcost, int rows) {
 #if LIBERO_NEWTON_SCALAR_IO
   if (!active[w])
     return;
@@ -2967,34 +2908,34 @@ static __device__ void save_old(int w, int *active, int *n, int *state, double *
   oldcost[w] = cost[w];
 #endif // LIBERO_NEWTON_SCALAR_IO
 }
-static __device__ void direction_commit(int w, int *active, double *candidate, double *search) {
+static __device__ void direction_commit(int w, int *active, real_t *candidate, real_t *search) {
   if (active[w])
     for (int j = 0; j < SubstepShape::nv; ++j)
       search[w * SubstepShape::nv + j] = candidate[w * SubstepShape::nv + j];
 }
-static __device__ void empty_fast_path(int w, int *empty, double *smooth, double *q, double *warm,
-                                       double *force, int *iter) {
+static __device__ void empty_fast_path(int w, int *empty, real_t *smooth, real_t *q, real_t *warm,
+                                       real_t *force, int *iter) {
   if (!empty[w])
     return;
   for (int j = 0; j < SubstepShape::nv; ++j) {
     int i = w * SubstepShape::nv + j;
     q[i] = smooth[i];
     warm[i] = smooth[i];
-    force[i] = 0.0;
+    force[i] = REAL_C(0.0);
   }
   iter[w] = 0;
 }
 #if LIBERO_NEWTON_SCALAR_IO
-static __device__ void copy_qacc(int w, int *active, double *src, double *dst) {
+static __device__ void copy_qacc(int w, int *active, real_t *src, real_t *dst) {
   if (active[w])
     for (int j = 0; j < SubstepShape::nv; ++j)
       dst[w * SubstepShape::nv + j] = src[w * SubstepShape::nv + j];
 }
 #else
-static __device__ void copy_qacc(int w, int *active, double *src, double *dst) {
+static __device__ void copy_qacc(int w, int *active, real_t *src, real_t *dst) {
   if (active[w]) {
-    if (src == dst || n_state_disjoint(src + w * SubstepShape::nv, SubstepShape::nv * sizeof(double),
-                                       dst + w * SubstepShape::nv, SubstepShape::nv * sizeof(double)))
+    if (src == dst || n_state_disjoint(src + w * SubstepShape::nv, SubstepShape::nv * sizeof(real_t),
+                                       dst + w * SubstepShape::nv, SubstepShape::nv * sizeof(real_t)))
       libero_newton_io::copy_serial(src + w * SubstepShape::nv, dst + w * SubstepShape::nv, SubstepShape::nv);
     else
       for (int j = 0; j < SubstepShape::nv; ++j)
@@ -3002,7 +2943,7 @@ static __device__ void copy_qacc(int w, int *active, double *src, double *dst) {
   }
 }
 #endif // LIBERO_NEWTON_SCALAR_IO
-static __device__ void copy_cost(int w, int *active, double *src, double *dst) {
+static __device__ void copy_cost(int w, int *active, real_t *src, real_t *dst) {
   if (active[w])
     dst[w] = src[w];
 }
@@ -3021,18 +2962,18 @@ template <class T> static __device__ __forceinline__ void ordered_copy_block(con
     for (int j = 0; j < n; ++j)
       dst[j] = src[j];
 }
-static __device__ void copy_qacc_block(int w, int *active, double *src, double *dst) {
+static __device__ void copy_qacc_block(int w, int *active, real_t *src, real_t *dst) {
   if (active[w])
     for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x)
       dst[w * SubstepShape::nv + i] = src[w * SubstepShape::nv + i];
 }
-static __device__ void direction_commit_block(int w, int *active, double *candidate, double *search) {
+static __device__ void direction_commit_block(int w, int *active, real_t *candidate, real_t *search) {
   if (active[w])
     for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x)
       search[w * SubstepShape::nv + i] = candidate[w * SubstepShape::nv + i];
 }
-static __device__ void save_old_block(int w, int *active, int *n, int *state, double *cost, int *old,
-                                      double *oldcost, int rows) {
+static __device__ void save_old_block(int w, int *active, int *n, int *state, real_t *cost, int *old,
+                                      real_t *oldcost, int rows) {
   if (!active[w])
     return;
   ordered_copy_block(state + w * rows, old + w * rows, n[w]);
@@ -3040,15 +2981,15 @@ static __device__ void save_old_block(int w, int *active, int *n, int *state, do
     oldcost[w] = cost[w];
 }
 #if LIBERO_NEWTON_SCALAR_IO
-static __device__ void zero_rows(int w, int *active, int *n, double *out, int rows) {
+static __device__ void zero_rows(int w, int *active, int *n, real_t *out, int rows) {
   if (active[w])
     for (int j = 0; j < n[w]; ++j)
-      out[w * rows + j] = 0.0;
+      out[w * rows + j] = REAL_C(0.0);
 }
 #else
-static __device__ void zero_rows(int w, int *active, int *n, double *out, int rows) {
+static __device__ void zero_rows(int w, int *active, int *n, real_t *out, int rows) {
   if (active[w])
-    libero_newton_io::fill_serial(out + w * rows, n[w], 0.0);
+    libero_newton_io::fill_serial(out + w * rows, n[w], REAL_C(0.0));
 }
 #endif // LIBERO_NEWTON_SCALAR_IO
 static __device__ void solver_iter_reset(int w, int *active, int *iter) {
@@ -3059,18 +3000,18 @@ static __device__ void finalize_exit(int w, int *newton, int *error, int *exit, 
   exit[w] = active[w] = (newton[w] != 0 && error[w] == 0) ? 1 : 0;
 }
 #if LIBERO_NEWTON_TRACE
-static __device__ void seed_eval_block(int w, double *eval, int *tag) {
+static __device__ void seed_eval_block(int w, real_t *eval, int *tag) {
   libero_newton_io::fill_block(tag + w * 52, 52, -101);
-  libero_newton_io::fill_block(eval + w * 208, 208, 97.0);
+  libero_newton_io::fill_block(eval + w * 208, 208, REAL_C(97.0));
 }
 #endif
-static __device__ void tape_ls_input(int w, int slot, int slots, double *quad0, double *tape) {
+static __device__ void tape_ls_input(int w, int slot, int slots, real_t *quad0, real_t *tape) {
   if (slot < slots)
     tape[w * slots + slot] = quad0[w];
 }
-static __device__ void parallel_tape_ls_buffers(int tid, int slot, int slots, int rows, double *mv,
-                                                double *jv, double *quad, double *qg, double *tm, double *tj,
-                                                double *tq, double *tg, int nv) {
+static __device__ void parallel_tape_ls_buffers(int tid, int slot, int slots, int rows, real_t *mv,
+                                                real_t *jv, real_t *quad, real_t *qg, real_t *tm, real_t *tj,
+                                                real_t *tq, real_t *tg, int nv) {
   if (slot >= slots)
     return;
   int stride = nv + 4 * rows + 3, w = tid / stride, i = tid % stride;
@@ -3085,16 +3026,16 @@ static __device__ void parallel_tape_ls_buffers(int tid, int slot, int slots, in
 }
 // An inactive source slot repeats these same buffers, including capacity tails.
 // Load each source cell once and fan it out; never omit observable history cells.
-static __device__ void inactive_tape_ls_buffers(int begin, int end, int slots, int rows, double *mv,
-                                                double *jv, double *quad, double *qg, double *tm, double *tj,
-                                                double *tq, double *tg, int nv) {
+static __device__ void inactive_tape_ls_buffers(int begin, int end, int slots, int rows, real_t *mv,
+                                                real_t *jv, real_t *quad, real_t *qg, real_t *tm, real_t *tj,
+                                                real_t *tq, real_t *tg, int nv) {
 #if LIBERO_NEWTON_SCALAR_IO
   if (end > slots)
     end = slots;
   int stride = nv + 4 * rows + 3;
   for (int i = threadIdx.x; i < stride; i += blockDim.x) {
-    double value;
-    double *dst;
+    real_t value;
+    real_t *dst;
     int width, cell;
     if (i < nv) {
       value = mv[i];
@@ -3125,30 +3066,30 @@ static __device__ void inactive_tape_ls_buffers(int begin, int end, int slots, i
   // Each packet stays within one history field and each destination slot.
   // Capacity tails are exported even after the world becomes inactive.
   for (int field = 0; field < 4; ++field) {
-    const double *src = field == 0 ? mv : (field == 1 ? jv : (field == 2 ? quad : qg));
-    double *dst = field == 0 ? tm : (field == 1 ? tj : (field == 2 ? tq : tg));
+    const real_t *src = field == 0 ? mv : (field == 1 ? jv : (field == 2 ? quad : qg));
+    real_t *dst = field == 0 ? tm : (field == 1 ? tj : (field == 2 ? tq : tg));
     const int width = field == 0 ? nv : (field == 1 ? rows : (field == 2 ? 3 * rows : 3));
     int i = 2 * int(threadIdx.x);
     for (; i + 1 < width; i += 2 * int(blockDim.x)) {
-      const double2 value = libero_vec::load_pair(src + i);
+      const real2_t value = libero_vec::load_pair(src + i);
       for (int slot = begin; slot < end; ++slot)
         libero_vec::store_pair(dst + slot * width + i, value.x, value.y);
     }
     if (i < width) {
-      const double value = src[i];
+      const real_t value = src[i];
       for (int slot = begin; slot < end; ++slot)
         dst[slot * width + i] = value;
     }
 #endif // LIBERO_NEWTON_SCALAR_IO
   }
 }
-static __device__ void tape_commit(int w, int slot, int slots, int *active, double *alpha, double *slope,
-                                   double *lineslope, double *improvement, double *gradient, double *cost,
-                                   double *oldcost, double *quad0, int *LSiter, int *LSresult, int *committed,
+static __device__ void tape_commit(int w, int slot, int slots, int *active, real_t *alpha, real_t *slope,
+                                   real_t *lineslope, real_t *improvement, real_t *gradient, real_t *cost,
+                                   real_t *oldcost, real_t *quad0, int *LSiter, int *LSresult, int *committed,
                                    int *route, int *nupdate, int *nactive, int *ncone, int *nchange,
                                    int *iteration, int *reason, int *error, int *s07, int *s08b,
-                                   int *stage_status, int *s08c, double *tf, int *ti, int *ts, double *eval,
-                                   int *tag, double *te, int *tt, bool export_trace = true) {
+                                   int *stage_status, int *s08c, real_t *tf, int *ti, int *ts, real_t *eval,
+                                   int *tag, real_t *te, int *tt, bool export_trace = true) {
   if (slot >= slots)
     return;
   int f = (w * slots + slot) * 8, i = (w * slots + slot) * 12, s = (w * slots + slot) * 6;
@@ -3186,13 +3127,13 @@ static __device__ void tape_commit(int w, int slot, int slots, int *active, doub
 // Collective trace export; leader retains the small mixed scalar record.
 // Caller enters uniformly and supplies its publication barrier. Status tail
 // cells ts[4:6] remain untouched exactly as the scalar history writer does.
-static __device__ void tape_commit_block(int w, int slot, int slots, int *active, double *alpha,
-                                         double *slope, double *lineslope, double *improvement,
-                                         double *gradient, double *cost, double *oldcost, double *quad0,
+static __device__ void tape_commit_block(int w, int slot, int slots, int *active, real_t *alpha,
+                                         real_t *slope, real_t *lineslope, real_t *improvement,
+                                         real_t *gradient, real_t *cost, real_t *oldcost, real_t *quad0,
                                          int *LSiter, int *LSresult, int *committed, int *route, int *nupdate,
                                          int *nactive, int *ncone, int *nchange, int *iteration, int *reason,
                                          int *error, int *s07, int *s08b, int *stage_status, int *s08c,
-                                         double *tf, int *ti, int *ts, double *eval, int *tag, double *te,
+                                         real_t *tf, int *ti, int *ts, real_t *eval, int *tag, real_t *te,
                                          int *tt) {
   if (slot >= slots)
     return;
@@ -3231,8 +3172,8 @@ static __device__ void validate_entry_counts(int w, int *n, int *ne, int *nf, in
   }
 }
 static __device__ void validate_contact_rows(int w, int *n, int *ne, int *nf, int *nc, int *typ, int *cid,
-                                             int *rd, double *rm, double *rf, int *dim, double *mu,
-                                             double *fr, int *newton, int *active, int *error, int *item,
+                                             int *rd, real_t *rm, real_t *rf, int *dim, real_t *mu,
+                                             real_t *fr, int *newton, int *active, int *error, int *item,
                                              int rows, int contacts) {
   if (!newton[w] || error[w])
     return;
@@ -3244,7 +3185,7 @@ static __device__ void validate_contact_rows(int w, int *n, int *ne, int *nf, in
       if (c < 0 || c >= nc[w])
         return;
       int d = dim[cb + c];
-      double m = mu[cb + c];
+      real_t m = mu[cb + c];
       if ((d != 1 && d != 3 && d != 4 && d != 6) || i + d > n[w] || m <= 0 || !isfinite(m))
         return;
       for (int j = 0; j < d; ++j)
@@ -3279,8 +3220,8 @@ static __device__ void validate_contact_rows(int w, int *n, int *ne, int *nf, in
     i += d;
   }
 }
-static __device__ void final_event(int w, double *q, int *empty, int *newton, int *exit, int *error,
-                                   int *status, int64_t *attempted, double *candidate, int64_t *stamp,
+static __device__ void final_event(int w, real_t *q, int *empty, int *newton, int *exit, int *error,
+                                   int *status, int64_t *attempted, real_t *candidate, int64_t *stamp,
                                    int *completed, int *origin, int *stage, int *rejected, int nv) {
   completed[w] = origin[w] = stage[w] = rejected[w] = 0;
   stamp[w] = attempted[w];
@@ -3341,7 +3282,7 @@ static __device__ bool prepare_newton_entry(const NewtonWorldData &p, NewtonCont
       if (id < 0 || id >= c.ncon())
         return false;
       d = p.contact_dim[id];
-      const double mu = p.contact_mu[id];
+      const real_t mu = p.contact_mu[id];
       if ((d != 3 && d != 4 && d != 6) || r + d > n || mu <= 0 || !isfinite(mu))
         return false;
       for (int j = 0; j < d; ++j)
@@ -3406,48 +3347,48 @@ static __device__ void validate_contact_metadata_warp(const NewtonWorldData &p, 
 }
 
 namespace libero_cuda {
-static __device__ __forceinline__ double square(double x) { return x * x; }
-static __device__ __forceinline__ double clamp(double x, double lo, double hi) {
+static __device__ __forceinline__ real_t square(real_t x) { return x * x; }
+static __device__ __forceinline__ real_t clamp(real_t x, real_t lo, real_t hi) {
   return fmin(hi, fmax(lo, x));
 }
-static __device__ __forceinline__ double dot3(const double *a, const double *b) {
+static __device__ __forceinline__ real_t dot3(const real_t *a, const real_t *b) {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
-static __device__ __forceinline__ void cross3(const double *a, const double *b, double *out) {
-  double x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2];
-  double z = a[0] * b[1] - a[1] * b[0];
+static __device__ __forceinline__ void cross3(const real_t *a, const real_t *b, real_t *out) {
+  real_t x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2];
+  real_t z = a[0] * b[1] - a[1] * b[0];
   out[0] = x;
   out[1] = y;
   out[2] = z;
 }
-static __device__ __forceinline__ void copy3(const double *x, double *out) {
-  const double a = x[0], b = x[1], c = x[2];
+static __device__ __forceinline__ void copy3(const real_t *x, real_t *out) {
+  const real_t a = x[0], b = x[1], c = x[2];
   out[0] = a;
   out[1] = b;
   out[2] = c;
 }
 // Quaternions use MuJoCo's (w,x,y,z) convention; rotate3 assumes unit length.
-static __device__ __forceinline__ void quat_mul(const double *a, const double *b, double *out) {
-  double q[4] = {a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+static __device__ __forceinline__ void quat_mul(const real_t *a, const real_t *b, real_t *out) {
+  real_t q[4] = {a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
                  a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
                  a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
                  a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]};
   for (int i = 0; i < 4; ++i)
     out[i] = q[i];
 }
-static __device__ __forceinline__ void quat_rotate3(const double *q, const double *v, double *out) {
-  double uv[3], uuv[3];
+static __device__ __forceinline__ void quat_rotate3(const real_t *q, const real_t *v, real_t *out) {
+  real_t uv[3], uuv[3];
   cross3(q + 1, v, uv);
   cross3(q + 1, uv, uuv);
   for (int i = 0; i < 3; ++i)
     out[i] = v[i] + 2 * (q[0] * uv[i] + uuv[i]);
 }
-static __device__ __forceinline__ double dot6(const double *a, const double *b) {
+static __device__ __forceinline__ real_t dot6(const real_t *a, const real_t *b) {
   return dot3(a, b) + dot3(a + 3, b + 3);
 }
 // Spatial motion vectors are angular then linear, as in MuJoCo cvel.
-static __device__ __forceinline__ void cross_motion(const double *a, const double *b, double *out) {
-  double angular[3], linear[3], extra[3];
+static __device__ __forceinline__ void cross_motion(const real_t *a, const real_t *b, real_t *out) {
+  real_t angular[3], linear[3], extra[3];
   cross3(a, b, angular);
   cross3(a, b + 3, linear);
   cross3(a + 3, b, extra);
@@ -3456,8 +3397,8 @@ static __device__ __forceinline__ void cross_motion(const double *a, const doubl
     out[i + 3] = linear[i] + extra[i];
   }
 }
-static __device__ __forceinline__ void cross_force(const double *a, const double *b, double *out) {
-  double angular[3], linear[3], extra[3];
+static __device__ __forceinline__ void cross_force(const real_t *a, const real_t *b, real_t *out) {
+  real_t angular[3], linear[3], extra[3];
   cross3(a, b, angular);
   cross3(a + 3, b + 3, extra);
   cross3(a, b + 3, linear);
@@ -3478,19 +3419,19 @@ static __device__ __forceinline__ int width() { return blockDim.x; }
 // Dense reconstruction from the admitted lower factor. Upper-triangle owner
 // bits are ignored. This makes the batch cone path independent of the current
 // source matrix/factor lifetime and keeps base H available for the next update.
-static __device__ void hessian_from_factor_blas_dx(const double *factor, double *H, double *workspace,
+static __device__ void hessian_from_factor_blas_dx(const real_t *factor, real_t *H, real_t *workspace,
                                                    int *algorithm_diagnostic) {
-  double *C = workspace;
-  double *A = C + SubstepShape::nv * SubstepShape::nv;
-  double *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
-  libero_newton_io::fill_block(C, SubstepShape::nv * SubstepShape::nv, 0.0);
+  real_t *C = workspace;
+  real_t *A = C + SubstepShape::nv * SubstepShape::nv;
+  real_t *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
+  libero_newton_io::fill_block(C, SubstepShape::nv * SubstepShape::nv, REAL_C(0.0));
   __syncthreads();
   for (int begin = 0; begin < SubstepShape::nv; begin += flash_libero::NewtonLayout::hessian_tile_rows) {
     for (int z = threadIdx.x; z < SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
          z += blockDim.x) {
       const int i = z / flash_libero::NewtonLayout::hessian_tile_rows,
                 k = begin + z % flash_libero::NewtonLayout::hessian_tile_rows;
-      const double v = k < SubstepShape::nv && k <= i ? factor[i * SubstepShape::nv + k] : 0.0;
+      const real_t v = k < SubstepShape::nv && k <= i ? factor[i * SubstepShape::nv + k] : REAL_C(0.0);
       A[z] = v;
       B[(z % flash_libero::NewtonLayout::hessian_tile_rows) * SubstepShape::nv + i] = v;
     }
@@ -3506,16 +3447,16 @@ static __device__ void hessian_from_factor_blas_dx(const double *factor, double 
 
 // A pending U tile is a separate owner: cone POTRF/L^T J scratch may overwrite
 // workspace between appends. Only this call consumes/clears the pending tile.
-static __device__ void cone_gram_append_blas_dx(const double *pending, int used, double *H, double *workspace,
+static __device__ void cone_gram_append_blas_dx(const real_t *pending, int used, real_t *H, real_t *workspace,
                                                 int *algorithm_diagnostic) {
-  double *C = workspace;
-  double *A = C + SubstepShape::nv * SubstepShape::nv;
-  double *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
-  libero_newton_io::fill_block(C, SubstepShape::nv * SubstepShape::nv, 0.0);
+  real_t *C = workspace;
+  real_t *A = C + SubstepShape::nv * SubstepShape::nv;
+  real_t *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
+  libero_newton_io::fill_block(C, SubstepShape::nv * SubstepShape::nv, REAL_C(0.0));
   for (int z = threadIdx.x; z < SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
        z += blockDim.x) {
     const int k = z / SubstepShape::nv, j = z % SubstepShape::nv;
-    const double v = k < used ? pending[z] : 0.0;
+    const real_t v = k < used ? pending[z] : REAL_C(0.0);
     B[z] = v;
     A[j * flash_libero::NewtonLayout::hessian_tile_rows + k] = v;
   }
@@ -3529,9 +3470,9 @@ static __device__ void cone_gram_append_blas_dx(const double *pending, int used,
   __syncthreads();
 }
 
-static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D, int *state, double *qm,
-                                               int *madr, int *parent, int *simple, double *H,
-                                               double *workspace, int *diagnostic, double *atomic_scratch,
+static __device__ void hessian_rebuild_blas_dx(int *count, real_t *J, real_t *D, int *state, real_t *qm,
+                                               int *madr, int *parent, int *simple, real_t *H,
+                                               real_t *workspace, int *diagnostic, real_t *atomic_scratch,
                                                jacobian_cache::View cache) {
 #if FLASH_NEWTON_ATOMIC_REDUCTIONS
   static_assert(NewtonLayout::mathdx_cells >= atomic_reduction::gram_block_cells(SubstepShape::nv),
@@ -3546,7 +3487,7 @@ static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D,
     if (j > i) continue;
     const int adr = mass_index(i, j, madr, parent, simple);
     // Preserve Gram -> add M -> mirror, including the existing cone stage.
-    const double value = atomic_scratch[i * (i + 1) / 2 + j] + (adr >= 0 ? qm[adr] : 0.0);
+    const real_t value = atomic_scratch[i * (i + 1) / 2 + j] + (adr >= 0 ? qm[adr] : REAL_C(0.0));
     H[z] = value;
     if (i != j) H[j * SubstepShape::nv + i] = value;
   }
@@ -3557,9 +3498,9 @@ static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D,
   }
   __syncthreads();
 #else
-  double *C = workspace;
-  double *A = C + SubstepShape::nv * SubstepShape::nv;
-  double *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
+  real_t *C = workspace;
+  real_t *A = C + SubstepShape::nv * SubstepShape::nv;
+  real_t *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
   for (int z = threadIdx.x; z < SubstepShape::nv * SubstepShape::nv; z += blockDim.x)
     C[z] = 0;
   // The first A/B publication also publishes C. With zero live rows the
@@ -3571,28 +3512,28 @@ static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D,
     // there is no row_D/row_admitted shared producer/consumer boundary.
     for (int k = warp; k < flash_libero::NewtonLayout::hessian_tile_rows; k += warps) {
       const int r = begin + k;
-      double d = 0.0;
+      real_t d = REAL_C(0.0);
       if (lane == 0 && r < count[0] && state[r] == 1)
         d = D[r];
       d = __shfl_sync(libero_warp::mask, d, 0);
-      const bool admitted = d != 0.0;
+      const bool admitted = d != REAL_C(0.0);
       // Masked rows may legally hold nonfinite J and must not be read.
 #if LIBERO_NEWTON_SCALAR_IO
       for (int i = lane; i < SubstepShape::nv; i += 32) {
-        const double v = admitted ? J[r * SubstepShape::nv + i] : 0.0;
-        A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v * d : 0.0;
+        const real_t v = admitted ? J[r * SubstepShape::nv + i] : REAL_C(0.0);
+        A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v * d : REAL_C(0.0);
         B[k * SubstepShape::nv + i] = v;
       }
 #else
       for (int i = 2 * lane; i < SubstepShape::nv; i += 64) {
         if (i + 1 < SubstepShape::nv) {
-          const double2 v = admitted ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_double2(0, 0);
-          A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v.x * d : 0.0;
-          A[(i + 1) * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v.y * d : 0.0;
+          const real2_t v = admitted ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_real2(0, 0);
+          A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v.x * d : REAL_C(0.0);
+          A[(i + 1) * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v.y * d : REAL_C(0.0);
           libero_vec::store_pair(B + k * SubstepShape::nv + i, v.x, v.y);
         } else {
-          const double v = admitted ? J[r * SubstepShape::nv + i] : 0.0;
-          A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v * d : 0.0;
+          const real_t v = admitted ? J[r * SubstepShape::nv + i] : REAL_C(0.0);
+          A[i * flash_libero::NewtonLayout::hessian_tile_rows + k] = admitted ? v * d : REAL_C(0.0);
           B[k * SubstepShape::nv + i] = v;
         }
       }
@@ -3609,7 +3550,7 @@ static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D,
       continue;
     int adr = mass_index(i, j, madr, parent, simple);
     // Add sparse M after Gram summation, following the original source.
-    double v = C[z] + (adr >= 0 ? qm[adr] : 0);
+    real_t v = C[z] + (adr >= 0 ? qm[adr] : 0);
     H[z] = v;
     if (i != j)
       H[j * SubstepShape::nv + i] = v;
@@ -3620,10 +3561,10 @@ static __device__ void hessian_rebuild_blas_dx(int *count, double *J, double *D,
 #endif
 }
 
-static __device__ void hessian_assemble_blas_dx(int w, int *count, int *active, int kind, double *J,
-                                                double *D, int *state, double *qm, int *madr, int *parent,
-                                                int *simple, double *H, int *status, int rows,
-                                                double *workspace, int *diagnostic, double *atomic_scratch,
+static __device__ void hessian_assemble_blas_dx(int w, int *count, int *active, int kind, real_t *J,
+                                                real_t *D, int *state, real_t *qm, int *madr, int *parent,
+                                                int *simple, real_t *H, int *status, int rows,
+                                                real_t *workspace, int *diagnostic, real_t *atomic_scratch,
                                                jacobian_cache::View cache) {
   // All inputs are already sliced to one world by the persistent wrapper.
   // The admitted solve caller needs no extra exit barrier: rebuild publishes H.
@@ -3634,15 +3575,15 @@ static __device__ void hessian_assemble_blas_dx(int w, int *count, int *active, 
 
 // Collective contract: every exit closes the admission-flag read lifetime;
 // active calls also publish results and release staging. No caller exit barrier.
-static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, double *J, double *q, double *aref,
-                                          double *out, int rows, double *workspace, int *diagnostic) {
+static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, real_t *J, real_t *q, real_t *aref,
+                                          real_t *out, int rows, real_t *workspace, int *diagnostic) {
   if (!active[0]) {
     __syncthreads();
     return;
   }
-  double *A = workspace;
-  double *B = A + 16 * SubstepShape::nv;
-  double *C = B + SubstepShape::nv;
+  real_t *A = workspace;
+  real_t *B = A + 16 * SubstepShape::nv;
+  real_t *C = B + SubstepShape::nv;
 #if LIBERO_NEWTON_SCALAR_IO
   for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x)
     B[j] = q[j];
@@ -3661,8 +3602,8 @@ static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, double
     for (int z = threadIdx.x; z < 16 * row_pairs; z += blockDim.x) {
       const int k = z / row_pairs, i = 2 * (z % row_pairs), r = begin + k;
       if (i + 1 < SubstepShape::nv) {
-        const double2 v =
-            r < count[0] ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_double2(0, 0);
+        const real2_t v =
+            r < count[0] ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_real2(0, 0);
         libero_vec::store_pair(A + k * SubstepShape::nv + i, v.x, v.y);
       } else
         A[k * SubstepShape::nv + i] = r < count[0] ? J[r * SubstepShape::nv + i] : 0;
@@ -3672,7 +3613,7 @@ static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, double
     for (int r = threadIdx.x; r < 16; r += blockDim.x)
       C[r] = 0;
 #else
-    libero_newton_io::fill_block(C, 16, 0.0);
+    libero_newton_io::fill_block(C, 16, REAL_C(0.0));
 #endif // LIBERO_NEWTON_SCALAR_IO
     __syncthreads();
     dx_newton_jv(A, B, C);
@@ -3684,8 +3625,8 @@ static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, double
     for (int p = threadIdx.x; p < 8; p += blockDim.x) {
       const int r = 2 * p;
       if (begin + r + 1 < count[0]) {
-        const double2 c = libero_vec::load_pair(C + r);
-        const double2 a = libero_vec::load_pair(aref + begin + r);
+        const real2_t c = libero_vec::load_pair(C + r);
+        const real2_t a = libero_vec::load_pair(aref + begin + r);
         libero_vec::store_pair(out + begin + r, c.x - a.x, c.y - a.y);
       } else if (begin + r < count[0])
         out[begin + r] = C[r] - aref[begin + r];
@@ -3699,15 +3640,15 @@ static __device__ void jacvec_sub_blas_dx(int w, int *active, int *count, double
 }
 
 // Two columns: smooth and warmstart. The J tile is staged once for both.
-static __device__ void jacvec_candidates_mathdx(const int *active, const int *count, const double *J,
-                                                 const double *smooth, const double *warm, const double *aref,
-                                                 double *smooth_residual, double *warm_residual,
-                                                 double *workspace, int *diagnostic) {
+static __device__ void jacvec_candidates_mathdx(const int *active, const int *count, const real_t *J,
+                                                 const real_t *smooth, const real_t *warm, const real_t *aref,
+                                                 real_t *smooth_residual, real_t *warm_residual,
+                                                 real_t *workspace, int *diagnostic) {
   if (!active[0]) {
     __syncthreads();
     return;
   }
-  double *A = workspace, *B = A + 16 * SubstepShape::nv, *C = B + 2 * SubstepShape::nv;
+  real_t *A = workspace, *B = A + 16 * SubstepShape::nv, *C = B + 2 * SubstepShape::nv;
   for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x) {
     B[2 * j] = smooth[j];
     B[2 * j + 1] = warm[j];
@@ -3716,17 +3657,17 @@ static __device__ void jacvec_candidates_mathdx(const int *active, const int *co
   for (int begin = 0; begin < count[0]; begin += 16) {
     for (int z = threadIdx.x; z < 16 * SubstepShape::nv; z += blockDim.x) {
       const int r = begin + z / SubstepShape::nv;
-      A[z] = r < count[0] ? J[r * SubstepShape::nv + z % SubstepShape::nv] : 0.0;
+      A[z] = r < count[0] ? J[r * SubstepShape::nv + z % SubstepShape::nv] : REAL_C(0.0);
     }
     // Keep C initialized: the installed Dx epilogue may stage its old cells
     // even though beta=0 discards their values.
     for (int z = threadIdx.x; z < 32; z += blockDim.x)
-      C[z] = 0.0;
+      C[z] = REAL_C(0.0);
     __syncthreads();
     dx_newton_candidates(A, B, C); // publishes C and releases A/B readers
     for (int i = threadIdx.x; i < 16; i += blockDim.x)
       if (begin + i < count[0]) {
-        const double reference = aref[begin + i];
+        const real_t reference = aref[begin + i];
         smooth_residual[begin + i] = C[2 * i] - reference;
         warm_residual[begin + i] = C[2 * i + 1] - reference;
       }
@@ -3738,10 +3679,10 @@ static __device__ void jacvec_candidates_mathdx(const int *active, const int *co
 }
 
 // Shape-specialized subwarps share each J load between the two candidates.
-static __device__ void jacvec_candidates_blas_dx(const int *active, const int *count, const double *J,
-                                                 const double *smooth, const double *warm, const double *aref,
-                                                 double *smooth_residual, double *warm_residual,
-                                                 double *workspace, int *diagnostic) {
+static __device__ void jacvec_candidates_blas_dx(const int *active, const int *count, const real_t *J,
+                                                 const real_t *smooth, const real_t *warm, const real_t *aref,
+                                                 real_t *smooth_residual, real_t *warm_residual,
+                                                 real_t *workspace, int *diagnostic) {
 #if FLASH_NEWTON_NATIVE_GEMV
   if (active[0]) {
     constexpr int lanes = SubstepShape::nv <= 32 ? 8 : 16;
@@ -3755,18 +3696,18 @@ static __device__ void jacvec_candidates_blas_dx(const int *active, const int *c
 }
 
 // Same collective exit contract as jacvec_sub_blas_dx, including zero rows.
-static __device__ void constraint_transpose_mathdx(int w, int *active, int *count, double *J, double *force,
-                                                    double *qfrc, int rows, int nv,
-                                                    double *workspace, int *diagnostic) {
+static __device__ void constraint_transpose_mathdx(int w, int *active, int *count, real_t *J, real_t *force,
+                                                    real_t *qfrc, int rows, int nv,
+                                                    real_t *workspace, int *diagnostic) {
   // The caller can immediately change active after this call. Even a no-op
   // exit must finish both warps' flag reads before that next writer runs.
   if (!active[0]) {
     __syncthreads();
     return;
   }
-  double *C = workspace;
-  double *A = C + SubstepShape::nv;
-  double *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
+  real_t *C = workspace;
+  real_t *A = C + SubstepShape::nv;
+  real_t *B = A + SubstepShape::nv * flash_libero::NewtonLayout::hessian_tile_rows;
   for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x)
     C[j] = 0;
   __syncthreads();
@@ -3776,7 +3717,7 @@ static __device__ void constraint_transpose_mathdx(int w, int *active, int *coun
     bool nonzero = false;
     for (int k = threadIdx.x; k < flash_libero::NewtonLayout::hessian_tile_rows; k += blockDim.x) {
       const int r = begin + k;
-      const double f = r < count[0] ? force[r] : 0;
+      const real_t f = r < count[0] ? force[r] : 0;
       B[k] = f;
       nonzero |= f != 0;
     }
@@ -3799,13 +3740,13 @@ static __device__ void constraint_transpose_mathdx(int w, int *active, int *coun
 #else
       const int k = z / row_pairs, j = 2 * (z % row_pairs), r = begin + k;
 #endif // LIBERO_NEWTON_SCALAR_IO
-      const double f = B[k];
+      const real_t f = B[k];
       // Zero force intentionally ignores its corresponding Jacobian row.
 #if LIBERO_NEWTON_SCALAR_IO
       A[j * flash_libero::NewtonLayout::hessian_tile_rows + k] = f != 0 ? J[r * SubstepShape::nv + j] : 0;
 #else
       if (j + 1 < SubstepShape::nv) {
-        const double2 v = f != 0 ? libero_vec::load_pair(J + r * SubstepShape::nv + j) : make_double2(0, 0);
+        const real2_t v = f != 0 ? libero_vec::load_pair(J + r * SubstepShape::nv + j) : make_real2(0, 0);
         A[j * flash_libero::NewtonLayout::hessian_tile_rows + k] = v.x;
         A[(j + 1) * flash_libero::NewtonLayout::hessian_tile_rows + k] = v.y;
       } else
@@ -3824,9 +3765,9 @@ static __device__ void constraint_transpose_mathdx(int w, int *active, int *coun
 
 // Small live ranges accumulate columns directly. Larger ranges and NV<=32
 // partition rows across warps, then reduce only warps*NV private partials.
-static __device__ void constraint_transpose_blas_dx(int w, int *active, int *count, double *J, double *force,
-                                                    double *qfrc, int rows, int nv,
-                                                    double *workspace, int *diagnostic, double *atomic_scratch,
+static __device__ void constraint_transpose_blas_dx(int w, int *active, int *count, real_t *J, real_t *force,
+                                                    real_t *qfrc, int rows, int nv,
+                                                    real_t *workspace, int *diagnostic, real_t *atomic_scratch,
                                                jacobian_cache::View cache) {
 #if FLASH_NEWTON_ATOMIC_REDUCTIONS
   if (active[0]) {
@@ -3860,11 +3801,11 @@ static __device__ void constraint_transpose_blas_dx(int w, int *active, int *cou
 #endif
 }
 
-static __device__ void cone_ltj_blas_dx(int begin, int dim, double *J, double *local, double *ltj,
-                                        double *workspace, int *diagnostic) {
-  double *C = workspace;
-  double *A = C + 6 * SubstepShape::nv;
-  double *B = A + 36;
+static __device__ void cone_ltj_blas_dx(int begin, int dim, real_t *J, real_t *local, real_t *ltj,
+                                        real_t *workspace, int *diagnostic) {
+  real_t *C = workspace;
+  real_t *A = C + 6 * SubstepShape::nv;
+  real_t *B = A + 36;
   for (int z = threadIdx.x; z < 36; z += blockDim.x) {
     int r = z / 6, k = z % 6;
     A[z] = (r < dim && k < dim && k >= r) ? local[k * dim + r] : 0;
@@ -3886,27 +3827,27 @@ static __device__ void cone_ltj_blas_dx(int begin, int dim, double *J, double *l
 // Both calls are collective block operations; matrix and RHS are shared memory.
 #if LIBERO_NEWTON_ISLANDS
 namespace libero_islands {
-static __device__ bool direction_with_forward(const double *, const double *, double *, double *, double *,
+static __device__ bool direction_with_forward(const real_t *, const real_t *, real_t *, real_t *, real_t *,
                                               int *);
 }
 #endif
 
-static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, double *constraint, double *H,
-                                         double *HC, int *ncone, int *nefc, int *active, int *upstream,
-                                         double *grad, double *Mgrad, double *candidate, int *status,
-                                         double *scratch_grad, double *x, double *fwd, double *workspace,
+static __device__ void direction_blas_dx(int w, real_t *Ma, real_t *smooth, real_t *constraint, real_t *H,
+                                         real_t *HC, int *ncone, int *nefc, int *active, int *upstream,
+                                         real_t *grad, real_t *Mgrad, real_t *candidate, int *status,
+                                         real_t *scratch_grad, real_t *x, real_t *fwd, real_t *workspace,
                                          int *blas_diag, bool base_shared = false, bool cone_shared = false,
                                          int *islands_diag = nullptr) {
   const int lane = threadIdx.x;
   const int vb = w * SubstepShape::nv;
-  const double *L = (ncone[w] > 0 ? HC : H) + w * SubstepShape::nv * SubstepShape::nv;
+  const real_t *L = (ncone[w] > 0 ? HC : H) + w * SubstepShape::nv * SubstepShape::nv;
   bool resident = ncone[w] > 0 ? cone_shared : base_shared;
-  double *lower = resident ? const_cast<double *>(L) : workspace;
+  real_t *lower = resident ? const_cast<real_t *>(L) : workspace;
   // Each Dx operand begins at a 16-byte aligned address. An odd NV gives
   // NV*NV FP64 cells an 8-byte remainder; pad only the staging subview.
   // The factor itself retains compact row-major lda=NV.
   constexpr int matrix_cells = (SubstepShape::nv * SubstepShape::nv + 1) & ~1;
-  double *rhs = workspace + (resident ? 0 : matrix_cells);
+  real_t *rhs = workspace + (resident ? 0 : matrix_cells);
   __shared__ int first_bad;
   if (lane == 0) {
     status[w] = upstream[w];
@@ -3940,7 +3881,7 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
   if (lane < 32) {
     int bad = libero_warp::no_index;
     for (int i = lane; i < SubstepShape::nv; i += 32) {
-      double v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
+      real_t v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
       if (!isfinite(v) && i < bad)
         bad = i;
     }
@@ -3955,7 +3896,7 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
   // Preserve the original diagnostic prefix, including on overflow failure.
   for (int i = lane; i < SubstepShape::nv; i += blockDim.x)
     if (i < first_bad) {
-      double v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
+      real_t v = (Ma[vb + i] - smooth[vb + i]) - constraint[vb + i];
       scratch_grad[vb + i] = v;
       x[vb + i] = v;
     }
@@ -3975,7 +3916,7 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
     for (int i = lane; i < SubstepShape::nv; i += blockDim.x) {
       grad[vb + i] = scratch_grad[vb + i];
       Mgrad[vb + i] = x[vb + i];
-      candidate[vb + i] = copysign(x[vb + i], -copysign(1.0, x[vb + i]));
+      candidate[vb + i] = copysign(x[vb + i], -copysign(REAL_C(1.0), x[vb + i]));
     }
     __syncthreads();
     return;
@@ -3983,7 +3924,7 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
 #endif
   if (!resident)
     for (int z = lane; z < SubstepShape::nv * SubstepShape::nv; z += blockDim.x)
-      lower[z] = z % SubstepShape::nv <= z / SubstepShape::nv ? L[z] : 0.0;
+      lower[z] = z % SubstepShape::nv <= z / SubstepShape::nv ? L[z] : REAL_C(0.0);
   for (int i = lane; i < SubstepShape::nv; i += blockDim.x)
     rhs[i] = x[vb + i];
   if (lane == 0)
@@ -4037,7 +3978,7 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
   for (int i = lane; i < SubstepShape::nv; i += blockDim.x) {
     grad[vb + i] = scratch_grad[vb + i];
     Mgrad[vb + i] = x[vb + i];
-    candidate[vb + i] = copysign(x[vb + i], -copysign(1.0, x[vb + i]));
+    candidate[vb + i] = copysign(x[vb + i], -copysign(REAL_C(1.0), x[vb + i]));
   }
   __syncthreads();
 }
@@ -4045,28 +3986,28 @@ static __device__ void direction_blas_dx(int w, double *Ma, double *smooth, doub
 // CPU CGupdateGradient with the existing cooperative FP64 triangular solves.
 // Checked direction_blas_dx above remains available for standalone diagnostics.
 static __device__ void direction_core_blas_dx(unsigned char *shared, const NewtonWorldData &p,
-                                              double *smooth_force, bool publish_search = true) {
-  double *shared_mass_acceleration = shared_at<double>(shared, NewtonLayout::mass_acceleration);
-  double *shared_constraint_force = shared_at<double>(shared, NewtonLayout::constraint_force);
-  double *shared_hessian = shared_at<double>(shared, NewtonLayout::hessian);
-  double *shared_gradient = shared_at<double>(shared, NewtonLayout::gradient);
-  double *shared_search = shared_at<double>(shared, NewtonLayout::search);
-  double *shared_mathdx = shared_at<double>(shared, NewtonLayout::mathdx);
+                                              real_t *smooth_force, bool publish_search = true) {
+  real_t *shared_mass_acceleration = shared_at<real_t>(shared, NewtonLayout::mass_acceleration);
+  real_t *shared_constraint_force = shared_at<real_t>(shared, NewtonLayout::constraint_force);
+  real_t *shared_hessian = shared_at<real_t>(shared, NewtonLayout::hessian);
+  real_t *shared_gradient = shared_at<real_t>(shared, NewtonLayout::gradient);
+  real_t *shared_search = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *shared_mathdx = shared_at<real_t>(shared, NewtonLayout::mathdx);
   auto &ctl = newton_control(shared);
   // The qualified solve calls this collective only after successful Hessian
   // factorization. It produces no status code or leader-written run flag.
   const int vb = 0 * SubstepShape::nv;
-  const double *factor =
+  const real_t *factor =
       (ctl.ncone() > 0 ? p.Hcone : shared_hessian) + 0 * SubstepShape::nv * SubstepShape::nv;
   const bool resident = ctl.ncone() > 0 ? false : true;
   constexpr int matrix_cells = (SubstepShape::nv * SubstepShape::nv + 1) & ~1;
-  double *lower = resident ? const_cast<double *>(factor) : shared_mathdx;
-  double *rhs = shared_mathdx + (resident ? 0 : matrix_cells);
+  real_t *lower = resident ? const_cast<real_t *>(factor) : shared_mathdx;
+  real_t *rhs = shared_mathdx + (resident ? 0 : matrix_cells);
   if (!resident)
     for (int z = threadIdx.x; z < SubstepShape::nv * SubstepShape::nv; z += blockDim.x)
-      lower[z] = z % SubstepShape::nv <= z / SubstepShape::nv ? factor[z] : 0.0;
+      lower[z] = z % SubstepShape::nv <= z / SubstepShape::nv ? factor[z] : REAL_C(0.0);
   for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
-    const double g =
+    const real_t g =
         (shared_mass_acceleration[vb + i] - smooth_force[vb + i]) - shared_constraint_force[vb + i];
     shared_gradient[vb + i] = g;
     rhs[i] = g;
@@ -4077,8 +4018,8 @@ static __device__ void direction_core_blas_dx(unsigned char *shared, const Newto
   dx_direction_potrs(lower, rhs);
   __syncthreads();
   for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
-    const double value = rhs[i];
-    shared_search[vb + i] = copysign(value, -copysign(1.0, value));
+    const real_t value = rhs[i];
+    shared_search[vb + i] = copysign(value, -copysign(REAL_C(1.0), value));
   }
   // The initial direction is consumed immediately by line search. Iteration
   // statistics consume only the earlier gradient; their exit barrier can
@@ -4094,14 +4035,14 @@ static_assert(flash_libero::SubstepShape::threads >= 32 && flash_libero::Substep
                   flash_libero::SubstepShape::threads % 32 == 0,
               "S07 collectives require complete warps");
 static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonModelData &model,
-                                         const NewtonWorldData &world, const double *smooth_force, int w,
-                                         int rows, int nefc, int ne, int nf, double alpha, int tag,
+                                         const NewtonWorldData &world, const real_t *smooth_force, int w,
+                                         int rows, int nefc, int ne, int nf, real_t alpha, int tag,
                                          int *niter, const int *group_head,
                                          const int *compact_heads = nullptr, int head_count = 0,
-                                         const double *head_mu = nullptr) {
+                                         const real_t *head_mu = nullptr) {
   CF_NEWTON_PROFILE_SCOPE(SearchPoint);
   auto &ctl = newton_control(shared);
-  __shared__ double partial[6][(flash_libero::SubstepShape::threads + 31) / 32];
+  __shared__ real_t partial[6][(flash_libero::SubstepShape::threads + 31) / 32];
   __shared__ P point;
   __shared__ int next_iter;
   if (!group_head && !compact_heads) {
@@ -4115,7 +4056,7 @@ static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonMode
     __syncthreads();
     return result;
   }
-  double t0 = 0, t1 = 0, t2 = 0, cost = 0, d0 = 0, d1 = 0;
+  real_t t0 = 0, t1 = 0, t2 = 0, cost = 0, d0 = 0, d1 = 0;
   const int base = w * rows, qbase = w * rows * 3;
   // Immutable compact plan is produced once per invocation, not per alpha.
   const int groups = compact_heads ? head_count : nefc;
@@ -4126,47 +4067,47 @@ static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonMode
     const int i = compact_heads ? compact_heads[rank] : rank;
     if (!compact_heads && group_head[i] != i)
       continue;
-    const double *q = world.quad + qbase + 3 * i;
+    const real_t *q = world.quad + qbase + 3 * i;
     bool add = false;
     if (i < ne)
       add = true;
     else if (i < ne + nf) {
-      const double start = world.jar[base + i], dir = world.Jv[base + i];
-      const double x = start + alpha * dir, f = world.loss[base + i], Rf = row_friction_limit(world, base + i);
+      const real_t start = world.jar[base + i], dir = world.Jv[base + i];
+      const real_t x = start + alpha * dir, f = world.loss[base + i], Rf = row_friction_limit(world, base + i);
       if (-Rf < x && x < Rf)
         add = true;
       else if (x <= -Rf) {
-        t0 += f * (-0.5 * Rf - start);
+        t0 += f * (-REAL_C(0.5) * Rf - start);
         t1 += -f * dir;
       } else {
-        t0 += f * (-0.5 * Rf + start);
+        t0 += f * (-REAL_C(0.5) * Rf + start);
         t1 += f * dir;
       }
     } else if (world.efc_type[base + i] == 7) {
-      const double mu = head_mu && compact_heads ? head_mu[rank] : world.cone_mu[base + i];
+      const real_t mu = head_mu && compact_heads ? head_mu[rank] : world.cone_mu[base + i];
 #if LIBERO_NEWTON_SCALAR_IO
-      const double U0 = q[3], V0 = q[4], UU = q[5], UV = q[6], VV = q[7], Dm = q[8];
+      const real_t U0 = q[3], V0 = q[4], UU = q[5], UV = q[6], VV = q[7], Dm = q[8];
 #else
       // Cone heads own all three quad records (nine doubles). Guard
       // alignment on each actual pair; never read a follower as a head.
-      const double2 uv0 = libero_vec::load_pair(q + 3);
-      const double2 uuv = libero_vec::load_pair(q + 5);
-      const double2 vdm = libero_vec::load_pair(q + 7);
-      const double U0 = uv0.x, V0 = uv0.y, UU = uuv.x, UV = uuv.y, VV = vdm.x, Dm = vdm.y;
+      const real2_t uv0 = libero_vec::load_pair(q + 3);
+      const real2_t uuv = libero_vec::load_pair(q + 5);
+      const real2_t vdm = libero_vec::load_pair(q + 7);
+      const real_t U0 = uv0.x, V0 = uv0.y, UU = uuv.x, UV = uuv.y, VV = vdm.x, Dm = vdm.y;
 #endif // LIBERO_NEWTON_SCALAR_IO
-      const double N = U0 + alpha * V0, Tsqr = UU + alpha * (2.0 * UV + alpha * VV);
+      const real_t N = U0 + alpha * V0, Tsqr = UU + alpha * (REAL_C(2.0) * UV + alpha * VV);
       if (Tsqr <= 0) {
         if (N < 0)
           add = true;
       } else {
-        const double T = __dsqrt_rn(Tsqr);
+        const real_t T = real_sqrt_rn(Tsqr);
         if (N >= mu * T) {
         } else if (mu * N + T <= 0)
           add = true;
         else {
-          const double N1 = V0, T1 = __ddiv_rn(UV + alpha * VV, T);
-          const double T2 = __ddiv_rn(VV, T) - __ddiv_rn((UV + alpha * VV) * T1, T * T);
-          cost += 0.5 * Dm * (N - mu * T) * (N - mu * T);
+          const real_t N1 = V0, T1 = real_div_rn(UV + alpha * VV, T);
+          const real_t T2 = real_div_rn(VV, T) - real_div_rn((UV + alpha * VV) * T1, T * T);
+          cost += REAL_C(0.5) * Dm * (N - mu * T) * (N - mu * T);
           d0 += Dm * (N - mu * T) * (N1 - mu * T1);
           d1 += Dm * ((N1 - mu * T1) * (N1 - mu * T1) + (N - mu * T) * (-mu * T2));
         }
@@ -4182,18 +4123,18 @@ static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonMode
 #else
     if (add) {
       // Load only an admitted record, preserving skipped-term behavior.
-      const double2 q01 = libero_vec::load_pair(q);
+      const real2_t q01 = libero_vec::load_pair(q);
       t0 += q01.x;
       t1 += q01.y;
       t2 += q[2];
     }
 #endif // LIBERO_NEWTON_SCALAR_IO
   }
-  double values[6] = {t0, t1, t2, cost, d0, d1};
+  real_t values[6] = {t0, t1, t2, cost, d0, d1};
   const int lane = libero_warp::lane(), warp = libero_warp::warp();
 #pragma unroll
   for (int k = 0; k < 6; ++k) {
-    const double value = libero_warp::sum_to_leader(values[k]);
+    const real_t value = libero_warp::sum_to_leader(values[k]);
     if (lane == 0)
       partial[k][warp] = value;
   }
@@ -4202,17 +4143,17 @@ static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonMode
   // registers. No leader-written shared P needs a separate publication.
 #pragma unroll
   for (int k = 0; k < 6; ++k)
-    values[k] = libero_warp::sum(lane < (blockDim.x + 31) / 32 ? partial[k][lane] : 0.0);
+    values[k] = libero_warp::sum(lane < (blockDim.x + 31) / 32 ? partial[k][lane] : REAL_C(0.0));
   // Close every warp's partial reads before the next alpha reuses the array.
   __syncthreads();
   t0 = (&ctl.quad0())[w] + values[0];
   t1 = world.quadGauss[w * 3 + 1] + values[1];
   t2 = world.quadGauss[w * 3 + 2] + values[2];
   cost = values[3] + (alpha * alpha * t2 + alpha * t1 + t0);
-  d0 = values[4] + (2.0 * alpha * t2 + t1);
-  d1 = values[5] + 2.0 * t2;
+  d0 = values[4] + (REAL_C(2.0) * alpha * t2 + t1);
+  d1 = values[5] + REAL_C(2.0) * t2;
   if (d1 <= 0)
-    d1 = 1e-15;
+    d1 = REAL_C(1e-15);
   if (threadIdx.x == 0) {
     if (!isfinite(alpha) || !isfinite(cost) || !isfinite(d0) || !isfinite(d1))
       (&ctl.s07_status())[w] = 5;
@@ -4230,11 +4171,11 @@ static __device__ P s07_eval_point_block(unsigned char *shared, const NewtonMode
 }
 
 static __device__ int s07_update_bracket_block(unsigned char *shared, const NewtonModelData &model,
-                                               const NewtonWorldData &world, const double *smooth_force,
+                                               const NewtonWorldData &world, const real_t *smooth_force,
                                                int w, int rows, int nefc, int ne, int nf, P *p,
                                                const P *candidates, P *next, int *niter, int tag,
                                                const int *group_head, const int *compact_heads = nullptr,
-                                               int head_count = 0, const double *head_mu = nullptr) {
+                                               int head_count = 0, const real_t *head_mu = nullptr) {
   int flag = 0;
   for (int i = 0; i < 3; ++i) {
     if (p->d0 < 0 && candidates[i].d0 < 0 && p->d0 < candidates[i].d0) {
@@ -4249,14 +4190,14 @@ static __device__ int s07_update_bracket_block(unsigned char *shared, const Newt
   // uniform. Trace order and the 50-evaluation limit remain source-ordered.
   if (flag)
     *next = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                                 p->alpha - __ddiv_rn(p->d0, p->d1), tag, niter, group_head, compact_heads,
+                                 p->alpha - real_div_rn(p->d0, p->d1), tag, niter, group_head, compact_heads,
                                  head_count, head_mu);
   return flag;
 }
 
 static __device__ void s07_finish_block(unsigned char *shared, const NewtonModelData &model,
-                                        const NewtonWorldData &world, const double *smooth_force, int w,
-                                        double alpha, int niter, int result, double slope) {
+                                        const NewtonWorldData &world, const real_t *smooth_force, int w,
+                                        real_t alpha, int niter, int result, real_t slope) {
   if (threadIdx.x == 0)
     finish(shared, model, world, smooth_force, w, alpha, niter, result, slope);
 }
@@ -4270,16 +4211,16 @@ static __device__ void s07_finish_block(unsigned char *shared, const NewtonModel
 // handles its 1/2/3-element tail. Only the group leader writes the result.
 // No shared storage or barrier: the caller publishes the outputs once.
 template <int Products>
-static __device__ void search_dots_warp(const double *x, const double *y0, const double *y1, const double *y2,
-                                        int n, double *out) {
+static __device__ void search_dots_warp(const real_t *x, const real_t *y0, const real_t *y1, const real_t *y2,
+                                        int n, real_t *out) {
   static_assert(Products >= 1 && Products <= 3, "at most three dot products");
   if (threadIdx.x >= 32)
     return;
   const int group = threadIdx.x / 8, lane = threadIdx.x % 8;
   const int end = n - n % 4;
-  double partial = 0.0;
+  real_t partial = REAL_C(0.0);
   if (group < Products) {
-    const double *y = group == 0 ? y0 : (group == 1 ? y1 : y2);
+    const real_t *y = group == 0 ? y0 : (group == 1 ? y1 : y2);
     if (lane < 4 && end) {
       partial = x[lane] * y[lane];
       for (int i = lane + 4; i < end; i += 4)
@@ -4294,13 +4235,13 @@ static __device__ void search_dots_warp(const double *x, const double *y0, const
         partial = x[end] * y[end];
     }
   }
-  const double r0 = __shfl_sync(0xffffffffu, partial, 0, 8);
-  const double r1 = __shfl_sync(0xffffffffu, partial, 1, 8);
-  const double r2 = __shfl_sync(0xffffffffu, partial, 2, 8);
-  const double r3 = __shfl_sync(0xffffffffu, partial, 3, 8);
-  const double tail = __shfl_sync(0xffffffffu, partial, 4, 8);
+  const real_t r0 = __shfl_sync(0xffffffffu, partial, 0, 8);
+  const real_t r1 = __shfl_sync(0xffffffffu, partial, 1, 8);
+  const real_t r2 = __shfl_sync(0xffffffffu, partial, 2, 8);
+  const real_t r3 = __shfl_sync(0xffffffffu, partial, 3, 8);
+  const real_t tail = __shfl_sync(0xffffffffu, partial, 4, 8);
   if (lane == 0 && group < Products) {
-    double value = (r0 + r2) + (r1 + r3);
+    real_t value = (r0 + r2) + (r1 + r3);
     if (n != end)
       value += tail;
     out[group] = value;
@@ -4309,13 +4250,13 @@ static __device__ void search_dots_warp(const double *x, const double *y0, const
 
 // Only quantities depending on this search direction need shared storage.
 struct S07PreparedDx {
-  double gtol, slopescl, search_norm;
+  real_t gtol, slopescl, search_norm;
 };
 
 // A uniform register result replaces the shared ready flag. The DOF norm's
 // producer is lane 0, also the sole root/scale producer; one publication suffices.
 static __device__ bool s07_prepare_dx(unsigned char *shared, const NewtonModelData &model,
-                                      const NewtonWorldData &world, const double *smooth_force,
+                                      const NewtonWorldData &world, const real_t *smooth_force,
                                       S07PreparedDx *prepared) {
   auto &ctl = newton_control(shared);
   const bool active = ctl.active() != 0;
@@ -4323,29 +4264,29 @@ static __device__ bool s07_prepare_dx(unsigned char *shared, const NewtonModelDa
     return false;
   if (threadIdx.x == 0)
     ctl.s07_status() = 0;
-  double *v = shared_at<double>(shared, NewtonLayout::search);
-  double *result = shared_at<double>(shared, NewtonLayout::mass_search);
+  real_t *v = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *result = shared_at<real_t>(shared, NewtonLayout::mass_search);
   search_dots_warp<1>(v, v, nullptr, nullptr, SubstepShape::nv, &prepared->search_norm);
   if (threadIdx.x == 0) {
-    const double snorm = __dsqrt_rn(prepared->search_norm);
+    const real_t snorm = real_sqrt_rn(prepared->search_norm);
     prepared->search_norm = snorm;
     if (!isfinite(snorm))
       ctl.s07_status() = 5;
     else {
       world.quadGauss[0] = ctl.quad0();
-      if (snorm < 1e-15)
-        finish(shared, model, world, smooth_force, 0, 0.0, 0, 1, 1.0);
+      if (snorm < REAL_C(1e-15))
+        finish(shared, model, world, smooth_force, 0, REAL_C(0.0), 0, 1, REAL_C(1.0));
       else {
-        const double mean = model.model_scalars[1];
-        prepared->gtol = model.model_scalars[0] * 0.01 * snorm * mean * SubstepShape::nv;
-        prepared->slopescl = __ddiv_rn(1.0, snorm * mean * SubstepShape::nv);
+        const real_t mean = model.model_scalars[1];
+        prepared->gtol = real_linesearch_tolerance(model.model_scalars[0] * REAL_C(0.01) * snorm * mean * SubstepShape::nv);
+        prepared->slopescl = real_div_rn(REAL_C(1.0), snorm * mean * SubstepShape::nv);
         if (!isfinite(prepared->gtol) || !isfinite(prepared->slopescl))
           ctl.s07_status() = 5;
       }
     }
   }
   __syncthreads(); // publish the norm and scales, not a separate ready flag
-  const bool ready = ctl.s07_status() == 0 && prepared->search_norm >= 1e-15;
+  const bool ready = ctl.s07_status() == 0 && prepared->search_norm >= REAL_C(1e-15);
   if (!ready)
     return false;
   // Model plans and private shared operands are qualified once at binding.
@@ -4366,7 +4307,7 @@ static __device__ bool s07_prepare_dx(unsigned char *shared, const NewtonModelDa
   return !bad; // identical in every thread; caller owns final status publication
 }
 
-static __device__ double s07_tile_jv(int row, int begin, const double *tile, const double *Jv) {
+static __device__ real_t s07_tile_jv(int row, int begin, const real_t *tile, const real_t *Jv) {
   return row >= begin && row < begin + 16 ? tile[row - begin] : Jv[row];
 }
 
@@ -4374,35 +4315,35 @@ static __device__ double s07_tile_jv(int row, int begin, const double *tile, con
 // A cone crossing a tile boundary waits until its last row is available; only
 // its earlier (at most five) rows then need the global Jv mirror.
 static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const NewtonModelData &model,
-                                                const NewtonWorldData &world, const double *smooth_force,
-                                                int w, int i, int rows, int begin, const double *tile,
-                                                double *q, int rank = -1, const int *head_dim = nullptr,
-                                                const double *head_mu = nullptr,
-                                                const double *head_friction = nullptr) {
+                                                const NewtonWorldData &world, const real_t *smooth_force,
+                                                int w, int i, int rows, int begin, const real_t *tile,
+                                                real_t *q, int rank = -1, const int *head_dim = nullptr,
+                                                const real_t *head_mu = nullptr,
+                                                const real_t *head_friction = nullptr) {
   int base = w * rows;
-  const double *Jv = world.Jv + base;
-  double v = s07_tile_jv(i, begin, tile, Jv), j = world.jar[base + i], D = world.D[base + i];
-  double DJ0 = D * j;
+  const real_t *Jv = world.Jv + base;
+  real_t v = s07_tile_jv(i, begin, tile, Jv), j = world.jar[base + i], D = world.D[base + i];
+  real_t DJ0 = D * j;
   q[0] = j * DJ0;
   q[1] = v * DJ0;
   q[2] = v * D * v;
   bool elliptic = world.efc_type[base + i] == 7;
   if (elliptic) {
     int dim = head_dim && rank >= 0 ? head_dim[rank] : world.cone_dim[base + i];
-    double mu = head_mu && rank >= 0 ? head_mu[rank] : world.cone_mu[base + i];
+    real_t mu = head_mu && rank >= 0 ? head_mu[rank] : world.cone_mu[base + i];
     for (int k = 1; k < dim; ++k) {
-      double jk = world.jar[base + i + k], vk = s07_tile_jv(i + k, begin, tile, Jv),
+      real_t jk = world.jar[base + i + k], vk = s07_tile_jv(i + k, begin, tile, Jv),
              Dk = world.D[base + i + k];
-      double DJk = Dk * jk;
+      real_t DJk = Dk * jk;
       q[0] += jk * DJk;
       q[1] += vk * DJk;
       q[2] += vk * Dk * vk;
     }
-    double U0 = j * mu, V0 = v * mu, UU = 0, UV = 0, VV = 0;
+    real_t U0 = j * mu, V0 = v * mu, UU = 0, UV = 0, VV = 0;
     for (int k = 1; k < dim; ++k) {
-      double f = head_friction && rank >= 0 ? head_friction[(k - 1) * rows + rank]
+      real_t f = head_friction && rank >= 0 ? head_friction[(k - 1) * rows + rank]
                                             : world.cone_friction[(base + i) * 5 + k - 1];
-      double U = world.jar[base + i + k] * f, V = s07_tile_jv(i + k, begin, tile, Jv) * f;
+      real_t U = world.jar[base + i + k] * f, V = s07_tile_jv(i + k, begin, tile, Jv) * f;
       UU += U * U;
       UV += U * V;
       VV += V * V;
@@ -4414,8 +4355,8 @@ static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const New
     q[7] = VV;
     q[8] = coefficient_plane(world.precomputed, NewtonCoefficientLayout::cone_dm)[i];
   }
-  q[0] *= 0.5;
-  q[2] *= 0.5;
+  q[0] *= REAL_C(0.5);
+  q[2] *= REAL_C(0.5);
 #pragma unroll
   for (int k = 0; k < 9; ++k)
     if (k < (elliptic ? 9 : 3) && !isfinite(q[k]))
@@ -4424,8 +4365,8 @@ static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const New
 }
 
 static __device__ bool s07_quad_group_dx(unsigned char *shared, const NewtonModelData &model,
-                                         const NewtonWorldData &world, const double *smooth_force, int w,
-                                         int i, int rows, int begin, const double *tile) {
+                                         const NewtonWorldData &world, const real_t *smooth_force, int w,
+                                         int i, int rows, int begin, const real_t *tile) {
   return s07_quad_group_values_dx(shared, model, world, smooth_force, w, i, rows, begin, tile,
                                   world.quad + w * rows * 3 + 3 * i);
 }
@@ -4434,12 +4375,12 @@ static __device__ bool s07_quad_group_dx(unsigned char *shared, const NewtonMode
 // Validate before ordered-prefix commit, preserving the original failed group's
 // full private quad write while keeping all later groups held.
 static __device__ void s07_quad_tile_block(unsigned char *shared, const NewtonModelData &model,
-                                           const NewtonWorldData &world, const double *smooth_force, int w,
-                                           int rows, int begin, int produced, const double *tile,
+                                           const NewtonWorldData &world, const real_t *smooth_force, int w,
+                                           int rows, int begin, int produced, const real_t *tile,
                                            const int *group_head, const int *compact_heads = nullptr,
                                            const int *tile_head_offsets = nullptr,
-                                           const int *head_dim = nullptr, const double *head_mu = nullptr,
-                                           const double *head_friction = nullptr) {
+                                           const int *head_dim = nullptr, const real_t *head_mu = nullptr,
+                                           const real_t *head_friction = nullptr) {
   auto &ctl = newton_control(shared);
   __shared__ int first_bad;
   // Offsets assign each group to the tile containing its final row.
@@ -4450,7 +4391,7 @@ static __device__ void s07_quad_tile_block(unsigned char *shared, const NewtonMo
   const int end = planned ? tile_head_offsets[tile_index + 1] : 0;
   const int rank = first + threadIdx.x;
   const int i = planned ? (rank < end ? compact_heads[rank] : -1) : rank;
-  double q[9];
+  real_t q[9];
   int width = 0;
   bool owned = false, valid = true;
   if (i >= 0 && i < produced && (planned || group_head[i] == i)) {
@@ -4497,22 +4438,22 @@ static __device__ void s07_quad_tile_block(unsigned char *shared, const NewtonMo
 
 static __device__ void
 s07_jv_blas_dx(unsigned char *shared, const NewtonModelData &model, const NewtonWorldData &world,
-               const double *smooth_force, int w, int nefc, int rows, double *workspace, int *diagnostic,
+               const real_t *smooth_force, int w, int nefc, int rows, real_t *workspace, int *diagnostic,
                bool prepare_quad = false, const int *group_head = nullptr, const int *compact_heads = nullptr,
                const int *tile_head_offsets = nullptr, const int *head_dim = nullptr,
-               const double *head_mu = nullptr, const double *head_friction = nullptr) {
+               const real_t *head_mu = nullptr, const real_t *head_friction = nullptr) {
   auto &ctl = newton_control(shared);
-  double *shared_search = shared_at<double>(shared, NewtonLayout::search);
+  real_t *shared_search = shared_at<real_t>(shared, NewtonLayout::search);
 #if FLASH_NEWTON_NATIVE_GEMV
-  double *C = workspace;
+  real_t *C = workspace;
 #else
-  double *A = workspace;
-  double *B = A + 16 * SubstepShape::nv;
-  double *C = B + SubstepShape::nv;
+  real_t *A = workspace;
+  real_t *B = A + 16 * SubstepShape::nv;
+  real_t *C = B + SubstepShape::nv;
 #endif
-  const double *v = shared_search + w * SubstepShape::nv;
-  const double *J = world.J + w * rows * SubstepShape::nv;
-  double *Jv = world.Jv + w * rows;
+  const real_t *v = shared_search + w * SubstepShape::nv;
+  const real_t *J = world.J + w * rows * SubstepShape::nv;
+  real_t *Jv = world.Jv + w * rows;
   __shared__ int next_group;
   if (threadIdx.x == 0)
     next_group = 0;
@@ -4541,8 +4482,8 @@ s07_jv_blas_dx(unsigned char *shared, const NewtonModelData &model, const Newton
     for (int z = threadIdx.x; z < 16 * row_pairs; z += blockDim.x) {
       const int k = z / row_pairs, i = 2 * (z % row_pairs), r = begin + k;
       if (i + 1 < SubstepShape::nv) {
-        const double2 pair =
-            r < nefc ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_double2(0, 0);
+        const real2_t pair =
+            r < nefc ? libero_vec::load_pair(J + r * SubstepShape::nv + i) : make_real2(0, 0);
         libero_vec::store_pair(A + k * SubstepShape::nv + i, pair.x, pair.y);
       } else
         A[k * SubstepShape::nv + i] = r < nefc ? J[r * SubstepShape::nv + i] : 0;
@@ -4552,7 +4493,7 @@ s07_jv_blas_dx(unsigned char *shared, const NewtonModelData &model, const Newton
     for (int r = threadIdx.x; r < 16; r += blockDim.x)
       C[r] = 0;
 #else
-    libero_newton_io::fill_block(C, 16, 0.0);
+    libero_newton_io::fill_block(C, 16, REAL_C(0.0));
 #endif // LIBERO_NEWTON_SCALAR_IO
     __syncthreads();
     dx_newton_jv(A, B, C);
@@ -4579,7 +4520,7 @@ s07_jv_blas_dx(unsigned char *shared, const NewtonModelData &model, const Newton
           const int rank = tile_head_offsets[tile_index] + lane;
           const int end = tile_head_offsets[tile_index + 1];
           const int i = rank < end ? compact_heads[rank] : -1;
-          double q[9];
+          real_t q[9];
           int width = 0;
           bool owned = false, valid = true;
           if (i >= 0 && i < produced) {
@@ -4673,30 +4614,30 @@ s07_jv_blas_dx(unsigned char *shared, const NewtonModelData &model, const Newton
 }
 
 static __device__ void s07_quad_scalar_dx(unsigned char *shared, const NewtonModelData &model,
-                                          const NewtonWorldData &world, const double *smooth_force, int w,
-                                          int nefc, int rows, int base, const double *Jv) {
+                                          const NewtonWorldData &world, const real_t *smooth_force, int w,
+                                          int nefc, int rows, int base, const real_t *Jv) {
   auto &ctl = newton_control(shared);
-  double *qbase = world.quad + w * rows * 3;
+  real_t *qbase = world.quad + w * rows * 3;
   for (int i = 0; i < nefc; ++i) {
-    double *q = qbase + 3 * i;
+    real_t *q = qbase + 3 * i;
     bool elliptic = world.efc_type[base + i] == 7;
-    double DJ0 = world.D[base + i] * world.jar[base + i];
+    real_t DJ0 = world.D[base + i] * world.jar[base + i];
     q[0] = world.jar[base + i] * DJ0;
     q[1] = Jv[i] * DJ0;
     q[2] = Jv[i] * world.D[base + i] * Jv[i];
     if (elliptic) {
       int dim = world.cone_dim[base + i];
-      double mu = world.cone_mu[base + i];
+      real_t mu = world.cone_mu[base + i];
       for (int j = 1; j < dim; ++j) {
-        double DJj = world.D[base + i + j] * world.jar[base + i + j];
+        real_t DJj = world.D[base + i + j] * world.jar[base + i + j];
         q[0] += world.jar[base + i + j] * DJj;
         q[1] += Jv[i + j] * DJj;
         q[2] += Jv[i + j] * world.D[base + i + j] * Jv[i + j];
       }
-      double U0 = world.jar[base + i] * mu, V0 = Jv[i] * mu, UU = 0, UV = 0, VV = 0;
+      real_t U0 = world.jar[base + i] * mu, V0 = Jv[i] * mu, UU = 0, UV = 0, VV = 0;
       for (int j = 1; j < dim; ++j) {
-        double U = world.jar[base + i + j] * world.cone_friction[(base + i) * 5 + j - 1];
-        double V = Jv[i + j] * world.cone_friction[(base + i) * 5 + j - 1];
+        real_t U = world.jar[base + i + j] * world.cone_friction[(base + i) * 5 + j - 1];
+        real_t V = Jv[i + j] * world.cone_friction[(base + i) * 5 + j - 1];
         UU += U * U;
         UV += U * V;
         VV += V * V;
@@ -4706,11 +4647,11 @@ static __device__ void s07_quad_scalar_dx(unsigned char *shared, const NewtonMod
       q[5] = UU;
       q[6] = UV;
       q[7] = VV;
-      q[8] = __ddiv_rn(world.D[base + i], mu * mu * (1 + mu * mu));
+      q[8] = real_div_rn(world.D[base + i], mu * mu * (1 + mu * mu));
       i += dim - 1;
     }
-    q[0] *= 0.5;
-    q[2] *= 0.5;
+    q[0] *= REAL_C(0.5);
+    q[2] *= REAL_C(0.5);
     for (int k = 0; k < 3; ++k)
       if (!isfinite(q[k])) {
         (&ctl.s07_status())[w] = 5;
@@ -4726,22 +4667,22 @@ static __device__ void s07_quad_scalar_dx(unsigned char *shared, const NewtonMod
 }
 
 static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelData &model,
-                                       const NewtonWorldData &world, const double *smooth_force, int w,
+                                       const NewtonWorldData &world, const real_t *smooth_force, int w,
                                        int nv, int rows, const S07PreparedDx *prepared,
                                        bool quad_ready = false) {
   auto &ctl = newton_control(shared);
-  double *shared_search = shared_at<double>(shared, NewtonLayout::search);
-  double *shared_mass_search = shared_at<double>(shared, NewtonLayout::mass_search);
-  double *shared_mass_acceleration = shared_at<double>(shared, NewtonLayout::mass_acceleration);
+  real_t *shared_search = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *shared_mass_search = shared_at<real_t>(shared, NewtonLayout::mass_search);
+  real_t *shared_mass_acceleration = shared_at<real_t>(shared, NewtonLayout::mass_acceleration);
   const int nefc = ctl.count(), ne = ctl.ne(), nf = ctl.nf(), base = 0;
-  double gtol = prepared->gtol, slopescl = prepared->slopescl;
-  const double *v = shared_search + w * nv;
-  const double *Mv = shared_mass_search + w * nv;
-  const double *Jv = world.Jv + base;
+  real_t gtol = prepared->gtol, slopescl = prepared->slopescl;
+  const real_t *v = shared_search + w * nv;
+  const real_t *Mv = shared_mass_search + w * nv;
+  const real_t *Jv = world.Jv + base;
   // The fast tile consumer already checked each produced C cell. Avoid a
   // second global Jv scan; compatible retains its original validation order.
   __shared__ int gate_bad, jv_bad[(flash_libero::SubstepShape::threads + 31) / 32];
-  __shared__ double gaussian_dots[3];
+  __shared__ real_t gaussian_dots[3];
   search_dots_warp<3>(v, shared_mass_acceleration + w * nv, smooth_force + w * nv, Mv, nv, gaussian_dots);
   if (!quad_ready) {
     bool local_bad = false;
@@ -4760,9 +4701,9 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
         if (jv_bad[i])
           gate_bad = 1;
     if (!gate_bad) {
-      double *qG = world.quadGauss + w * 3;
+      real_t *qG = world.quadGauss + w * 3;
       qG[1] = gaussian_dots[0] - gaussian_dots[1];
-      qG[2] = 0.5 * gaussian_dots[2];
+      qG[2] = REAL_C(0.5) * gaussian_dots[2];
       if (!isfinite(qG[1]) || !isfinite(qG[2]))
         gate_bad = 1;
     }
@@ -4789,11 +4730,11 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
       return;
   }
   int niter = 0;
-  P p0 = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf, 0.0, 1, &niter,
+  P p0 = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf, REAL_C(0.0), 1, &niter,
                               world.constraint_group_heads, world.constraint_head_rows, world.constraint_head_count[0],
                               nullptr);
   P p1 = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                              p0.alpha - __ddiv_rn(p0.d0, p0.d1), 2, &niter, world.constraint_group_heads,
+                              p0.alpha - real_div_rn(p0.d0, p0.d1), 2, &niter, world.constraint_group_heads,
                               world.constraint_head_rows, world.constraint_head_count[0], nullptr);
   if (p0.cost < p1.cost)
     p1 = p0;
@@ -4808,7 +4749,7 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
     p2 = p1;
     p2update = 1;
     p1 = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                              p1.alpha - __ddiv_rn(p1.d0, p1.d1), 3, &niter, world.constraint_group_heads,
+                              p1.alpha - real_div_rn(p1.d0, p1.d1), 3, &niter, world.constraint_group_heads,
                               world.constraint_head_rows, world.constraint_head_count[0], nullptr);
     if (fabs(p1.d0) < gtol) {
       s07_finish_block(shared, model, world, smooth_force, w, p1.alpha, niter, 0, fabs(p1.d0) * slopescl);
@@ -4825,14 +4766,14 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
   }
   P p2next = p1;
   P p1next = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                                  p1.alpha - __ddiv_rn(p1.d0, p1.d1), 4, &niter, world.constraint_group_heads,
+                                  p1.alpha - real_div_rn(p1.d0, p1.d1), 4, &niter, world.constraint_group_heads,
                                   world.constraint_head_rows, world.constraint_head_count[0], nullptr);
   while (niter < 50) {
     P pmid = s07_eval_point_block(shared, model, world, smooth_force, w, rows, nefc, ne, nf,
-                                  0.5 * (p1.alpha + p2.alpha), 5, &niter, world.constraint_group_heads,
+                                  REAL_C(0.5) * (p1.alpha + p2.alpha), 5, &niter, world.constraint_group_heads,
                                   world.constraint_head_rows, world.constraint_head_count[0], nullptr);
     P candidates[3] = {p1next, p2next, pmid};
-    double bestcost = 0;
+    real_t bestcost = 0;
     int bestind = -1;
     for (int i = 0; i < 3; ++i)
       if (fabs(candidates[i].d0) < gtol && (bestind == -1 || candidates[i].cost < bestcost)) {
@@ -4861,13 +4802,13 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
   else if (p2.cost <= p1.cost && p2.cost < p0.cost)
     s07_finish_block(shared, model, world, smooth_force, w, p2.alpha, niter, 4, fabs(p2.d0) * slopescl);
   else
-    s07_finish_block(shared, model, world, smooth_force, w, 0.0, niter, 5, 1.0);
+    s07_finish_block(shared, model, world, smooth_force, w, REAL_C(0.0), niter, 5, REAL_C(1.0));
 }
 
 // The solve loop provides the final publication barrier after this call.
 static __device__ void search_kernel_blas_dx(unsigned char *shared, const NewtonModelData &model,
                                              const NewtonWorldData &world,
-                                             const double *smooth_force) {
+                                             const real_t *smooth_force) {
   auto &ctl = newton_control(shared);
   __shared__ S07PreparedDx prepared;
   bool ready;
@@ -4877,7 +4818,7 @@ static __device__ void search_kernel_blas_dx(unsigned char *shared, const Newton
   }
   if (!ready)
     return;
-  double *workspace = shared_at<double>(shared, NewtonLayout::mathdx);
+  real_t *workspace = shared_at<real_t>(shared, NewtonLayout::mathdx);
   {
     CF_NEWTON_PROFILE_SCOPE(SearchJacobian);
     s07_jv_blas_dx(shared, model, world, smooth_force, 0, ctl.count(), SubstepShape::rows,
@@ -4898,8 +4839,8 @@ static __device__ void search_kernel_blas_dx(unsigned char *shared, const Newton
 // The device bridge and caller both use FMA-enabled arithmetic.
 #if LIBERO_NEWTON_ISLANDS
 namespace libero_islands {
-static __device__ bool factor(double *, double *, int *, const double *, const int *, int, const int *,
-                              const int *, const double *, const int *, const int *, const int *, int *);
+static __device__ bool factor(real_t *, real_t *, int *, const real_t *, const int *, int, const int *,
+                              const int *, const real_t *, const int *, const int *, const int *, int *);
 }
 #endif
 
@@ -4907,7 +4848,7 @@ static __device__ bool factor(double *, double *, int *, const double *, const i
 // a block vote publishes the uniform decision across multiple warps.
 static __device__ inline bool factor_any_bad(bool bad) { return __syncthreads_or(bad); }
 
-template <int N> static __device__ void block_potrf(double *H, double *temporary, int *diagnostic) {
+template <int N> static __device__ void block_potrf(real_t *H, real_t *temporary, int *diagnostic) {
   __shared__ int info;
 
   // Keep original operands intact until POTRF is admitted. This also keeps
@@ -4942,8 +4883,8 @@ template <int N> static __device__ void block_potrf(double *H, double *temporary
   bool bad = info != 0;
   if (!bad) {
     for (int j = threadIdx.x; j < N; j += blockDim.x) {
-      const double d = temporary[j * N + j];
-      bad |= !isfinite(d) || d * d < 1e-15;
+      const real_t d = temporary[j * N + j];
+      bad |= !isfinite(d) || d * d < REAL_C(1e-15);
     }
   }
   const bool use_source = factor_any_bad(bad);
@@ -4967,7 +4908,7 @@ template <int N> static __device__ void block_potrf(double *H, double *temporary
   __syncthreads();
 }
 
-static __device__ void local_potrf(int n, double *H, double *temporary, int *diagnostic) {
+static __device__ void local_potrf(int n, real_t *H, real_t *temporary, int *diagnostic) {
   // Contact dimensionality is a runtime value; descriptors are compile-time.
   switch (n) {
   case 1:
@@ -4985,8 +4926,8 @@ static __device__ void local_potrf(int n, double *H, double *temporary, int *dia
   }
 }
 
-static __device__ bool hessian_potrf_dispatch_dx(double *H, double *temporary, int *diagnostic, double *J,
-                                                 int *state, int count, int *id, int *dim, double *qm,
+static __device__ bool hessian_potrf_dispatch_dx(real_t *H, real_t *temporary, int *diagnostic, real_t *J,
+                                                 int *state, int count, int *id, int *dim, real_t *qm,
                                                  int *madr, int *parent, int *simple,
                                                  int *islands_diagnostic) {
   CF_NEWTON_PROFILE_SCOPE(Potrf);
@@ -5004,11 +4945,11 @@ static __device__ bool hessian_potrf_dispatch_dx(double *H, double *temporary, i
 }
 
 #if LIBERO_HESSIAN_BLAS
-static __device__ void hessian_cone_batch_dx(int *count, int *state, int *id, int *dim, double *contact_H,
-                                             double *J, double *H, double *HC, double *local, double *ltj,
-                                             int *nupdate, double *temporary, int *diagnostic,
-                                             int *blas_diagnostic, double *pending, int *algorithm_diagnostic,
-                                             double *qm, int *madr, int *parent, int *simple,
+static __device__ void hessian_cone_batch_dx(int *count, int *state, int *id, int *dim, real_t *contact_H,
+                                             real_t *J, real_t *H, real_t *HC, real_t *local, real_t *ltj,
+                                             int *nupdate, real_t *temporary, int *diagnostic,
+                                             int *blas_diagnostic, real_t *pending, int *algorithm_diagnostic,
+                                             real_t *qm, int *madr, int *parent, int *simple,
                                              int *islands_diagnostic, int *factor_status) {
   // H remains the quadratic/base factor. The final HC lower factor is built
   // from exactly that effective base and the same regularized contact factors.
@@ -5055,11 +4996,11 @@ static __device__ void hessian_cone_batch_dx(int *count, int *state, int *id, in
 #endif
 
 static __device__ void hessian_cone_dx(int rows, int contacts, int *count, int *state, int *id, int *dim,
-                                       double *contact_H, double *J, double *H, double *HC, double *local,
-                                       double *ltj, double *vec, int *nupdate, double *temporary,
+                                       real_t *contact_H, real_t *J, real_t *H, real_t *HC, real_t *local,
+                                       real_t *ltj, real_t *vec, int *nupdate, real_t *temporary,
                                        int *diagnostic, int *blas_diagnostic = nullptr,
-                                       double *pending = nullptr, int *algorithm_diagnostic = nullptr,
-                                       double *qm = nullptr, int *madr = nullptr, int *parent = nullptr,
+                                       real_t *pending = nullptr, int *algorithm_diagnostic = nullptr,
+                                       real_t *qm = nullptr, int *madr = nullptr, int *parent = nullptr,
                                        int *simple = nullptr, int *islands_diagnostic = nullptr,
                                        int *factor_status = nullptr) {
   CF_NEWTON_PROFILE_SCOPE(ConeFactor);
@@ -5107,17 +5048,22 @@ static __device__ void hessian_cone_dx(int rows, int contacts, int *count, int *
 #if !LIBERO_HESSIAN_BLAS
     if (threadIdx.x == 0) {
       for (int z = 0; z < d * SubstepShape::nv; ++z)
-        ltj[z] = 0.0;
+        ltj[z] = REAL_C(0.0);
       for (int r = 0; r < d; ++r)
         for (int c0 = 0; c0 <= r; ++c0) {
-          double s = local[r * d + c0];
+          real_t s = local[r * d + c0];
           for (int k = 0; k < SubstepShape::nv; ++k)
             ltj[c0 * SubstepShape::nv + k] += J[(i + r) * SubstepShape::nv + k] * s;
         }
     }
     __syncthreads();
 #endif
-    if constexpr (SubstepShape::nv <= 32) {
+    if constexpr (FLASH_REAL_BITS == 32 && SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
+      // LTJ is already published by its producer. Warp0 applies every row
+      // in order and the group barrier below publishes the complete factor.
+      if (threadIdx.x < 32)
+        rank_update::ordered_plus<SubstepShape::nv>(HC, ltj, d, vec);
+    } else if constexpr (SubstepShape::nv <= 32) {
       if (threadIdx.x == 0) {
         for (int r = 0; r < d; ++r) {
 #if LIBERO_NEWTON_SCALAR_IO
@@ -5171,11 +5117,11 @@ static __device__ int compact_changed_rows(const int *oldstate, const int *state
 
 static __device__ void hessian_factor_update_dx(unsigned char *shared, const NewtonModelData &model,
                                                 const NewtonWorldData &p, int kind) {
-  double *shared_hessian = shared_at<double>(shared, NewtonLayout::hessian);
-  double *shared_mathdx = shared_at<double>(shared, NewtonLayout::mathdx);
-  double *shared_local_factor = shared_at<double>(shared, NewtonLayout::local_factor);
-  double *shared_local_product = shared_at<double>(shared, NewtonLayout::local_product);
-  double *shared_update_vector = shared_at<double>(shared, NewtonLayout::update_vector);
+  real_t *shared_hessian = shared_at<real_t>(shared, NewtonLayout::hessian);
+  real_t *shared_mathdx = shared_at<real_t>(shared, NewtonLayout::mathdx);
+  real_t *shared_local_factor = shared_at<real_t>(shared, NewtonLayout::local_factor);
+  real_t *shared_local_product = shared_at<real_t>(shared, NewtonLayout::local_product);
+  real_t *shared_update_vector = shared_at<real_t>(shared, NewtonLayout::update_vector);
   auto &ctl = newton_control(shared);
   // Python supplies per-world pointer views, so this collective uses w=0.
   // Admitted calls publish their factor/status on every numerical exit. The
@@ -5238,12 +5184,24 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
     __syncthreads();
     if (!lost) {
       CF_NEWTON_PROFILE_SCOPE(RankUpdates);
-      if constexpr (SubstepShape::nv <= 32) {
+      if constexpr (FLASH_REAL_BITS == 32 && SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
+        if (threadIdx.x < 32) {
+          const int completed = rank_update::ordered_rows<SubstepShape::nv>(
+              shared_hessian, p.J, coefficient_plane(p.precomputed, NewtonCoefficientLayout::sqrt_d),
+              p.changed_rows, p.state, changes, shared_update_vector);
+          if (threadIdx.x == 0) {
+            ctl.nupdate() = completed < 0 ? -completed : completed;
+            lost = completed < 0;
+          }
+        }
+        // The existing barrier after this batch publishes factor, count and
+        // rank-loss verdict before another warp can consume or overwrite them.
+      } else if constexpr (SubstepShape::nv <= 32) {
         if (threadIdx.x == 0) {
           for (int k = 0; k < changes; ++k) {
             const int r = p.changed_rows[k];
             const bool after = p.state[r] == 1;
-            const double s = row_sqrt_d(p, r);
+            const real_t s = row_sqrt_d(p, r);
             for (int j = 0; j < SubstepShape::nv; ++j)
               shared_update_vector[j] = p.J[r * SubstepShape::nv + j] * s;
             const int rank = chol_update(shared_hessian, shared_update_vector, after ? 1 : 0);
@@ -5258,7 +5216,7 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
         for (int k = 0; k < changes; ++k) {
           const int r = p.changed_rows[k];
           const bool after = p.state[r] == 1;
-          const double s = row_sqrt_d(p, r);
+          const real_t s = row_sqrt_d(p, r);
           for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x)
             shared_update_vector[j] = p.J[r * SubstepShape::nv + j] * s;
           __syncthreads();
@@ -5311,7 +5269,7 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
         int i = z / SubstepShape::nv, j = z % SubstepShape::nv;
         if (j > i)
           continue;
-        double v = assembly_cell(0, i, j, SubstepShape::rows, (&ctl.count()), p.J, p.D, p.state, p.qM,
+        real_t v = assembly_cell(0, i, j, SubstepShape::rows, (&ctl.count()), p.J, p.D, p.state, p.qM,
                                  model.madr, model.parentid, model.simplenum);
         shared_hessian[z] = v;
         if (i != j)
@@ -5375,25 +5333,25 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
 
 // The immutable prepared plan and output ownership establish nonaliasing.
 static __device__ void warm_mass_cost_prepared(const NewtonModelData &m, const NewtonWorldData &p,
-                                               unsigned char *shared, const double *smooth_force,
-                                               const double *smooth_acceleration) {
-  double *shared_warmstart = shared_at<double>(shared, NewtonLayout::warmstart);
-  double *shared_warm_mass = shared_at<double>(shared, NewtonLayout::warm_mass);
+                                               unsigned char *shared, const real_t *smooth_force,
+                                               const real_t *smooth_acceleration) {
+  real_t *shared_warmstart = shared_at<real_t>(shared, NewtonLayout::warmstart);
+  real_t *shared_warm_mass = shared_at<real_t>(shared, NewtonLayout::warm_mass);
   auto &c = newton_control(shared);
   if (threadIdx.x >= 32 || !c.newton_world())
     return;
-  double cost = 0.0;
+  real_t cost = REAL_C(0.0);
   for (int row = threadIdx.x; row < SubstepShape::nv; row += 32) {
-    double value = 0.0;
+    real_t value = REAL_C(0.0);
     for (int e = m.mass_plan_offsets[row]; e < m.mass_plan_offsets[row + 1]; ++e) {
-      const double term = p.qM[m.mass_plan_coefficient[e]] * shared_warmstart[m.mass_plan_source[e]];
+      const real_t term = p.qM[m.mass_plan_coefficient[e]] * shared_warmstart[m.mass_plan_source[e]];
       if (m.mass_plan_assign[e])
         value = term;
       else
         value += term;
     }
     shared_warm_mass[row] = value;
-    cost += .5 * (value - smooth_force[row]) * (shared_warmstart[row] - smooth_acceleration[row]);
+    cost += REAL_C(.5) * (value - smooth_force[row]) * (shared_warmstart[row] - smooth_acceleration[row]);
   }
   cost = libero_warp::sum(cost);
   if (threadIdx.x == 0) {
@@ -5405,35 +5363,35 @@ static __device__ void warm_mass_cost_prepared(const NewtonModelData &m, const N
 // full constraint pass, but do not materialize force, state, J^T force or H.
 // The selected candidate receives one complete update immediately afterwards.
 static __device__ inline void accumulate_candidate_cost(
-    const NewtonWorldData &p, const double *jar, int r, int ne, int nf, double &cost) {
-  const double v = jar[r], D = p.D[r];
+    const NewtonWorldData &p, const real_t *jar, int r, int ne, int nf, real_t &cost) {
+  const real_t v = jar[r], D = p.D[r];
   if (r < ne) {
-    cost += .5 * D * v * v;
+    cost += REAL_C(.5) * D * v * v;
   } else if (r < ne + nf) {
-    const double R = p.R[r], f = p.loss[r];
-    const double limit = row_friction_limit(p, r);
+    const real_t R = p.R[r], f = p.loss[r];
+    const real_t limit = row_friction_limit(p, r);
     if (v <= -limit)
-      cost += -.5 * R * f * f - f * v;
+      cost += -REAL_C(.5) * R * f * f - f * v;
     else if (v >= limit)
-      cost += -.5 * R * f * f + f * v;
+      cost += -REAL_C(.5) * R * f * f + f * v;
     else
-      cost += .5 * D * v * v;
+      cost += REAL_C(.5) * D * v * v;
   } else if (p.efc_type[r] != 7) {
-    if (v < 0.0)
-      cost += .5 * D * v * v;
+    if (v < REAL_C(0.0))
+      cost += REAL_C(.5) * D * v * v;
   } else {
     const int contact = p.efc_id[r], dim = p.contact_dim[contact];
-    const double mu = p.contact_mu[contact];
-    const double N = v * mu, T = cone_norm(jar + r, p.contact_friction + contact * 5, dim);
+    const real_t mu = p.contact_mu[contact];
+    const real_t N = v * mu, T = cone_norm(jar + r, p.contact_friction + contact * 5, dim);
     if (N >= mu * T || (T <= 0 && N >= 0))
       return;
     if (mu * N + T <= 0 || (T <= 0 && N < 0)) {
       for (int j = 0; j < dim; ++j)
-        cost += .5 * p.D[r + j] * jar[r + j] * jar[r + j];
+        cost += REAL_C(.5) * p.D[r + j] * jar[r + j] * jar[r + j];
     } else {
-      const double dm = coefficient_plane(p.precomputed, NewtonCoefficientLayout::cone_dm)[r];
-      const double residual = N - mu * T;
-      cost += .5 * dm * residual * residual;
+      const real_t dm = coefficient_plane(p.precomputed, NewtonCoefficientLayout::cone_dm)[r];
+      const real_t residual = N - mu * T;
+      cost += REAL_C(.5) * dm * residual * residual;
     }
   }
 }
@@ -5443,8 +5401,8 @@ static __device__ void candidate_costs_block(unsigned char *shared, const Newton
   if (!ctl.active())
     return;
   constexpr int warps = SubstepShape::threads / 32;
-  __shared__ double warm_partial[warps], smooth_partial[warps];
-  double warm = 0.0, smooth = 0.0;
+  __shared__ real_t warm_partial[warps], smooth_partial[warps];
+  real_t warm = REAL_C(0.0), smooth = REAL_C(0.0);
   const int ne = ctl.ne(), nf = ctl.nf();
   for (int bucket = 0; bucket < 7; ++bucket) {
     const int begin = p.constraint_typed_head_offsets[bucket];
@@ -5464,8 +5422,8 @@ static __device__ void candidate_costs_block(unsigned char *shared, const Newton
   }
   __syncthreads(); // also publishes the earlier warm mass/Gauss producer
   if (warp == 0) {
-    warm = libero_warp::sum(lane < warps ? warm_partial[lane] : 0.0);
-    smooth = libero_warp::sum(lane < warps ? smooth_partial[lane] : 0.0);
+    warm = libero_warp::sum(lane < warps ? warm_partial[lane] : REAL_C(0.0));
+    smooth = libero_warp::sum(lane < warps ? smooth_partial[lane] : REAL_C(0.0));
     if (lane == 0) {
       ctl.warm_cost() = warm + ctl.quad0();
       ctl.smooth_cost() = smooth;
@@ -5473,8 +5431,8 @@ static __device__ void candidate_costs_block(unsigned char *shared, const Newton
   }
 }
 
-static __device__ void select_candidate_block(unsigned char *shared, const double *warm,
-                                               const double *smooth) {
+static __device__ void select_candidate_block(unsigned char *shared, const real_t *warm,
+                                               const real_t *smooth) {
   auto &ctl = newton_control(shared);
   if (!ctl.newton_world())
     return;
@@ -5489,10 +5447,55 @@ static __device__ void select_candidate_block(unsigned char *shared, const doubl
   const bool choose_smooth = ctl.warm_cost() > ctl.smooth_cost();
   if (threadIdx.x == 0)
     ctl.choice() = choose_smooth;
-  double *qacc = shared_at<double>(shared, NewtonLayout::qacc);
-  const double *selected = choose_smooth ? smooth : warm;
+  real_t *qacc = shared_at<real_t>(shared, NewtonLayout::qacc);
+  const real_t *selected = choose_smooth ? smooth : warm;
   for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x)
     qacc[i] = selected[i];
+}
+
+// Same scaled gradient test as the ordinary post-iteration rule. For small
+// systems one warp owns the scan, with one block publication; larger systems
+// use all lanes and bounded per-warp partials. No Hessian or trial step is
+// needed to certify an already-converged selected initial acceleration.
+static __device__ bool initial_gradient_converged(unsigned char *shared,
+    const real_t *mass_acceleration, const real_t *smooth_force,
+    const real_t *constraint_force, real_t *gradient) {
+  auto &c = newton_control(shared);
+  constexpr int nv = SubstepShape::nv;
+  constexpr int warps = SubstepShape::threads / 32;
+  __shared__ real_t partial[warps];
+  const int lane = libero_warp::lane(), warp = libero_warp::warp();
+  real_t norm2 = REAL_C(0.0);
+  if constexpr (nv <= 64) {
+    if (warp == 0) {
+      for (int j = lane; j < nv; j += 32) {
+        const real_t g = mass_acceleration[j] - smooth_force[j] - constraint_force[j];
+        gradient[j] = g;
+        norm2 += g*g;
+      }
+      norm2 = libero_warp::sum(norm2);
+    }
+  } else {
+    for (int j = threadIdx.x; j < nv; j += blockDim.x) {
+      const real_t g = mass_acceleration[j] - smooth_force[j] - constraint_force[j];
+      gradient[j] = g;
+      norm2 += g*g;
+    }
+    norm2 = libero_warp::sum(norm2);
+    if (lane == 0) partial[warp] = norm2;
+    __syncthreads();
+    if (warp == 0)
+      norm2 = libero_warp::sum(lane < warps ? partial[lane] : REAL_C(0.0));
+  }
+  if (threadIdx.x == 0) {
+    const real_t scale = c.meaninertia() * real_t(nv);
+    c.out_gradient() = real_sqrt_rn(norm2) / scale;
+    c.s07_status() = isfinite(norm2) && isfinite(scale) && scale > REAL_C(0.0) &&
+        isfinite(c.out_gradient()) && c.out_gradient() < c.tolerance();
+    if (c.s07_status()) c.stop_reason() = 11;
+  }
+  __syncthreads();
+  return c.s07_status() != 0;
 }
 
 __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonModelData &model,
@@ -5520,27 +5523,27 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
       layout_counts[0] == p.nefc[0] && layout_counts[1] == p.ne[0] &&
       layout_counts[2] == p.nf[0] && layout_counts[3] == p.ncon[0];
   // Each lane accesses its DOF; these names are addresses, not copied vectors.
-  double *constraint_force = shared_at<double>(shared, NewtonLayout::constraint_force);
-  double *gradient = shared_at<double>(shared, NewtonLayout::gradient);
-  double *hessian = shared_at<double>(shared, NewtonLayout::hessian);
-  double *mass_acceleration = shared_at<double>(shared, NewtonLayout::mass_acceleration);
-  double *mass_search = shared_at<double>(shared, NewtonLayout::mass_search);
-  double *qacc = shared_at<double>(shared, NewtonLayout::qacc);
-  double *search = shared_at<double>(shared, NewtonLayout::search);
-  double *warm_mass = shared_at<double>(shared, NewtonLayout::warm_mass);
-  double *warmstart = shared_at<double>(shared, NewtonLayout::warmstart);
+  real_t *constraint_force = shared_at<real_t>(shared, NewtonLayout::constraint_force);
+  real_t *gradient = shared_at<real_t>(shared, NewtonLayout::gradient);
+  real_t *hessian = shared_at<real_t>(shared, NewtonLayout::hessian);
+  real_t *mass_acceleration = shared_at<real_t>(shared, NewtonLayout::mass_acceleration);
+  real_t *mass_search = shared_at<real_t>(shared, NewtonLayout::mass_search);
+  real_t *qacc = shared_at<real_t>(shared, NewtonLayout::qacc);
+  real_t *search = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *warm_mass = shared_at<real_t>(shared, NewtonLayout::warm_mass);
+  real_t *warmstart = shared_at<real_t>(shared, NewtonLayout::warmstart);
   NewtonOptions execution = options;
   if (execution.audit)
     execution.audit += w * 8;
   if (execution.first_disagreement)
     execution.first_disagreement += w * 8;
-  double *smooth_acceleration = execution.smooth_acceleration ? execution.smooth_acceleration : p.qacc_smooth;
-  double *smooth_force = execution.smooth_force ? execution.smooth_force : p.qfrc_smooth;
+  real_t *smooth_acceleration = execution.smooth_acceleration ? execution.smooth_acceleration : p.qacc_smooth;
+  real_t *smooth_force = execution.smooth_force ? execution.smooth_force : p.qfrc_smooth;
   // Cooperative zero initialization, followed by one uniform header load.
   for (int i = threadIdx.x; i < NewtonControl::integer_count; i += blockDim.x)
     c.integers[i] = 0;
   for (int i = threadIdx.x; i < NewtonControl::real_count; i += blockDim.x)
-    c.reals[i] = 0.0;
+    c.reals[i] = REAL_C(0.0);
   __syncthreads();
   if (threadIdx.x == 0) {
     c.empty() = entry_enabled[w] && !entry_upstream[w] && p.nefc[0] == 0;
@@ -5582,7 +5585,7 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
   libero_newton_io::copy_block(p.external_r_ef, p.force, live_rows);
   libero_newton_io::copy_block(p.canonical_state, p.state, live_rows);
   __syncthreads();
-  double *dx_matrix = shared_at<double>(shared, NewtonLayout::mathdx);
+  real_t *dx_matrix = shared_at<real_t>(shared, NewtonLayout::mathdx);
   if (c.invariant_valid() && !reuse_layout)
     constraint_tile_head_offsets_block(c.count(), c.ne(), c.nf(), 0, 0, p.efc_type, p.efc_id, p.contact_dim,
                                        p.constraint_head_rows, p.constraint_head_count[0],
@@ -5603,7 +5606,7 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
     for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
       qacc[i] = smooth_acceleration[i];
       warmstart[i] = smooth_acceleration[i];
-      constraint_force[i] = 0.0;
+      constraint_force[i] = REAL_C(0.0);
     }
     if (threadIdx.x == 0)
       c.solver_iter() = 0;
@@ -5667,6 +5670,9 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
     CF_NEWTON_PROFILE_STAGE(InitialAssembly);
     gauss_compute_block(0, &c.active(), mass_acceleration, smooth_force, qacc, smooth_acceleration, &c.cost(),
                         &c.quad0(), true);
+    if (execution.initial_gradient_stop && initial_gradient_converged(
+            shared, mass_acceleration, smooth_force, constraint_force, gradient))
+      break;
     // Gauss writes cost/quad0 independently of H and MathDx staging; the
     // assembly/factor collectives publish them before direction/search.
     hessian_assemble_blas_dx(0, &c.count(), &c.active(), 1, p.J, p.D, p.state, p.qM, model.madr, model.parentid,
@@ -5682,6 +5688,25 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
     CF_NEWTON_PROFILE_STAGE(InitialDirection);
     direction_core_blas_dx(shared, p, smooth_force); // owns its exit publication
 
+#if defined(FLASH_NEWTON_PROFILE)
+    // Five scalars in already-reserved profile cells; ordinary products have
+    // no scan, calculation or writes from this diagnostic block.
+    if (threadIdx.x == 0) {
+      real_t max_force=REAL_C(0.0), norm2=REAL_C(0.0), decrement=REAL_C(0.0);
+      for (int r=0;r<c.count();++r)
+        if (p.state[r]==4) max_force=fmax(max_force,fabs(p.force[r]));
+      for (int j=0;j<SubstepShape::nv;++j) {
+        norm2+=gradient[j]*gradient[j];
+        decrement-=gradient[j]*search[j];
+      }
+      CF_NEWTON_PROFILE_VALUE(InitialConeRows,c.ncone());
+      CF_NEWTON_PROFILE_VALUE(WarmChoice,c.choice());
+      CF_NEWTON_PROFILE_VALUE(InitialConeMaxForceBits,__double_as_longlong(double(max_force)));
+      CF_NEWTON_PROFILE_VALUE(InitialGradientNormBits,__double_as_longlong(double(sqrt(norm2))));
+      CF_NEWTON_PROFILE_VALUE(InitialDecrementBits,__double_as_longlong(double(decrement)));
+    }
+#endif
+
     // CPU order: line search -> commit -> constraint/Hessian -> direction
     // -> stopping rule. Every solve and completed warmstart update is retained.
     for (; iteration_slot < 100; ++iteration_slot) {
@@ -5695,9 +5720,9 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
       CF_NEWTON_PROFILE_ADD(SearchEvaluations, c.LSiter());
       if (threadIdx.x == 0 && execution.audit) {
         execution.audit[2] += c.LSiter();
-        execution.audit[7] += c.alpha() == 0.0;
+        execution.audit[7] += c.alpha() == REAL_C(0.0);
       }
-      if (c.s07_status() || c.alpha() == 0.0) {
+      if (c.s07_status() || c.alpha() == REAL_C(0.0)) {
         if (threadIdx.x == 0) {
           if (c.s07_status() && !c.err_code())
             c.err_code() = 1000 + c.s07_status();
@@ -5856,7 +5881,9 @@ extern "C" int flash_libero_newton_profile_info_count() {
 }
 extern "C" const char *flash_libero_newton_profile_info_name(int field) {
   static const char *names[] = {"rows", "contacts", "friction_rows", "iterations", "search_evaluations",
-    "coefficient_refresh", "stop_reason", "error", "sm", "enabled", "layout_refresh"};
+    "coefficient_refresh", "stop_reason", "error", "sm", "enabled", "layout_refresh",
+    "initial_cone_rows", "warm_choice", "initial_cone_max_force_bits", "initial_gradient_norm_bits",
+    "initial_decrement_bits"};
   static_assert(sizeof(names)/sizeof(names[0]) == int(physics_newton::profile_detail::Info::Count));
   return field >= 0 && field < int(physics_newton::profile_detail::Info::Count) ? names[field] : nullptr;
 }

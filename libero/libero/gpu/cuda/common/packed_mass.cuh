@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #ifndef LIBERO_PACKED_MASS_CUH
 #define LIBERO_PACKED_MASS_CUH
@@ -65,21 +66,21 @@ __device__ __forceinline__ void forest_range(ForestPlan plan,int root,int nv,
     if(plan.bounds){begin=plan.bounds[root];end=plan.bounds[root+1];}
     else forest_range(root,nv,parent,begin,end);
 }
-__device__ __forceinline__ bool factor(const double* qm,double* ld,double* inv,
-    double* sqrt_inv,int* pivot,int& warnings,int& last,int nv,int nm,
+__device__ __forceinline__ bool factor(const real_t* qm,real_t* ld,real_t* inv,
+    real_t* sqrt_inv,int* pivot,int& warnings,int& last,int nv,int nm,
     const int* madr,const int* parent,bool reciprocal_pivot=false) {
     reciprocal_pivot=reciprocal_pivot&&((nv==21&&nm==57)||(nv==43&&nm==115)||(nv==57&&nm==153));
     bool bad=false;
     libero_vec::copy_serial(qm,ld,nm);
     for(int k=nv-1;k>=0;--k) {
         const int kk=madr[k];
-        if(ld[kk]<1.0e-15) {
-            pivot[k]=1;++warnings;last=k;ld[kk]=1.0e-15;
+        if(ld[kk]<REAL_C(1.0e-15)) {
+            pivot[k]=1;++warnings;last=k;ld[kk]=REAL_C(1.0e-15);
         }
-        const double reciprocal=reciprocal_pivot?1.0/ld[kk]:0.0;
+        const real_t reciprocal=reciprocal_pivot?REAL_C(1.0)/ld[kk]:REAL_C(0.0);
         int ki=kk+1;
         for(int i=parent[k];i>=0;i=parent[i],++ki) {
-            const double multiplier=reciprocal_pivot?ld[ki]*reciprocal:ld[ki]/ld[kk];
+            const real_t multiplier=reciprocal_pivot?ld[ki]*reciprocal:ld[ki]/ld[kk];
             bad|=!isfinite(multiplier);
             const int len=(i<nv-1?madr[i+1]:nm)-madr[i];
             for(int a=0;a<len;++a) {
@@ -91,19 +92,19 @@ __device__ __forceinline__ bool factor(const double* qm,double* ld,double* inv,
         }
     }
     for(int i=0;i<nv;++i) {
-        const double diagonal=ld[madr[i]];
-        inv[i]=1.0/diagonal;sqrt_inv[i]=1.0/sqrt(diagonal);
+        const real_t diagonal=ld[madr[i]];
+        inv[i]=REAL_C(1.0)/diagonal;sqrt_inv[i]=REAL_C(1.0)/sqrt(diagonal);
         bad|=!isfinite(inv[i])||!isfinite(sqrt_inv[i]);
     }
     return !bad;
 }
-__device__ __forceinline__ bool solve_inplace(double* x,const double* ld,
-    const double* inv,int nv,const int* madr,const int* parent) {
+__device__ __forceinline__ bool solve_inplace(real_t* x,const real_t* ld,
+    const real_t* inv,int nv,const int* madr,const int* parent) {
     bool bad=false;
     // A zero descendant is deliberately skipped: ignored nonfinite products
     // and signed-zero behavior remain those of the original sparse solve.
     for(int i=nv-1;i>=0;--i) {
-        if(x[i]==0.0) continue;
+        if(x[i]==REAL_C(0.0)) continue;
         int a=madr[i]+1;
         for(int j=parent[i];j>=0;j=parent[j],++a) {
             x[j]-=ld[a]*x[i];bad|=!isfinite(x[j]);
@@ -122,8 +123,8 @@ __device__ __forceinline__ bool solve_inplace(double* x,const double* ld,
 // All block threads enter. Each component has exactly one owner. Within a
 // component the pivot, ancestor, and packed-row operation order is identical
 // to factor(); different components never read or write one another's rows.
-__device__ __forceinline__ bool factor_block(const double* qm,double* ld,double* inv,
-    double* sqrt_inv,int* pivot,int& warnings,int& last,int nv,int nm,
+__device__ __forceinline__ bool factor_block(const real_t* qm,real_t* ld,real_t* inv,
+    real_t* sqrt_inv,int* pivot,int& warnings,int& last,int nv,int nm,
     const int* madr,const int* parent,ForestPlan& plan,
     const int* descriptor=nullptr,int descriptor_size=0,bool reciprocal_pivot=false) {
     reciprocal_pivot=reciprocal_pivot&&((nv==21&&nm==57)||(nv==43&&nm==115)||(nv==57&&nm==153));
@@ -142,11 +143,11 @@ __device__ __forceinline__ bool factor_block(const double* qm,double* ld,double*
         int begin,end;forest_range(plan,root,nv,parent,begin,end);
         for(int k=end-1;k>=begin;--k) {
             const int kk=madr[k];
-            if(ld[kk]<1.0e-15){pivot[k]=1;++count;smallest=k<smallest?k:smallest;ld[kk]=1.0e-15;}
-            const double reciprocal=reciprocal_pivot?1.0/ld[kk]:0.0;
+            if(ld[kk]<REAL_C(1.0e-15)){pivot[k]=1;++count;smallest=k<smallest?k:smallest;ld[kk]=REAL_C(1.0e-15);}
+            const real_t reciprocal=reciprocal_pivot?REAL_C(1.0)/ld[kk]:REAL_C(0.0);
             int ki=kk+1;
             for(int i=parent[k];i>=0;i=parent[i],++ki) {
-                const double multiplier=reciprocal_pivot?ld[ki]*reciprocal:ld[ki]/ld[kk];bad|=!isfinite(multiplier);
+                const real_t multiplier=reciprocal_pivot?ld[ki]*reciprocal:ld[ki]/ld[kk];bad|=!isfinite(multiplier);
                 const int len=plan.row_lengths?plan.row_lengths[i]:(i<nv-1?madr[i+1]:nm)-madr[i];
                 for(int a=0;a<len;++a) {
                     const int dest=madr[i]+a;
@@ -156,8 +157,8 @@ __device__ __forceinline__ bool factor_block(const double* qm,double* ld,double*
             }
         }
         for(int i=begin;i<end;++i) {
-            const double diagonal=ld[madr[i]];
-            inv[i]=1.0/diagonal;sqrt_inv[i]=1.0/sqrt(diagonal);
+            const real_t diagonal=ld[madr[i]];
+            inv[i]=REAL_C(1.0)/diagonal;sqrt_inv[i]=REAL_C(1.0)/sqrt(diagonal);
             bad|=!isfinite(inv[i])||!isfinite(sqrt_inv[i]);
         }
     }
@@ -168,11 +169,11 @@ __device__ __forceinline__ bool factor_block(const double* qm,double* ld,double*
     __syncthreads();return failed==0;
 }
 
-__device__ __forceinline__ bool solve_component(double* x,const double* ld,
-    const double* inv,int begin,int end,const int* madr,const int* parent) {
+__device__ __forceinline__ bool solve_component(real_t* x,const real_t* ld,
+    const real_t* inv,int begin,int end,const int* madr,const int* parent) {
     bool bad=false;
     for(int i=end-1;i>=begin;--i) {
-        if(x[i]==0.0)continue;
+        if(x[i]==REAL_C(0.0))continue;
         int a=madr[i]+1;
         for(int j=parent[i];j>=0;j=parent[j],++a){x[j]-=ld[a]*x[i];bad|=!isfinite(x[j]);}
     }
@@ -187,8 +188,8 @@ __device__ __forceinline__ bool solve_component(double* x,const double* ld,
 // Cross product of independent RHS and independent mass components. No new
 // floating-point reduction is introduced. Return value is block-uniform and
 // includes the failure of every component; callers retain their clear gate.
-__device__ __forceinline__ bool solve_rhs_block(const double* rhs,double* solution,
-    const double* ld,const double* inv,int nrhs,int nv,const int* madr,
+__device__ __forceinline__ bool solve_rhs_block(const real_t* rhs,real_t* solution,
+    const real_t* ld,const real_t* inv,int nrhs,int nv,const int* madr,
     const int* parent,ForestPlan plan) {
     libero_vec::copy_block(rhs,solution,size_t(nrhs)*nv);
     __syncthreads();bool bad=false;
@@ -210,8 +211,8 @@ __device__ __forceinline__ bool solve_rhs_block(const double* rhs,double* soluti
 // returned lane-local failure before the existing transaction clear/gate.
 // No outer pivot/ancestor ordering, zero-descendant skip or arithmetic changes.
 // Factor, input RHS and output solution must not overlap.
-__device__ __forceinline__ bool solve_rhs_lane(const double* rhs,double* solution,
-    const double* ld,const double* inv,int nrhs,int nv,
+__device__ __forceinline__ bool solve_rhs_lane(const real_t* rhs,real_t* solution,
+    const real_t* ld,const real_t* inv,int nrhs,int nv,
     const int* madr,const int* parent) {
     // Stage only active RHS cells with consecutive block lanes. No inactive
     // tail is touched; the owning caller already zeroes those cells.

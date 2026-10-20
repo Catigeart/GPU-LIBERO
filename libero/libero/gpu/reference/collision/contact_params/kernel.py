@@ -5,6 +5,7 @@ engine_core_constraint.c:92-120, Apache-2.0; hashes in source_oracle.py.
 Frame completion and global contact append are outside this kernel.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -60,40 +61,40 @@ def validate_static(static):
 
 
 @wp.func
-def _max(a:wp.float64,b:wp.float64)->wp.float64:
+def _max(a:scalar.wp_real,b:scalar.wp_real)->scalar.wp_real:
     if a>=b:
         return a
     return b
 
 
 @wp.func
-def _min(a:wp.float64,b:wp.float64)->wp.float64:
+def _min(a:scalar.wp_real,b:scalar.wp_real)->scalar.wp_real:
     if a<=b:
         return a
     return b
 
 
 @wp.kernel(enable_backward=False)
-def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=wp.float64),
-              usermargin:wp.array(dtype=wp.float64), active:wp.array(dtype=wp.int32),
+def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=scalar.wp_real),
+              usermargin:wp.array(dtype=scalar.wp_real), active:wp.array(dtype=wp.int32),
               counts:wp.array(dtype=wp.int32),
               priority:wp.array(dtype=wp.int32),condim:wp.array(dtype=wp.int32),
-              geom_margin:wp.array(dtype=wp.float64),geom_gap:wp.array(dtype=wp.float64),
-              geom_friction:wp.array(dtype=wp.float64),geom_solmix:wp.array(dtype=wp.float64),
-              geom_solref:wp.array(dtype=wp.float64),geom_solimp:wp.array(dtype=wp.float64),
-              pair_margin:wp.array(dtype=wp.float64),pair_gap:wp.array(dtype=wp.float64),
-              pair_dim:wp.array(dtype=wp.int32),pair_friction:wp.array(dtype=wp.float64),
-              pair_solref:wp.array(dtype=wp.float64),pair_solreffriction:wp.array(dtype=wp.float64),
-              pair_solimp:wp.array(dtype=wp.float64),
-              o_margin:wp.array(dtype=wp.float64),o_solref:wp.array(dtype=wp.float64),
-              o_solimp:wp.array(dtype=wp.float64),override_enabled:wp.array(dtype=wp.int32),
-              out_f:wp.array(dtype=wp.float64),out_i:wp.array(dtype=wp.int32),
+              geom_margin:wp.array(dtype=scalar.wp_real),geom_gap:wp.array(dtype=scalar.wp_real),
+              geom_friction:wp.array(dtype=scalar.wp_real),geom_solmix:wp.array(dtype=scalar.wp_real),
+              geom_solref:wp.array(dtype=scalar.wp_real),geom_solimp:wp.array(dtype=scalar.wp_real),
+              pair_margin:wp.array(dtype=scalar.wp_real),pair_gap:wp.array(dtype=scalar.wp_real),
+              pair_dim:wp.array(dtype=wp.int32),pair_friction:wp.array(dtype=scalar.wp_real),
+              pair_solref:wp.array(dtype=scalar.wp_real),pair_solreffriction:wp.array(dtype=scalar.wp_real),
+              pair_solimp:wp.array(dtype=scalar.wp_real),
+              o_margin:wp.array(dtype=scalar.wp_real),o_solref:wp.array(dtype=scalar.wp_real),
+              o_solimp:wp.array(dtype=scalar.wp_real),override_enabled:wp.array(dtype=wp.int32),
+              out_f:wp.array(dtype=scalar.wp_real),out_i:wp.array(dtype=wp.int32),
               slots:int,ngeom:int,npair:int):
     tid=wp.tid()
     w=tid//slots
     q=tid-w*slots
     for k in range(26):
-        out_f[tid*26+k]=wp.float64(0.0)
+        out_f[tid*26+k]=scalar.wp_real(0.0)
     for k in range(4):
         out_i[tid*5+k]=-1
     out_i[tid*5+4]=0
@@ -116,8 +117,8 @@ def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=wp.float64),
         return
     for k in range(10):
         out_f[tid*26+k]=raw[tid*10+k]
-    margin=wp.float64(0.0)
-    gap=wp.float64(0.0)
+    margin=scalar.wp_real(0.0)
+    gap=scalar.wp_real(0.0)
     dim=wp.int32(0)
     if ipair<0:
         margin=_max(geom_margin[g1],geom_margin[g2])
@@ -145,7 +146,7 @@ def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=wp.float64),
     if dim<1 or dim>6:
         out_i[tid*5+4]=4
         return
-    mix=wp.float64(0.0)
+    mix=scalar.wp_real(0.0)
     if ipair<0:
         if priority[g1]!=priority[g2]:
             gp=g2
@@ -161,24 +162,24 @@ def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=wp.float64),
         else:
             for k in range(3):
                 out_f[tid*26+12+2*k]=_max(geom_friction[g1*3+k],geom_friction[g2*3+k])
-            if geom_solmix[g1]>=wp.float64(1e-15) and geom_solmix[g2]>=wp.float64(1e-15):
+            if geom_solmix[g1]>=scalar.wp_real(1e-15) and geom_solmix[g2]>=scalar.wp_real(1e-15):
                 mix=geom_solmix[g1]/(geom_solmix[g1]+geom_solmix[g2])
-            elif geom_solmix[g1]<wp.float64(1e-15) and geom_solmix[g2]<wp.float64(1e-15):
-                mix=wp.float64(0.5)
-            elif geom_solmix[g1]<wp.float64(1e-15):
-                mix=wp.float64(0.0)
+            elif geom_solmix[g1]<scalar.wp_real(1e-15) and geom_solmix[g2]<scalar.wp_real(1e-15):
+                mix=scalar.wp_real(0.5)
+            elif geom_solmix[g1]<scalar.wp_real(1e-15):
+                mix=scalar.wp_real(0.0)
             else:
-                mix=wp.float64(1.0)
-            if geom_solref[g1*2]>wp.float64(0.0) and geom_solref[g2*2]>wp.float64(0.0):
+                mix=scalar.wp_real(1.0)
+            if geom_solref[g1*2]>scalar.wp_real(0.0) and geom_solref[g2*2]>scalar.wp_real(0.0):
                 for k in range(2):
-                    out_f[tid*26+17+k]=mix*geom_solref[g1*2+k]+(wp.float64(1.0)-mix)*geom_solref[g2*2+k]
+                    out_f[tid*26+17+k]=mix*geom_solref[g1*2+k]+(scalar.wp_real(1.0)-mix)*geom_solref[g2*2+k]
             else:
                 for k in range(2):
                     out_f[tid*26+17+k]=_min(geom_solref[g1*2+k],geom_solref[g2*2+k])
             for k in range(5):
                 out_f[tid*26+21+k]=geom_solimp[g1*5+k]*mix
             for k in range(5):
-                out_f[tid*26+21+k]=out_f[tid*26+21+k]+geom_solimp[g2*5+k]*(wp.float64(1.0)-mix)
+                out_f[tid*26+21+k]=out_f[tid*26+21+k]+geom_solimp[g2*5+k]*(scalar.wp_real(1.0)-mix)
         out_f[tid*26+13]=out_f[tid*26+12]
         out_f[tid*26+15]=out_f[tid*26+16]
     else:
@@ -187,11 +188,11 @@ def _complete(route:wp.array(dtype=wp.int32), raw:wp.array(dtype=wp.float64),
             out_f[tid*26+21+k]=pair_solimp[ipair*5+k]
         for k in range(2):
             out_f[tid*26+17+k]=pair_solref[ipair*2+k]
-        if pair_solreffriction[ipair*2]!=wp.float64(0.0) or pair_solreffriction[ipair*2+1]!=wp.float64(0.0):
+        if pair_solreffriction[ipair*2]!=scalar.wp_real(0.0) or pair_solreffriction[ipair*2+1]!=scalar.wp_real(0.0):
             for k in range(2):
                 out_f[tid*26+19+k]=pair_solreffriction[ipair*2+k]
     for k in range(5):
-        out_f[tid*26+12+k]=_max(wp.float64(1.0e-5),out_f[tid*26+12+k])
+        out_f[tid*26+12+k]=_max(scalar.wp_real(1.0e-5),out_f[tid*26+12+k])
     if override_enabled[0]!=0:
         for k in range(2):
             out_f[tid*26+17+k]=o_solref[k]
@@ -215,14 +216,14 @@ class ContactParamsWorkspace:
             arr=np.asarray(value)
             if arr.dtype not in (np.dtype('float64'),np.dtype('int32')):
                 raise ValueError(f'{name} dtype {arr.dtype}')
-            dtype=wp.float64 if arr.dtype==np.float64 else wp.int32
+            dtype=scalar.wp_real if arr.dtype==np.float64 else wp.int32
             self.static[name]=wp.array(np.ascontiguousarray(arr).ravel(),dtype=dtype,device=device)
         self.route=wp.zeros(nworld*slots*4,dtype=wp.int32,device=device)
-        self.raw=wp.zeros(nworld*slots*10,dtype=wp.float64,device=device)
-        self.usermargin=wp.zeros(nworld*slots,dtype=wp.float64,device=device)
+        self.raw=wp.zeros(nworld*slots*10,dtype=scalar.wp_real,device=device)
+        self.usermargin=wp.zeros(nworld*slots,dtype=scalar.wp_real,device=device)
         self.active=wp.zeros(nworld,dtype=wp.int32,device=device)
         self.counts=wp.zeros(nworld,dtype=wp.int32,device=device)
-        self.out_f=wp.zeros(nworld*slots*26,dtype=wp.float64,device=device)
+        self.out_f=wp.zeros(nworld*slots*26,dtype=scalar.wp_real,device=device)
         self.out_i=wp.zeros(nworld*slots*5,dtype=wp.int32,device=device)
 
     def upload(self,route,raw,usermargin,active,counts):

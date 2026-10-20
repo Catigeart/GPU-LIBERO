@@ -1,16 +1,38 @@
 """One environment per task, explicit CPU reference or load-only GPU run."""
 import json
 import inspect
+import hashlib
 import os
 from pathlib import Path
 import sys
+import subprocess
 import time
 import traceback
 
 import numpy as np
 
-from .common import (FIELDS, actions, compare_endpoints, input_record, label,
+from .common import (FIELDS, actions, input_record, label,
                      load_endpoint, save_json, timing_summary)
+from .events import work_events
+from .policy import prepare_policy
+
+
+def gpu_load_snapshot():
+    """Observe shared-device load outside the timed interval; never alter it."""
+    result = dict(host=dict(timestamp=time.time(), load_average=list(os.getloadavg()),
+                            logical_cpus=os.cpu_count(),
+                            allowed_cpus=len(os.sched_getaffinity(0))))
+    for name, query in (
+        ('device', ['--query-gpu=timestamp,index,name,utilization.gpu,memory.used,memory.total']),
+        ('processes', ['--query-compute-apps=pid,process_name,used_memory'])):
+        try:
+            sample = subprocess.run(['nvidia-smi', *query, '--format=csv'],
+                                    capture_output=True, text=True, timeout=5)
+            result[name] = dict(returncode=sample.returncode, output=sample.stdout.strip(),
+                                error=sample.stderr.strip())
+        except (OSError, subprocess.TimeoutExpired) as error:
+            result[name] = dict(unavailable=str(error))
+    return result
 
 
 def physical_cores(worlds):
@@ -62,6 +84,8 @@ def cpu_environment(bddl, core):
 
 
 def gpu_status(env):
+    if getattr(env, 'physics_engine', 'native') == 'mjwarp':
+        return env.work_snapshot()
     runtime = env.runtime
     result = {name: getattr(runtime, name).numpy().tolist()
               for name in ('integration_count', 'state_epoch', 'first_error', 'reset_events')}
@@ -71,6 +95,8 @@ def gpu_status(env):
 
 
 def gpu_endpoint(env, observations, rewards, successes):
+    if getattr(env, 'physics_engine', 'native') == 'mjwarp':
+        return env.validation_endpoint(observations, rewards, successes)
     actual = env._physics.download_state()
     for name in ('qfrc_bias', 'qfrc_smooth', 'qfrc_constraint', 'qM',
                  'body_xpos', 'body_xquat', 'site_xpos', 'site_xmat'):
@@ -116,7 +142,7 @@ def run_task(args, task):
         raise FileExistsError('Use a fresh output directory; existing evidence is not overwritten: ' + stem)
     env, guard = None, None
     row = dict(backend=args.backend, task=task['key'], suite=task['suite'], task_id=task['task_id'],
-               worlds=args.worlds, case=args.case, performance_measured=False)
+               worlds=args.worlds, case=args.case, precision=args.precision, performance_measured=False)
     try:
         bank = np.load(Path(task['directory']) / 'initial_states.npy', allow_pickle=False)
         if len(bank) < args.worlds:
@@ -125,10 +151,24 @@ def run_task(args, task):
                                 steps=args.steps, seed=args.seed, case=args.case)
         row['input'] = protocol
         references = read_references(args, task, protocol)
+        policy = None
+        if references:
+            from .precision import mass_model
+            layout_root = None
+            if getattr(args, 'physics_engine', 'native') == 'mjwarp':
+                from libero.gpu.host.build.project_paths import project_paths
+                layout_root = project_paths(args.build_root).base / 'mjwarp' / 'mass-layouts'
+            model = mass_model(task, layout_root=layout_root) if args.precision == 'fp32' else None
+            policy = prepare_policy(args.precision, references[1], args.worlds, model=model)
+            row['comparison_policy'] = policy.metadata
+            if 'acceleration' in policy.metadata:
+                row['fp32_acceleration_policy'] = policy.metadata['acceleration']
         from libero.libero import get_libero_path
         bddl = str(Path(get_libero_path('bddl_files')) / task['key'])
         if args.backend == 'gpu':
             import warp as wp
+            from libero.gpu.host.build.aot import source_identity
+            row['source_identity'] = source_identity()
             from libero.libero.envs import GpuBatchEnv
             from libero.gpu.host.build.compilation import compilation_scope, install_warp_guard
             install_warp_guard()
@@ -137,14 +177,44 @@ def run_task(args, task):
             tick = time.perf_counter()
             env = GpuBatchEnv(bddl, args.worlds, init_states=bank, seed=args.seed,
                 build_root=args.build_root, initialize=False, allow_compile=False,
-                debug=False, device=args.device, use_camera_obs=False, ignore_done=True)
+                precision=args.precision, debug=False, device=args.device, use_camera_obs=False, ignore_done=True,
+                physics_engine=getattr(args, 'physics_engine', 'native'),
+                **({'mjwarp_options': dict(fast_compile=args.fast_compile,
+                       collision=getattr(args, 'mjwarp_collision', 'default'),
+                       **{key: getattr(args, 'mjwarp_' + key) for key in ('nconmax', 'njmax')
+                          if getattr(args, 'mjwarp_' + key, None) is not None})}
+                   if getattr(args, 'physics_engine', 'native') == 'mjwarp' else {}))
+            row['physics_engine'] = getattr(env, 'physics_engine', 'native')
+            row['compiled_model'] = dict(
+                model_sha256=env.built.metadata['model_sha256'],
+                static_arrays_sha256=env.built.metadata['static_arrays_sha256'],
+                decoder=env.built.metadata['decoder_pin'])
+            if row['physics_engine'] == 'mjwarp':
+                from libero.gpu.host.backends.mjwarp.build import profile_path
+                row['mjwarp_profile'] = json.loads(profile_path(env).read_text())
             row['creation_s'] = time.perf_counter() - tick
+            row['substeps'] = env.substeps
             tick = time.perf_counter()
             env.reset(seed=args.seed, init_states=bank[:args.worlds])
             row['initial_reset_s'] = time.perf_counter() - tick
             tick = time.perf_counter()
-            fusion = env.prepare_substep_fusion(args.build_root / 'cmake-control',
-                allow_compile=False, fast_compile=args.fast_compile, device_lto=args.device_lto)
+            execution = getattr(args, 'execution', 'fused')
+            row['execution'] = execution
+            if execution == 'fused':
+                from libero.gpu.host.build.project_paths import project_paths
+                fusion = env.prepare_substep_fusion(project_paths(args.build_root).cmake,
+                    allow_compile=False, fast_compile=args.fast_compile, device_lto=args.device_lto,
+                    **({'single_solve': True} if getattr(args, 'single_solve', False) else {}))
+                row['build_config'] = fusion.manifest['config']
+                row['native_library_sha256'] = hashlib.sha256(Path(fusion.manifest['library']).read_bytes()).hexdigest()
+                row['native_resources'] = fusion.resources
+                if getattr(env, 'physics_engine', 'native') == 'mjwarp':
+                    row['execution'] = 'mjwarp-graph'
+                    row['controller_library_sha256'] = row.pop('native_library_sha256')
+            else:
+                fusion = None
+                env._physics.prepare_control_graph()
+                row['build_config'] = dict(execution='components', precision=args.precision)
             if args.case == 'varying_cache_miss':
                 flags = np.ones(args.worlds, np.int32)
                 flags[-1] = 0
@@ -153,7 +223,6 @@ def run_task(args, task):
                 fusion.device_arguments.assign(np.frombuffer(bytes(fusion.arguments), np.uint8).copy())
             graph = env._physics._control_graph
             row['graph_prepare_s'] = time.perf_counter() - tick
-            row['build_config'] = fusion.manifest['config']
         else:
             import mujoco
             from libero.libero.envs import SubprocVectorEnv
@@ -190,6 +259,9 @@ def run_task(args, task):
                 before = gpu_status(env)
             latencies, rewards_trace = [], []
             timed = args.performance and stage != 'correctness'
+            if timed and args.backend == 'gpu':
+                row['shared_device_policy'] = 'concurrent workloads permitted; no idle-device guarantee'
+                row['gpu_load_before'] = gpu_load_snapshot()
             tick = time.perf_counter() if timed else None
             for action in sequence[args.warmup:]:
                 start = time.perf_counter() if timed else None
@@ -204,9 +276,10 @@ def run_task(args, task):
                 after = gpu_status(env)
                 counters = {name: (np.asarray(after[name]) - before[name]).tolist()
                             for name in ('integration_count', 'newton_attempts', 'position_math', 'reset_events')}
-                valid = not any(after['first_error']) and counters['integration_count'] == [args.steps * env.substeps] * args.worlds
                 actual = gpu_endpoint(env, observations, rewards_trace, successes)
                 stage_row = dict(reset_s=reset_s, counters=counters, status=after)
+                stage_row['work_events'] = work_events(row, stage_row)
+                valid = stage_row['work_events']['passed'] is True
             else:
                 states = env.get_env_attr('validation_endpoint')
                 actual = {key: np.stack([state[key] for state in states]) for key in states[0]}
@@ -216,14 +289,16 @@ def run_task(args, task):
                 valid, stage_row = True, dict(reset_s=reset_s)
             valid = bool(valid and all(np.isfinite(actual[field]).all() for field in FIELDS))
             if references:
-                checks = compare_endpoints(actual, references[1], references[0], args.worlds,
-                                           baseline_samples=references[2])
-                stage_row['checks'] = checks
-                valid = bool(valid and all(check['passed'] for check in checks))
+                evaluated = policy.evaluate(actual, references[1], references[0], baseline_samples=references[2])
+                numerical_passed = evaluated.pop('passed')
+                valid = bool(valid and numerical_passed)
+                stage_row.update(evaluated)
             stage_row['passed'] = valid
             if timed:
                 stage_row.update(timing_summary(latencies, elapsed, args.worlds))
                 row['performance_measured'] = True
+                if args.backend == 'gpu':
+                    row['gpu_load_after'] = gpu_load_snapshot()
             row['runs'][stage] = stage_row
             np.savez(args.output / (stem + ('.npz' if stage != 'performance' else '-performance.npz')), **actual)
             if not valid:

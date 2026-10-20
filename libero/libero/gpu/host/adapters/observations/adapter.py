@@ -1,4 +1,5 @@
 """Runtime-facing observation sampling and allowed boundary packaging."""
+import libero.gpu.precision as scalar
 from contextlib import nullcontext
 import numpy as np
 import warp as wp
@@ -58,7 +59,7 @@ class GpuObservationAdapter:
         self.visual_sources={}
         for name in ("site_rgba","geom_rgba"):
             value=np.asarray(getattr(native_model,name),dtype=np.float64).reshape(-1)
-            self.visual_sources[name]=wp.array(np.tile(value,nworld),dtype=wp.float64,device=device)
+            self.visual_sources[name]=wp.array(np.tile(value,nworld),dtype=scalar.wp_real,device=device)
         if self.plan.image_specs:
             self.scene_transforms=DeviceSceneTransforms(native_model,nworld,device)
             shapes={"xpos":(int(native_model.nbody),3),"xmat":(int(native_model.nbody),9),
@@ -205,7 +206,7 @@ class GpuObservationAdapter:
                 expected={"body_xmat":self.model.nbody*9,"geom_xpos":self.model.ngeom*3,"geom_xmat":self.model.ngeom*9,
                           "site_xmat":self.model.nsite*9,"subtree_com":self.model.nbody*3}[name]*self.nworld
                 field=fields[name]
-                if field.dtype!=wp.float64 or field.ndim!=1 or field.size!=expected or field.device!=self.raw_packer.buffer.device:
+                if field.dtype!=scalar.wp_real or field.ndim!=1 or field.size!=expected or field.device!=self.raw_packer.buffer.device:
                     raise ValueError(f"invalid camera scene field: {name}")
         self.valid=False
         try:
@@ -314,7 +315,7 @@ class GpuObservationAdapter:
         for name,shape in shapes.items():
             if name not in fields:raise KeyError("missing published render field: "+name)
             value=fields[name]
-            if (value.dtype!=wp.float64 or value.ndim!=1 or value.size!=self.nworld*int(np.prod(shape))
+            if (value.dtype!=scalar.wp_real or value.ndim!=1 or value.size!=self.nworld*int(np.prod(shape))
                     or value.device!=self.raw_packer.buffer.device):
                 raise ValueError("invalid published render device field: "+name)
         if self.scene_transforms is None:self.scene_transforms=DeviceSceneTransforms(self.model,self.nworld,self.device)
@@ -369,7 +370,7 @@ class GpuObservationAdapter:
         self.valid=False
         for name,value in prepared.items():
             with (wp.ScopedStream(stream) if stream is not None else nullcontext()):
-                data=wp.array(value,dtype=wp.float64,device=self.device)
+                data=wp.array(value,dtype=scalar.wp_real,device=self.device)
             wp.copy(self.visual_sources[name],data,dest_offset=world*data.size,count=data.size,stream=stream)
         self.valid=True
         self.visual_generation+=1
@@ -485,12 +486,12 @@ class GpuObservationAdapter:
         for name,size in (("body_xpos",self.model.nbody*3),("body_xmat",self.model.nbody*9)):
             if name not in fields:raise KeyError("missing published scene field: "+name)
             value=fields[name]
-            if value.dtype!=wp.float64 or value.ndim!=1 or value.size!=self.nworld*size or value.device!=self.raw_packer.buffer.device:
+            if value.dtype!=scalar.wp_real or value.ndim!=1 or value.size!=self.nworld*size or value.device!=self.raw_packer.buffer.device:
                 raise ValueError("invalid published scene field: "+name)
         if self.scene_transforms is None:self.scene_transforms=DeviceSceneTransforms(self.model,self.nworld,self.device)
         trans=self.scene_transforms
         subtree=fields.get("subtree_com")
-        if trans.host_camlight and (subtree is None or subtree.dtype!=wp.float64 or subtree.ndim!=1
+        if trans.host_camlight and (subtree is None or subtree.dtype!=scalar.wp_real or subtree.ndim!=1
                 or subtree.size!=self.nworld*self.model.nbody*3 or subtree.device!=self.raw_packer.buffer.device):
             raise ValueError("tracking cameras/lights require published subtree_com")
         outputs=trans.update(fields["body_xpos"],fields["body_xmat"],stream=stream)

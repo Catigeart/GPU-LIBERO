@@ -5,6 +5,7 @@ MuJoCo 2.3.7 ordered Jacobian, packed-M and four-lane dot arithmetic. Diagnostic
 source readiness never grants numerical acceptance for a new model.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import hashlib
 import json
 from pathlib import Path
@@ -106,19 +107,19 @@ def validate_d_topology(arrays, dims):
 
 
 @wp.kernel(enable_backward=False)
-def full_site_jacobian(cdof: wp.array(dtype=wp.float64, ndim=3),
-                      subtree: wp.array(dtype=wp.float64, ndim=3),
-                      site: wp.array(dtype=wp.float64, ndim=2),
+def full_site_jacobian(cdof: wp.array(dtype=scalar.wp_real, ndim=3),
+                      subtree: wp.array(dtype=scalar.wp_real, ndim=3),
+                      site: wp.array(dtype=scalar.wp_real, ndim=2),
                       active: wp.array(dtype=wp.int32),
                       ancestor: wp.array(dtype=wp.int32, ndim=2), root: int, body: int,
-                      nv: int, jp: wp.array(dtype=wp.float64, ndim=3),
-                      jr: wp.array(dtype=wp.float64, ndim=3), status: wp.array(dtype=wp.int32)):
+                      nv: int, jp: wp.array(dtype=scalar.wp_real, ndim=3),
+                      jr: wp.array(dtype=scalar.wp_real, ndim=3), status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for row in range(3):
         for k in range(nv):
-            jp[w, row, k] = wp.float64(0.0)
-            jr[w, row, k] = wp.float64(0.0)
+            jp[w, row, k] = scalar.wp_real(0.0)
+            jr[w, row, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -155,17 +156,17 @@ def full_site_jacobian(cdof: wp.array(dtype=wp.float64, ndim=3),
     if status[w] != 0:
         for row in range(3):
             for k in range(nv):
-                jp[w, row, k] = wp.float64(0.0)
-                jr[w, row, k] = wp.float64(0.0)
+                jp[w, row, k] = scalar.wp_real(0.0)
+                jr[w, row, k] = scalar.wp_real(0.0)
 
 
 @wp.func
-def dot_row4(a: wp.array(dtype=wp.float64, ndim=3),
-             b: wp.array(dtype=wp.float64, ndim=2), w: int, row: int, nv: int):
-    s0 = wp.float64(0.0)
-    s1 = wp.float64(0.0)
-    s2 = wp.float64(0.0)
-    s3 = wp.float64(0.0)
+def dot_row4(a: wp.array(dtype=scalar.wp_real, ndim=3),
+             b: wp.array(dtype=scalar.wp_real, ndim=2), w: int, row: int, nv: int):
+    s0 = scalar.wp_real(0.0)
+    s1 = scalar.wp_real(0.0)
+    s2 = scalar.wp_real(0.0)
+    s3 = scalar.wp_real(0.0)
     for k in range(nv // 4):
         j = 4 * k
         s0 = s0 + a[w, row, j] * b[w, j]
@@ -183,19 +184,19 @@ def dot_row4(a: wp.array(dtype=wp.float64, ndim=3),
 
 
 @wp.kernel(enable_backward=False)
-def scalar_transmission_position(qpos: wp.array(dtype=wp.float64, ndim=2),
+def scalar_transmission_position(qpos: wp.array(dtype=scalar.wp_real, ndim=2),
                                 active: wp.array(dtype=wp.int32),
                                 qadr: wp.array(dtype=wp.int32), dadr: wp.array(dtype=wp.int32),
-                                gear: wp.array(dtype=wp.float64), nq: int, nv: int, nu: int,
-                                length: wp.array(dtype=wp.float64, ndim=2),
-                                moment: wp.array(dtype=wp.float64, ndim=3),
+                                gear: wp.array(dtype=scalar.wp_real), nq: int, nv: int, nu: int,
+                                length: wp.array(dtype=scalar.wp_real, ndim=2),
+                                moment: wp.array(dtype=scalar.wp_real, ndim=3),
                                 status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for a in range(nu):
-        length[w, a] = wp.float64(0.0)
+        length[w, a] = scalar.wp_real(0.0)
         for k in range(nv):
-            moment[w, a, k] = wp.float64(0.0)
+            moment[w, a, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -215,16 +216,16 @@ def scalar_transmission_position(qpos: wp.array(dtype=wp.float64, ndim=2),
 
 
 @wp.kernel(enable_backward=False)
-def scalar_transmission_velocity(moment: wp.array(dtype=wp.float64, ndim=3),
-                                qvel: wp.array(dtype=wp.float64, ndim=2),
+def scalar_transmission_velocity(moment: wp.array(dtype=scalar.wp_real, ndim=3),
+                                qvel: wp.array(dtype=scalar.wp_real, ndim=2),
                                 active: wp.array(dtype=wp.int32),
                                 position_status: wp.array(dtype=wp.int32), nv: int, nu: int,
-                                velocity: wp.array(dtype=wp.float64, ndim=2),
+                                velocity: wp.array(dtype=scalar.wp_real, ndim=2),
                                 status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for a in range(nu):
-        velocity[w, a] = wp.float64(0.0)
+        velocity[w, a] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -277,11 +278,11 @@ class GenericTransmissionWorkspace:
         self.capacity, self.device = capacity, wp.get_device(device)
         self.qadr = wp.array(qa, dtype=wp.int32, device=self.device)
         self.dadr = wp.array(da, dtype=wp.int32, device=self.device)
-        self.gear = wp.array(self.static['actuator_gear'][:, 0].copy(), dtype=wp.float64, device=self.device)
+        self.gear = wp.array(self.static['actuator_gear'][:, 0].copy(), dtype=scalar.wp_real, device=self.device)
         inputs={} if inputs is None else inputs
-        for name, shape, dtype in (('qpos', (capacity, self.nq), wp.float64),
-            ('qvel', (capacity, self.nv), wp.float64), ('length', (capacity, self.nu), wp.float64),
-            ('moment', (capacity, self.nu, self.nv), wp.float64), ('velocity', (capacity, self.nu), wp.float64),
+        for name, shape, dtype in (('qpos', (capacity, self.nq), scalar.wp_real),
+            ('qvel', (capacity, self.nv), scalar.wp_real), ('length', (capacity, self.nu), scalar.wp_real),
+            ('moment', (capacity, self.nu, self.nv), scalar.wp_real), ('velocity', (capacity, self.nu), scalar.wp_real),
             ('position_active', (capacity,), wp.int32), ('velocity_active', (capacity,), wp.int32),
             ('position_status', (capacity,), wp.int32), ('velocity_status', (capacity,), wp.int32)):
             value=inputs.get(name)
@@ -312,34 +313,34 @@ class GenericTransmissionWorkspace:
 
 
 @wp.kernel(enable_backward=False)
-def selected_osc_inputs(qpos: wp.array(dtype=wp.float64, ndim=2),
-    qvel: wp.array(dtype=wp.float64, ndim=2), pos: wp.array(dtype=wp.float64, ndim=2),
-    rot: wp.array(dtype=wp.float64, ndim=2), jp: wp.array(dtype=wp.float64, ndim=3),
-    jr: wp.array(dtype=wp.float64, ndim=3), qm: wp.array(dtype=wp.float64, ndim=2),
-    qbias: wp.array(dtype=wp.float64, ndim=2), active: wp.array(dtype=wp.int32),
+def selected_osc_inputs(qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+    qvel: wp.array(dtype=scalar.wp_real, ndim=2), pos: wp.array(dtype=scalar.wp_real, ndim=2),
+    rot: wp.array(dtype=scalar.wp_real, ndim=2), jp: wp.array(dtype=scalar.wp_real, ndim=3),
+    jr: wp.array(dtype=scalar.wp_real, ndim=3), qm: wp.array(dtype=scalar.wp_real, ndim=2),
+    qbias: wp.array(dtype=scalar.wp_real, ndim=2), active: wp.array(dtype=wp.int32),
     qi: wp.array(dtype=wp.int32), vi: wp.array(dtype=wp.int32),
     sparse: wp.array(dtype=wp.int32, ndim=2), nq: int, nv: int, nm: int,
-    ee_pos: wp.array(dtype=wp.float64, ndim=2), ee_mat: wp.array(dtype=wp.float64, ndim=2),
-    vp: wp.array(dtype=wp.float64, ndim=2), vo: wp.array(dtype=wp.float64, ndim=2),
-    q: wp.array(dtype=wp.float64, ndim=2), qd: wp.array(dtype=wp.float64, ndim=2),
-    J: wp.array(dtype=wp.float64, ndim=3), M: wp.array(dtype=wp.float64, ndim=3),
-    bias: wp.array(dtype=wp.float64, ndim=2), status: wp.array(dtype=wp.int32)):
+    ee_pos: wp.array(dtype=scalar.wp_real, ndim=2), ee_mat: wp.array(dtype=scalar.wp_real, ndim=2),
+    vp: wp.array(dtype=scalar.wp_real, ndim=2), vo: wp.array(dtype=scalar.wp_real, ndim=2),
+    q: wp.array(dtype=scalar.wp_real, ndim=2), qd: wp.array(dtype=scalar.wp_real, ndim=2),
+    J: wp.array(dtype=scalar.wp_real, ndim=3), M: wp.array(dtype=scalar.wp_real, ndim=3),
+    bias: wp.array(dtype=scalar.wp_real, ndim=2), status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(3):
-        ee_pos[w, k] = wp.float64(0.0)
-        vp[w, k] = wp.float64(0.0)
-        vo[w, k] = wp.float64(0.0)
+        ee_pos[w, k] = scalar.wp_real(0.0)
+        vp[w, k] = scalar.wp_real(0.0)
+        vo[w, k] = scalar.wp_real(0.0)
     for k in range(9):
-        ee_mat[w, k] = wp.float64(0.0)
+        ee_mat[w, k] = scalar.wp_real(0.0)
     for k in range(7):
-        q[w, k] = wp.float64(0.0)
-        qd[w, k] = wp.float64(0.0)
-        bias[w, k] = wp.float64(0.0)
+        q[w, k] = scalar.wp_real(0.0)
+        qd[w, k] = scalar.wp_real(0.0)
+        bias[w, k] = scalar.wp_real(0.0)
         for r in range(6):
-            J[w, r, k] = wp.float64(0.0)
+            J[w, r, k] = scalar.wp_real(0.0)
         for j in range(7):
-            M[w, k, j] = wp.float64(0.0)
+            M[w, k, j] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -375,8 +376,8 @@ def selected_osc_inputs(qpos: wp.array(dtype=wp.float64, ndim=2),
         ee_mat[w, k] = rot[w, k]
     # Original N18 is ordered scalar accumulation, not transmission's dot4.
     for r in range(3):
-        a = wp.float64(0.0)
-        b = wp.float64(0.0)
+        a = scalar.wp_real(0.0)
+        b = scalar.wp_real(0.0)
         for k in range(nv):
             a = a + jp[w, r, k] * qvel[w, k]
             b = b + jr[w, r, k] * qvel[w, k]
@@ -443,10 +444,10 @@ class GenericJacobianInputsWorkspace:
                 j, address = int(self.static['dof_parentid'][j]), address + 1
         self.sparse = wp.array(sparse, dtype=wp.int32, device=self.device)
         inputs = {} if inputs is None else inputs
-        schema = {'qpos': ((capacity, self.nq), wp.float64), 'qvel': ((capacity, self.nv), wp.float64),
-            'qM': ((capacity, self.nM), wp.float64), 'qfrc_bias': ((capacity, self.nv), wp.float64),
-            'cdof': ((capacity, self.nv, 6), wp.float64), 'subtree_com': ((capacity, self.nbody, 3), wp.float64),
-            'site_pos': ((capacity, 3), wp.float64), 'site_mat': ((capacity, 9), wp.float64),
+        schema = {'qpos': ((capacity, self.nq), scalar.wp_real), 'qvel': ((capacity, self.nv), scalar.wp_real),
+            'qM': ((capacity, self.nM), scalar.wp_real), 'qfrc_bias': ((capacity, self.nv), scalar.wp_real),
+            'cdof': ((capacity, self.nv, 6), scalar.wp_real), 'subtree_com': ((capacity, self.nbody, 3), scalar.wp_real),
+            'site_pos': ((capacity, 3), scalar.wp_real), 'site_mat': ((capacity, 9), scalar.wp_real),
             'active': ((capacity,), wp.int32)}
         if set(inputs) - set(schema):
             raise ValueError('undeclared generic Jacobian input')
@@ -456,7 +457,7 @@ class GenericJacobianInputsWorkspace:
         for name, tail in (('jacp', (3, self.nv)), ('jacr', (3, self.nv)), ('ee_pos', (3,)),
             ('ee_mat', (9,)), ('xvelp', (3,)), ('xvelr', (3,)), ('joint_pos', (7,)), ('joint_vel', (7,)),
             ('J', (6, 7)), ('M', (7, 7)), ('bias', (7,))):
-            setattr(self, name, wp.zeros((capacity,) + tail, dtype=wp.float64, device=self.device))
+            setattr(self, name, wp.zeros((capacity,) + tail, dtype=scalar.wp_real, device=self.device))
         self.jac_status = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         self.adapter_status = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         self.adapter_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
@@ -559,7 +560,7 @@ class GenericPositionWorkspace:
         self.crb_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         self.mass_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
         for name, width in (('subtree_com', nb*3), ('cinert', nb*10), ('cdof', nv*6), ('crb', nb*10)):
-            setattr(self, name, wp.zeros((capacity, width), dtype=wp.float64, device=self.device))
+            setattr(self, name, wp.zeros((capacity, width), dtype=scalar.wp_real, device=self.device))
         for name in ('compos_status', 'crb_status', 'first_stage', 'first_code', 'result_kind',
                      'mass_first_stage', 'mass_first_code', 'mass_result_kind'):
             setattr(self, name, wp.zeros(capacity, dtype=wp.int32, device=self.device))

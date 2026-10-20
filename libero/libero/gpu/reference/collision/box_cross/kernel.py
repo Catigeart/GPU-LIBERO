@@ -6,6 +6,7 @@ Apache-2.0 (copyright 2016 Svetoslav Kolev). This is an independent device
 transcription. No contact generation or face-prefix device arithmetic occurs.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -15,13 +16,13 @@ wp.set_module_options({"enable_backward": False, "fuse_fp": True, "fast_math": F
 
 @wp.kernel(enable_backward=False)
 def _cross(
-    prefix: wp.array(dtype=wp.float64),
+    prefix: wp.array(dtype=scalar.wp_real),
     prefix_state: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
     counts: wp.array(dtype=wp.int32),
-    axis: wp.array(dtype=wp.float64),
+    axis: wp.array(dtype=scalar.wp_real),
     axis_mask: wp.array(dtype=wp.int32),
-    final_f: wp.array(dtype=wp.float64),
+    final_f: wp.array(dtype=scalar.wp_real),
     final_state: wp.array(dtype=wp.int32),
     pairs: int,
 ):
@@ -29,11 +30,11 @@ def _cross(
     w = tid // pairs
     q = tid - w * pairs
     for z in range(54):
-        axis[tid * 54 + z] = wp.float64(0.0)
+        axis[tid * 54 + z] = scalar.wp_real(0.0)
     for z in range(9):
         axis_mask[tid * 9 + z] = 0
     for z in range(4):
-        final_f[tid * 4 + z] = wp.float64(0.0)
+        final_f[tid * 4 + z] = scalar.wp_real(0.0)
     for z in range(8):
         final_state[tid * 8 + z] = -1
     final_state[tid * 8 + 5] = 0
@@ -56,18 +57,22 @@ def _cross(
     cle1 = wp.int32(-1)
     cle2 = wp.int32(-1)
     inside = wp.int32(-1)
-    clnorm0 = wp.float64(0.0)
-    clnorm1 = wp.float64(0.0)
-    clnorm2 = wp.float64(0.0)
+    clnorm0 = scalar.wp_real(0.0)
+    clnorm1 = scalar.wp_real(0.0)
+    clnorm2 = scalar.wp_real(0.0)
     first_exit = wp.int32(-1)
+    projection_scale = scalar.wp_real(0.0)
+    if wp.static(scalar.bits == 32):
+        for k in range(3):
+            projection_scale += prefix[b + 30 + k] + prefix[b + 33 + k] + wp.abs(prefix[b + 27 + k])
 
     for i in range(3):
         for j in range(3):
             t = i * 3 + j
             # Original tmp2 is axis_i x rott_row_j, including signed zeros.
-            x0 = wp.float64(0.0)
-            x1 = wp.float64(0.0)
-            x2 = wp.float64(0.0)
+            x0 = scalar.wp_real(0.0)
+            x1 = scalar.wp_real(0.0)
+            x2 = scalar.wp_real(0.0)
             if i == 0:
                 x1 = -prefix[b + 9 + 3 * j + 2]
                 x2 = prefix[b + 9 + 3 * j + 1]
@@ -78,12 +83,12 @@ def _cross(
                 x0 = -prefix[b + 9 + 3 * j + 1]
                 x1 = prefix[b + 9 + 3 * j]
             length = wp.sqrt((x0 * x0 + x1 * x1) + x2 * x2)
-            if length < wp.float64(1.0e-15):
-                x0 = wp.float64(1.0)
-                x1 = wp.float64(0.0)
-                x2 = wp.float64(0.0)
+            if length < scalar.wp_real(1.0e-15):
+                x0 = scalar.wp_real(1.0)
+                x1 = scalar.wp_real(0.0)
+                x2 = scalar.wp_real(0.0)
             else:
-                inv = wp.float64(1.0) / length
+                inv = scalar.wp_real(1.0) / length
                 x0 = x0 * inv
                 x1 = x1 * inv
                 x2 = x2 * inv
@@ -92,11 +97,11 @@ def _cross(
             axis[tid * 54 + t * 6 + 2] = x1
             axis[tid * 54 + t * 6 + 3] = x2
             axis_mask[tid * 9 + t] = 1
-            if length < wp.float64(1.0e-15):
+            if length < scalar.wp_real(1.0e-15):
                 axis_mask[tid * 9 + t] = 2
                 continue
             c2 = (prefix[b + 27] * x0 + prefix[b + 28] * x1) + prefix[b + 29] * x2
-            c3 = wp.float64(0.0)
+            c3 = scalar.wp_real(0.0)
             for k in range(3):
                 if k != i:
                     xv = x0
@@ -114,7 +119,12 @@ def _cross(
             if c3 < -prefix[b + 36]:
                 first_exit = t
                 break
-            if c3 < penetration * (wp.float64(1.0) - wp.float64(1.0e-12)):
+            prefer_edge = c3 < penetration * (scalar.wp_real(1.0) - scalar.wp_real(1.0e-12))
+            if wp.static(scalar.bits == 32):
+                # Keep the face for gains unresolved at FP32 projection precision.
+                uncertainty = scalar.wp_real(32.0) * scalar.wp_real(scalar.epsilon) * projection_scale / wp.max(length, scalar.wp_real(scalar.epsilon))
+                prefer_edge = c3 < penetration - uncertainty
+            if prefer_edge:
                 penetration = c3
                 cle1 = 0
                 cle2 = 0
@@ -125,11 +135,11 @@ def _cross(
                             xv = x1
                         if k == 2:
                             xv = x2
-                        if (xv > wp.float64(0.0)) != (c2 < wp.float64(0.0)):
+                        if (xv > scalar.wp_real(0.0)) != (c2 < scalar.wp_real(0.0)):
                             cle1 = cle1 + (1 << k)
                 for k in range(3):
                     if k != j:
-                        flag = (prefix[b + 3 * i + 3 - k - j] > wp.float64(0.0)) != (c2 < wp.float64(0.0))
+                        flag = (prefix[b + 3 * i + 3 - k - j] > scalar.wp_real(0.0)) != (c2 < scalar.wp_real(0.0))
                         flag = flag != ((k - j + 3) % 3 == 1)
                         if flag:
                             cle2 = cle2 + (1 << k)
@@ -137,7 +147,7 @@ def _cross(
                 clnorm0 = x0
                 clnorm1 = x1
                 clnorm2 = x2
-                inside = wp.int32(c2 < wp.float64(0.0))
+                inside = wp.int32(c2 < scalar.wp_real(0.0))
         if first_exit >= 0:
             break
     final_f[tid * 4] = penetration
@@ -160,13 +170,13 @@ class BoxCrossWorkspace:
         if nworld < 1 or pairs < 1:
             raise ValueError("positive N and P required")
         self.nworld, self.pairs, self.device = nworld, pairs, device
-        self.prefix = wp.zeros(nworld * pairs * 38, dtype=wp.float64, device=device)
+        self.prefix = wp.zeros(nworld * pairs * 38, dtype=scalar.wp_real, device=device)
         self.prefix_state = wp.zeros(nworld * pairs * 3, dtype=wp.int32, device=device)
         self.active = wp.zeros(nworld, dtype=wp.int32, device=device)
         self.counts = wp.zeros(nworld, dtype=wp.int32, device=device)
-        self.axis = wp.zeros(nworld * pairs * 54, dtype=wp.float64, device=device)
+        self.axis = wp.zeros(nworld * pairs * 54, dtype=scalar.wp_real, device=device)
         self.axis_mask = wp.zeros(nworld * pairs * 9, dtype=wp.int32, device=device)
-        self.final_f = wp.zeros(nworld * pairs * 4, dtype=wp.float64, device=device)
+        self.final_f = wp.zeros(nworld * pairs * 4, dtype=scalar.wp_real, device=device)
         self.final_state = wp.zeros(nworld * pairs * 8, dtype=wp.int32, device=device)
 
     def upload(self, prefix, prefix_state, active, counts):

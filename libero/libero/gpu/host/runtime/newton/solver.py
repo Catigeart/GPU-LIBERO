@@ -19,6 +19,7 @@ status summary (R01-F20); the loop body itself performs no device->host
 read.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -38,7 +39,7 @@ TAPE_SLOT_CAP = 256
 
 
 def _f64_1(arr):
-    return wp.array(ptr=arr.ptr, dtype=wp.float64, shape=(arr.size,),
+    return wp.array(ptr=arr.ptr, dtype=scalar.wp_real, shape=(arr.size,),
                     device=arr.device)
 
 
@@ -116,20 +117,20 @@ class FwdConstraintSolver:
         self.diagnostic_profile=profile
         self.tape_slots = min(w.maxiter, TAPE_SLOT_CAP) if profile=='compatible' else 0
         m = self.tape_slots
-        self.tape_f = wp.zeros((n, m, 8), dtype=wp.float64, device=w.device)
+        self.tape_f = wp.zeros((n, m, 8), dtype=scalar.wp_real, device=w.device)
         self.tape_i = wp.zeros((n, m, 12), dtype=wp.int32, device=w.device)
         self.tape_status = wp.zeros((n, m, 6), dtype=wp.int32, device=w.device)
-        self.tape_eval = wp.zeros((n, m, TRACECAP, 4), dtype=wp.float64,
+        self.tape_eval = wp.zeros((n, m, TRACECAP, 4), dtype=scalar.wp_real,
                                   device=w.device)
         self.tape_tag = wp.zeros((n, m, TRACECAP), dtype=wp.int32,
                                  device=w.device)
         # Typed device snapshots of the actual S07 buffers. The host never
         # supplies an oracle value to these producer/consumer witnesses.
-        self.tape_Mv = wp.zeros((n, m, NV), dtype=wp.float64, device=w.device)
-        self.tape_Jv = wp.zeros((n, m, w.rows), dtype=wp.float64, device=w.device)
-        self.tape_quad = wp.zeros((n, m, w.rows, 3), dtype=wp.float64, device=w.device)
-        self.tape_quadGauss = wp.zeros((n, m, 3), dtype=wp.float64, device=w.device)
-        self.tape_ls_quad0_input = wp.zeros((n, m), dtype=wp.float64, device=w.device)
+        self.tape_Mv = wp.zeros((n, m, NV), dtype=scalar.wp_real, device=w.device)
+        self.tape_Jv = wp.zeros((n, m, w.rows), dtype=scalar.wp_real, device=w.device)
+        self.tape_quad = wp.zeros((n, m, w.rows, 3), dtype=scalar.wp_real, device=w.device)
+        self.tape_quadGauss = wp.zeros((n, m, 3), dtype=scalar.wp_real, device=w.device)
+        self.tape_ls_quad0_input = wp.zeros((n, m), dtype=scalar.wp_real, device=w.device)
 
     # ================= glue launchers ====================================
     def _glue(self, kernel, inputs, dim=None):

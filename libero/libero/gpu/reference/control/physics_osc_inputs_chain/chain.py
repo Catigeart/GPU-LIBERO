@@ -6,6 +6,7 @@ The adapter is the merged N18 implementation.  Its Jacobian allocations are
 also the producer's output, so the producer-to-adapter edge has no copy.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 from types import SimpleNamespace
 from typing import Mapping
@@ -20,21 +21,21 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': F
 
 
 @wp.kernel(enable_backward=False)
-def _site_jacobian(cdof: wp.array(dtype=wp.float64, ndim=3),
-                   subtree_com: wp.array(dtype=wp.float64, ndim=3),
-                   site_pos: wp.array(dtype=wp.float64, ndim=2),
+def _site_jacobian(cdof: wp.array(dtype=scalar.wp_real, ndim=3),
+                   subtree_com: wp.array(dtype=scalar.wp_real, ndim=3),
+                   site_pos: wp.array(dtype=scalar.wp_real, ndim=2),
                    active: wp.array(dtype=wp.int32),
                    ancestor_mask: wp.array(dtype=wp.int32, ndim=2),
                    root: int, body: int,
-                   jacp: wp.array(dtype=wp.float64, ndim=3),
-                   jacr: wp.array(dtype=wp.float64, ndim=3),
+                   jacp: wp.array(dtype=scalar.wp_real, ndim=3),
+                   jacr: wp.array(dtype=scalar.wp_real, ndim=3),
                    status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for row in range(3):
         for k in range(43):
-            jacp[w, row, k] = wp.float64(0.0)
-            jacr[w, row, k] = wp.float64(0.0)
+            jacp[w, row, k] = scalar.wp_real(0.0)
+            jacr[w, row, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -76,15 +77,15 @@ def _site_jacobian(cdof: wp.array(dtype=wp.float64, ndim=3),
     if status[w] != 0:
         for row in range(3):
             for k in range(43):
-                jacp[w, row, k] = wp.float64(0.0)
-                jacr[w, row, k] = wp.float64(0.0)
+                jacp[w, row, k] = scalar.wp_real(0.0)
+                jacr[w, row, k] = scalar.wp_real(0.0)
 
 
 @wp.kernel(enable_backward=False)
 def _merge_status(producer: wp.array(dtype=wp.int32),
                   adapter: wp.array(dtype=wp.int32),
-                  xvelp: wp.array(dtype=wp.float64, ndim=2),
-                  xvelr: wp.array(dtype=wp.float64, ndim=2),
+                  xvelp: wp.array(dtype=scalar.wp_real, ndim=2),
+                  xvelr: wp.array(dtype=scalar.wp_real, ndim=2),
                   chain: wp.array(dtype=wp.int32)):
     w = wp.tid()
     chain[w] = adapter[w]
@@ -138,8 +139,8 @@ class ChainWorkspace:
         self.capacity, self.device = capacity, device
         self.producer_jacp = self.osc.jacp
         self.producer_jacr = self.osc.jacr
-        self.cdof = wp.zeros((capacity, 43, 6), dtype=wp.float64, device=device)
-        self.subtree_com = wp.zeros((capacity, 38, 3), dtype=wp.float64, device=device)
+        self.cdof = wp.zeros((capacity, 43, 6), dtype=scalar.wp_real, device=device)
+        self.subtree_com = wp.zeros((capacity, 38, 3), dtype=scalar.wp_real, device=device)
         self.ancestor_mask = wp.array(self.static.ancestor_mask, dtype=wp.int32, device=device)
         self.jac_status = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.status = wp.zeros(capacity, dtype=wp.int32, device=device)

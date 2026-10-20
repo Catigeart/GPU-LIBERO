@@ -3,6 +3,7 @@
 Preparation identity only. It does not turn source guards/AST into device or
 mathematical evidence. A command must still bind actual fields and be executed.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 from functools import lru_cache
 from ..core.cold_credentials import FileDigestLeasePool
@@ -331,7 +332,7 @@ class FrozenSources:
                         elif name not in ('len','wp.len'):
                             raise ValueError('unresolved reference-taking helper: '+binding['path']+':'+str(item.lineno)+':'+name)
             active.pop()
-        primitive={'int','float','bool','str','bytes','wp.int32','wp.int64','wp.float32','wp.float64'}
+        primitive={'int','float','bool','str','bytes','wp.int32','wp.int64','wp.float32','scalar.wp_real'}
         origins=[None if a.annotation is not None and ast.unparse(a.annotation) in primitive else a.arg for a in syntax.args.posonlyargs+syntax.args.args]
         walk(top,origins,[])
         return {'schema':'authenticated-transitive-source-field-census-v1','root_source':row,'parameters':parameters,'effects':effects,'helper_edges':edges,'sources':list(sources.values()),'source_completeness':'all original function bodies and authentic loaded helper calls traversed; unresolved reference-taking helpers rejected','scope':'conservative symbolic source census; lexical guards omit dominance/return constraints and are not exact runtime read/write or epoch proof','device_execution':False,'full_F':False}

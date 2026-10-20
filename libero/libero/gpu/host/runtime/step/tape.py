@@ -1,11 +1,12 @@
 """Prepared device-only input tape; diagnostic writes never feed physics."""
+import libero.gpu.precision as scalar
 import warp as wp
 
 wp.set_module_options({'enable_backward':False,'fuse_fp':True,'fast_math':False})
 
 
 @wp.kernel(enable_backward=False)
-def _copy_f64(source:wp.array(dtype=wp.float64),target:wp.array(dtype=wp.float64),
+def _copy_f64(source:wp.array(dtype=scalar.wp_real),target:wp.array(dtype=scalar.wp_real),
               index:wp.array(dtype=wp.int32),width:int,capacity:int):
     i=wp.tid()
     row=index[0]
@@ -59,7 +60,7 @@ class DeviceInputTape:
         self.flat={k:a.flatten() for k,a in self.sources.items()}
         self._flat_tokens={k:_token(a) for k,a in self.flat.items()}
         for a in self.sources.values():
-            if a.dtype not in (wp.float64,wp.int64,wp.int32) or a.device!=stream.device:
+            if a.dtype not in (scalar.wp_real,wp.int64,wp.int32) or a.device!=stream.device:
                 raise TypeError('typed f64/i64/i32 CUDA operand tape')
         self.index=wp.zeros(1,dtype=wp.int32,device=stream.device)
         self.overflow=wp.zeros(1,dtype=wp.int32,device=stream.device)
@@ -80,7 +81,7 @@ class DeviceInputTape:
             if (_token(a)!=self.tokens[k] or _token(self.data[k])!=self._owners[k]
                     or _token(self.flat[k])!=self._flat_tokens[k]):
                 raise ValueError('prepared tape source/target changed: '+k)
-            kernel={wp.float64:_copy_f64,wp.int64:_copy_i64,wp.int32:_copy_i32}[a.dtype]
+            kernel={scalar.wp_real:_copy_f64,wp.int64:_copy_i64,wp.int32:_copy_i32}[a.dtype]
             wp.launch(kernel,dim=a.size,
                 inputs=[self.flat[k],self.data[k],self.index,a.size,self.capacity],
                 device=self.stream.device,stream=self.stream)

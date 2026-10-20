@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #ifndef LIBERO_CF_COPY_PAYLOAD_CUH
 #define LIBERO_CF_COPY_PAYLOAD_CUH
@@ -38,14 +39,14 @@ template<class T> __device__ void field(int w,const T* src,T* dst,int width,int 
   dst+=(size_t(w)*rows+row)*width;
   payload(src,dst,width);
 }
-__device__ void f64(int w,const double*s,double*t,int n,int r,const int*i){field(w,s,t,n,r,i);}
+__device__ void f64(int w,const real_t*s,real_t*t,int n,int r,const int*i){field(w,s,t,n,r,i);}
 __device__ void i32(int w,const int*s,int*t,int n,int r,const int*i){field(w,s,t,n,r,i);}
 __device__ void i64(int w,const int64_t*s,int64_t*t,int n,int r,const int*i){field(w,s,t,n,r,i);}
 template<class T> __device__ void hold(int w,const int* mask,const T*s,T*t,int n){
  if(mask[w])return;
  payload(s+size_t(w)*n,t+size_t(w)*n,n);
 }
-__device__ void hold_f64(int w,const int*m,const double*s,double*t,int n){hold(w,m,s,t,n);}
+__device__ void hold_f64(int w,const int*m,const real_t*s,real_t*t,int n){hold(w,m,s,t,n);}
 __device__ void hold_i32(int w,const int*m,const int*s,int*t,int n){hold(w,m,s,t,n);}
 __device__ void hold_i64(int w,const int*m,const int64_t*s,int64_t*t,int n){hold(w,m,s,t,n);}
 __device__ void advance(int w,int* index,int* overflow,int capacity){if(index[w]<capacity)index[w]++;else overflow[w]=1;}

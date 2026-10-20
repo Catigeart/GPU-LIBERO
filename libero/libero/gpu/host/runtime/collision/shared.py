@@ -5,6 +5,7 @@ counts, epochs, or contacts back to the host. F supplies its device epoch gate
 as the active input and owns any packed-to-SoA transport.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import ctypes as ct
 import hashlib
@@ -83,7 +84,7 @@ def _origin_token(root):
 def _extent(array):
     if array.size == 0 or any(int(x) <= 0 for x in array.shape):
         raise DeviceBindingError('nonempty physical input required')
-    width = 8 if array.dtype == wp.float64 else 4 if array.dtype == wp.int32 else None
+    width = scalar.itemsize if array.dtype == scalar.wp_real else 4 if array.dtype == wp.int32 else None
     if width is None or any(int(s) <= 0 for s in array.strides):
         raise DeviceBindingError('scalar float64/int32 positive strides required')
     return width + sum((int(n) - 1) * int(s) for n, s in zip(array.shape, array.strides))
@@ -240,7 +241,7 @@ class DeviceInputBinding:
             parents = _path(owner, paths[name])
             array = parents[-1]
             array_token(array)
-            dtype = wp.int32 if name == 'active' else wp.float64
+            dtype = wp.int32 if name == 'active' else scalar.wp_real
             count = 1 if name == 'active' else (ws.ngeom if name in ('xpos', 'xmat') else ws.nbody)
             width = 1 if name == 'active' else (3 if name in ('xpos', 'xipos') else 9)
             shapes = {(ws.nworld * count * width,)}
@@ -252,7 +253,7 @@ class DeviceInputBinding:
             allocation, chain = _allocation(array)
             offset = int(array.ptr) - int(allocation.ptr)
             extent = _extent(array)
-            itemsize = 4 if dtype == wp.int32 else 8
+            itemsize = 4 if dtype == wp.int32 else scalar.itemsize
             if offset < 0 or offset % itemsize or offset + extent > int(allocation.capacity):
                 raise DeviceBindingError('actual input allocation range mismatch: ' + name)
             flat = array.flatten()
@@ -396,7 +397,7 @@ class ContactFieldViews:
         self.contact_f, self.contact_i = ws.finalize.contact_f, ws.finalize.contact_i
         self.ncon = ws.finalize.ncon
         self.nworld, self.capacity = ws.nworld, ws.contact_capacity
-        for array, dtype, total in ((self.contact_f, wp.float64, self.nworld * self.capacity * 65),
+        for array, dtype, total in ((self.contact_f, scalar.wp_real, self.nworld * self.capacity * 65),
                                     (self.contact_i, wp.int32, self.nworld * self.capacity * 5),
                                     (self.ncon, wp.int32, self.nworld)):
             if array.dtype != dtype or array.shape != (total,) or not array.is_contiguous:
@@ -408,8 +409,9 @@ class ContactFieldViews:
         self.fields = {}
         for name, (offset, width) in FLOAT_FIELDS.items():
             shape = (self.nworld, self.capacity) if width == 1 else (self.nworld, self.capacity, width)
-            strides = (self.capacity * 520, 520) if width == 1 else (self.capacity * 520, 520, 8)
-            self.fields[name] = self._view(self.contact_f, offset * 8, shape, strides, wp.float64)
+            pitch = 65 * scalar.itemsize
+            strides = (self.capacity * pitch, pitch) if width == 1 else (self.capacity * pitch, pitch, scalar.itemsize)
+            self.fields[name] = self._view(self.contact_f, offset * scalar.itemsize, shape, strides, scalar.wp_real)
         for name, offset in INT_FIELDS.items():
             self.fields[name] = self._view(self.contact_i, offset * 4,
                 (self.nworld, self.capacity), (self.capacity * 20, 20), wp.int32)

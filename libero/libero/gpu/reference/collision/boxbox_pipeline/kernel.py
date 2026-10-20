@@ -5,6 +5,7 @@ follows the accepted 2B1 face prefix with per-pair size leaves. N11, G13 and
 G14 execute the cross and contact tails on their own preallocated buffers.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import warp as wp
 
@@ -12,8 +13,8 @@ wp.set_module_options({"enable_backward": False, "fast_math": False, "fuse_fp": 
 
 
 @wp.kernel(enable_backward=False)
-def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
-             counts: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.float64),
+def prefix31(pair: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32),
+             counts: wp.array(dtype=wp.int32), out: wp.array(dtype=scalar.wp_real),
              state: wp.array(dtype=wp.int32), pairs: int):
     t = wp.tid()
     w = t // pairs
@@ -22,7 +23,7 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
     o = t*55
     s = t*5
     for j in range(55):
-        out[o+j] = wp.float64(0.0)
+        out[o+j] = scalar.wp_real(0.0)
     state[s] = 0
     state[s+1] = 0
     state[s+2] = -1
@@ -39,11 +40,11 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
         if not wp.isfinite(pair[b+j]):
             state[s+4] = 2
             return
-    if pair[b] < wp.float64(0.0):
+    if pair[b] < scalar.wp_real(0.0):
         state[s+4] = 2
         return
     for j in range(3):
-        if pair[b+1+j] <= wp.float64(0.0) or pair[b+16+j] <= wp.float64(0.0):
+        if pair[b+1+j] <= scalar.wp_real(0.0) or pair[b+16+j] <= scalar.wp_real(0.0):
             state[s+4] = 2
             return
     # mju_sub3 then mju_rotVecMatT, with independent reverse subtraction.
@@ -61,7 +62,7 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
     for i in range(3):
         for j in range(3):
             factor = pair[b+7+3*i+j]
-            if factor != wp.float64(0.0):
+            if factor != scalar.wp_real(0.0):
                 for k in range(3):
                     z = o+6+3*j+k
                     out[z] = out[z] + pair[b+22+3*i+k]*factor
@@ -76,7 +77,7 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
         out[o+45+j] = (out[o+24+j]*pair[b+1] + out[o+27+j]*pair[b+2]) + out[o+30+j]*pair[b+3]
     penetration = pair[b]
     for i in range(3):
-        penetration = penetration + (pair[b+1+i]*wp.float64(3.0) + pair[b+16+i]*wp.float64(3.0))
+        penetration = penetration + (pair[b+1+i]*scalar.wp_real(3.0) + pair[b+16+i]*scalar.wp_real(3.0))
     code = int(-1)
     for i in range(3):
         c1 = (-wp.abs(out[o+i]) + pair[b+1+i]) + out[o+42+i]
@@ -91,13 +92,13 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
         if c1 < penetration:
             penetration = c1
             sign = int(0)
-            if out[o+i] < wp.float64(0.0):
+            if out[o+i] < scalar.wp_real(0.0):
                 sign = 1
             code = i+3*sign
         if c2 < penetration:
             penetration = c2
             sign = int(0)
-            if out[o+3+i] < wp.float64(0.0):
+            if out[o+3+i] < scalar.wp_real(0.0):
                 sign = 1
             code = i+3*sign+6
     out[o+54] = penetration
@@ -105,8 +106,8 @@ def prefix31(pair: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
 
 
 @wp.kernel(enable_backward=False)
-def map_cross(pair: wp.array(dtype=wp.float64), face: wp.array(dtype=wp.float64),
-              face_state: wp.array(dtype=wp.int32), prefix: wp.array(dtype=wp.float64),
+def map_cross(pair: wp.array(dtype=scalar.wp_real), face: wp.array(dtype=scalar.wp_real),
+              face_state: wp.array(dtype=wp.int32), prefix: wp.array(dtype=scalar.wp_real),
               prefix_state: wp.array(dtype=wp.int32)):
     t = wp.tid()
     b = t*31
@@ -114,7 +115,7 @@ def map_cross(pair: wp.array(dtype=wp.float64), face: wp.array(dtype=wp.float64)
     p = t*38
     s = t*5
     for j in range(38):
-        prefix[p+j] = wp.float64(0.0)
+        prefix[p+j] = scalar.wp_real(0.0)
     prefix_state[t*3] = face_state[s+3]
     prefix_state[t*3+1] = face_state[s+1]
     prefix_state[t*3+2] = face_state[s+2]
@@ -134,10 +135,10 @@ def map_cross(pair: wp.array(dtype=wp.float64), face: wp.array(dtype=wp.float64)
 
 
 @wp.kernel(enable_backward=False)
-def map_sat(face: wp.array(dtype=wp.float64), face_state: wp.array(dtype=wp.int32),
-            cross_f: wp.array(dtype=wp.float64), cross_state: wp.array(dtype=wp.int32),
+def map_sat(face: wp.array(dtype=scalar.wp_real), face_state: wp.array(dtype=wp.int32),
+            cross_f: wp.array(dtype=scalar.wp_real), cross_state: wp.array(dtype=wp.int32),
             active: wp.array(dtype=wp.int32), counts: wp.array(dtype=wp.int32),
-            sat_f: wp.array(dtype=wp.float64), sat_i: wp.array(dtype=wp.int32),
+            sat_f: wp.array(dtype=scalar.wp_real), sat_i: wp.array(dtype=wp.int32),
             pairs: int):
     t=wp.tid()
     w=t//pairs
@@ -145,7 +146,7 @@ def map_sat(face: wp.array(dtype=wp.float64), face_state: wp.array(dtype=wp.int3
     si=t*6
     sf=t*45
     for j in range(45):
-        sat_f[sf+j]=wp.float64(0.0)
+        sat_f[sf+j]=scalar.wp_real(0.0)
     for j in range(4):
         sat_i[si+j]=-1
     sat_i[si+4]=0
@@ -179,14 +180,14 @@ def map_sat(face: wp.array(dtype=wp.float64), face_state: wp.array(dtype=wp.int3
 def merge_raw(sat_i: wp.array(dtype=wp.int32), face_state: wp.array(dtype=wp.int32),
               cross_state: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32),
               counts: wp.array(dtype=wp.int32), face_count: wp.array(dtype=wp.int32),
-              face_raw: wp.array(dtype=wp.float64), face_status: wp.array(dtype=wp.int32),
-              face_written: wp.array(dtype=wp.int32), face_frame: wp.array(dtype=wp.float64),
-              edge_count: wp.array(dtype=wp.int32), edge_raw: wp.array(dtype=wp.float64),
+              face_raw: wp.array(dtype=scalar.wp_real), face_status: wp.array(dtype=wp.int32),
+              face_written: wp.array(dtype=wp.int32), face_frame: wp.array(dtype=scalar.wp_real),
+              edge_count: wp.array(dtype=wp.int32), edge_raw: wp.array(dtype=scalar.wp_real),
               edge_status: wp.array(dtype=wp.int32), edge_written: wp.array(dtype=wp.int32),
-              edge_frame: wp.array(dtype=wp.float64), out_count: wp.array(dtype=wp.int32),
-              out_raw: wp.array(dtype=wp.float64), write_mask: wp.array(dtype=wp.int32),
+              edge_frame: wp.array(dtype=scalar.wp_real), out_count: wp.array(dtype=wp.int32),
+              out_raw: wp.array(dtype=scalar.wp_real), write_mask: wp.array(dtype=wp.int32),
               out_state: wp.array(dtype=wp.int32), frame_written: wp.array(dtype=wp.int32),
-              frame0: wp.array(dtype=wp.float64), pairs: int):
+              frame0: wp.array(dtype=scalar.wp_real), pairs: int):
     t=wp.tid()
     w=t//pairs
     q=t-w*pairs
@@ -199,7 +200,7 @@ def merge_raw(sat_i: wp.array(dtype=wp.int32), face_state: wp.array(dtype=wp.int
     for j in range(500):
         write_mask[t*500+j]=0
     for j in range(6):
-        frame0[t*6+j]=wp.float64(0.0)
+        frame0[t*6+j]=scalar.wp_real(0.0)
     if active[w]==0:
         return
     if active[w]!=1 or counts[w]<0 or counts[w]>pairs:
@@ -245,7 +246,7 @@ def merge_raw(sat_i: wp.array(dtype=wp.int32), face_state: wp.array(dtype=wp.int
     out_count[t]=n
     frame_written[t]=fw
     for j in range(n*10):
-        value=wp.float64(0.0)
+        value=scalar.wp_real(0.0)
         if route==1:
             value=face_raw[t*500+j]
         else:
@@ -254,7 +255,7 @@ def merge_raw(sat_i: wp.array(dtype=wp.int32), face_state: wp.array(dtype=wp.int
         write_mask[t*500+j]=1
     if fw!=0:
         for j in range(6):
-            value=wp.float64(0.0)
+            value=scalar.wp_real(0.0)
             if route==1:
                 value=face_frame[t*6+j]
             else:

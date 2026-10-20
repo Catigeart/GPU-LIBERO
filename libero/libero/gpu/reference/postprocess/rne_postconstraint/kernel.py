@@ -5,6 +5,7 @@ engine_support.c:mj_contactForce, engine_util_spatial.c, engine_sensor.c.
 The production call receives already solved efc_force and does no CPU math.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 
 import importlib.util
@@ -23,25 +24,25 @@ _n10_spec.loader.exec_module(_n10)
 ForceSensorWorkspace=_n10.ForceSensorWorkspace
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
-V6 = wp.types.vector(length=6, dtype=wp.float64)
+V6 = wp.types.vector(length=6, dtype=scalar.wp_real)
 
 
 @wp.func
-def _dofmul(a: wp.array2d(dtype=wp.float64), q: wp.array2d(dtype=wp.float64),
-            w: int, adr: int, count: int, k: int) -> wp.float64:
+def _dofmul(a: wp.array2d(dtype=scalar.wp_real), q: wp.array2d(dtype=scalar.wp_real),
+            w: int, adr: int, count: int, k: int) -> scalar.wp_real:
     if count == 1:
         return a[w, 6*adr+k]*q[w, adr]
-    out = wp.float64(0.0)
+    out = scalar.wp_real(0.0)
     if count > 1:
         for i in range(count):
             scale = q[w, adr+i]
-            if scale != wp.float64(0.0):
+            if scale != scalar.wp_real(0.0):
                 out += a[w, 6*(adr+i)+k]*scale
     return out
 
 
 @wp.func
-def _inert(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64),
+def _inert(i: wp.array2d(dtype=scalar.wp_real), v: wp.array2d(dtype=scalar.wp_real),
            w: int, body: int) -> V6:
     b = 10*body
     a = 6*body
@@ -57,7 +58,7 @@ def _inert(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64),
 
 
 @wp.func
-def _inert_acc(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64),
+def _inert_acc(i: wp.array2d(dtype=scalar.wp_real), v: wp.array2d(dtype=scalar.wp_real),
                w: int, body: int) -> V6:
     # Separate function because cacc and cvel use different device buffers.
     return _inert(i,v,w,body)
@@ -65,34 +66,34 @@ def _inert_acc(i: wp.array2d(dtype=wp.float64), v: wp.array2d(dtype=wp.float64),
 
 @wp.kernel(enable_backward=False)
 def _rne(active: wp.array(dtype=wp.int32),
-         qvel: wp.array2d(dtype=wp.float64), qacc: wp.array2d(dtype=wp.float64),
-         cinert: wp.array2d(dtype=wp.float64), cvel: wp.array2d(dtype=wp.float64),
-         cdof: wp.array2d(dtype=wp.float64), cdof_dot: wp.array2d(dtype=wp.float64),
-         xipos: wp.array3d(dtype=wp.float64), com: wp.array3d(dtype=wp.float64),
-         site_pos: wp.array3d(dtype=wp.float64), site_mat: wp.array3d(dtype=wp.float64),
-         xfrc: wp.array2d(dtype=wp.float64), efc: wp.array2d(dtype=wp.float64),
+         qvel: wp.array2d(dtype=scalar.wp_real), qacc: wp.array2d(dtype=scalar.wp_real),
+         cinert: wp.array2d(dtype=scalar.wp_real), cvel: wp.array2d(dtype=scalar.wp_real),
+         cdof: wp.array2d(dtype=scalar.wp_real), cdof_dot: wp.array2d(dtype=scalar.wp_real),
+         xipos: wp.array3d(dtype=scalar.wp_real), com: wp.array3d(dtype=scalar.wp_real),
+         site_pos: wp.array3d(dtype=scalar.wp_real), site_mat: wp.array3d(dtype=scalar.wp_real),
+         xfrc: wp.array2d(dtype=scalar.wp_real), efc: wp.array2d(dtype=scalar.wp_real),
          ncon: wp.array(dtype=wp.int32), nefc: wp.array(dtype=wp.int32),
          nequal: wp.array(dtype=wp.int32),
          cdim: wp.array2d(dtype=wp.int32), caddr: wp.array2d(dtype=wp.int32),
          cgeom1: wp.array2d(dtype=wp.int32), cgeom2: wp.array2d(dtype=wp.int32),
-         cframe: wp.array2d(dtype=wp.float64), cpos: wp.array2d(dtype=wp.float64),
+         cframe: wp.array2d(dtype=scalar.wp_real), cpos: wp.array2d(dtype=scalar.wp_real),
          parent: wp.array(dtype=wp.int32), dofadr: wp.array(dtype=wp.int32),
          dofnum: wp.array(dtype=wp.int32), root: wp.array(dtype=wp.int32),
-         geom_body: wp.array(dtype=wp.int32), gravity: wp.array(dtype=wp.float64),
+         geom_body: wp.array(dtype=wp.int32), gravity: wp.array(dtype=scalar.wp_real),
          ccap: int, ecap: int,
-         cacc: wp.array2d(dtype=wp.float64), ext: wp.array2d(dtype=wp.float64),
-         internal: wp.array3d(dtype=wp.float64),
-         decoded: wp.array3d(dtype=wp.float64), status: wp.array(dtype=wp.int32)):
+         cacc: wp.array2d(dtype=scalar.wp_real), ext: wp.array2d(dtype=scalar.wp_real),
+         internal: wp.array3d(dtype=scalar.wp_real),
+         decoded: wp.array3d(dtype=scalar.wp_real), status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for j in range(38):
         for k in range(6):
-            cacc[w,6*j+k] = wp.float64(0.0)
-            ext[w,6*j+k] = wp.float64(0.0)
-            internal[w,j,k] = wp.float64(0.0)
+            cacc[w,6*j+k] = scalar.wp_real(0.0)
+            ext[w,6*j+k] = scalar.wp_real(0.0)
+            internal[w,j,k] = scalar.wp_real(0.0)
     for j in range(ccap):
         for k in range(6):
-            decoded[w,j,k] = wp.float64(0.0)
+            decoded[w,j,k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -161,12 +162,12 @@ def _rne(active: wp.array(dtype=wp.int32),
                     return
     # Original mju_zero(cacc,6), followed by linear -gravity.
     for k in range(3):
-        cacc[w,3+k] = gravity[k]*wp.float64(-1.0)
+        cacc[w,3+k] = gravity[k]*scalar.wp_real(-1.0)
     # Applied wrench is force:torque at xipos; output is torque:force at root COM.
     for j in range(1,38):
         nonzero = False
         for k in range(6):
-            if xfrc[w,6*j+k] != wp.float64(0.0):
+            if xfrc[w,6*j+k] != scalar.wp_real(0.0):
                 nonzero = True
         if nonzero:
             dx = com[w,root[j],0]-xipos[w,j,0]
@@ -257,9 +258,9 @@ def _rne(active: wp.array(dtype=wp.int32),
     if status[w] == 5:
         for j in range(38):
             for k in range(6):
-                cacc[w,6*j+k] = wp.float64(0.0)
-                ext[w,6*j+k] = wp.float64(0.0)
-                internal[w,j,k] = wp.float64(0.0)
+                cacc[w,6*j+k] = scalar.wp_real(0.0)
+                ext[w,6*j+k] = scalar.wp_real(0.0)
+                internal[w,j,k] = scalar.wp_real(0.0)
 
 
 class RNEPostWorkspace:
@@ -308,24 +309,24 @@ class RNEPostWorkspace:
         self.dofnum=wp.array(bn,dtype=wp.int32,device=device)
         self.root=wp.array(br,dtype=wp.int32,device=device)
         self.geom_body=wp.array(gb,dtype=wp.int32,device=device)
-        self.gravity=wp.array(g,dtype=wp.float64,device=device)
+        self.gravity=wp.array(g,dtype=scalar.wp_real,device=device)
         n=capacity;c=contact_capacity;e=efc_capacity
-        shapes={'active':((n,),wp.int32),'qvel':((n,43),wp.float64),
-                'qacc':((n,43),wp.float64),'cinert':((n,380),wp.float64),
-                'cvel':((n,228),wp.float64),'cdof':((n,258),wp.float64),
-                'cdof_dot':((n,258),wp.float64),'xipos':((n,38,3),wp.float64),
-                'subtree_com':((n,38,3),wp.float64),'xfrc_applied':((n,228),wp.float64),
-                'efc_force':((n,e),wp.float64),'ncon':((n,),wp.int32),
+        shapes={'active':((n,),wp.int32),'qvel':((n,43),scalar.wp_real),
+                'qacc':((n,43),scalar.wp_real),'cinert':((n,380),scalar.wp_real),
+                'cvel':((n,228),scalar.wp_real),'cdof':((n,258),scalar.wp_real),
+                'cdof_dot':((n,258),scalar.wp_real),'xipos':((n,38,3),scalar.wp_real),
+                'subtree_com':((n,38,3),scalar.wp_real),'xfrc_applied':((n,228),scalar.wp_real),
+                'efc_force':((n,e),scalar.wp_real),'ncon':((n,),wp.int32),
                 'nefc':((n,),wp.int32),'ne':((n,),wp.int32),'contact_dim':((n,c),wp.int32),
                 'contact_efc_address':((n,c),wp.int32),'contact_geom1':((n,c),wp.int32),
-                'contact_geom2':((n,c),wp.int32),'contact_frame':((n,c*9),wp.float64),
-                'contact_pos':((n,c*3),wp.float64),'site_xpos':((n,31,3),wp.float64),
-                'site_xmat':((n,31,9),wp.float64)}
+                'contact_geom2':((n,c),wp.int32),'contact_frame':((n,c*9),scalar.wp_real),
+                'contact_pos':((n,c*3),scalar.wp_real),'site_xpos':((n,31,3),scalar.wp_real),
+                'site_xmat':((n,31,9),scalar.wp_real)}
         for name,(shape,dtype) in shapes.items():
             setattr(self,name,wp.zeros(shape,dtype=dtype,device=device))
-        self.cacc=wp.zeros((n,228),dtype=wp.float64,device=device)
-        self.cfrc_ext=wp.zeros((n,228),dtype=wp.float64,device=device)
-        self.contact_force=wp.zeros((n,c,6),dtype=wp.float64,device=device)
+        self.cacc=wp.zeros((n,228),dtype=scalar.wp_real,device=device)
+        self.cfrc_ext=wp.zeros((n,228),dtype=scalar.wp_real,device=device)
+        self.contact_force=wp.zeros((n,c,6),dtype=scalar.wp_real,device=device)
         self.status=wp.zeros(n,dtype=wp.int32,device=device)
         # N10 output is the SAME device allocation written by the RNE producer.
         sensor_model=SimpleNamespace(**{name:getattr(static,name) for name in
@@ -359,7 +360,7 @@ class RNEPostWorkspace:
 @wp.kernel(enable_backward=False)
 def _sensor_finish(active:wp.array(dtype=wp.int32),status:wp.array(dtype=wp.int32),
                    sensor_status:wp.array(dtype=wp.int32),
-                   result:wp.array2d(dtype=wp.float64)):
+                   result:wp.array2d(dtype=scalar.wp_real)):
     w=wp.tid()
     if active[w]!=1 or status[w]!=0:
         return
@@ -371,4 +372,4 @@ def _sensor_finish(active:wp.array(dtype=wp.int32),status:wp.array(dtype=wp.int3
             status[w]=5
     if status[w]==5:
         for k in range(6):
-            result[w,k]=wp.float64(0.0)
+            result[w,k]=scalar.wp_real(0.0)

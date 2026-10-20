@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <cstdint>
 
@@ -20,7 +21,7 @@ enum ForwardCacheWord : int {
 struct ForwardWorkspaceData {
   uint64_t *metadata;                  // [world][ForwardCacheWords]
   const uint64_t *position_generation; // advances on every successful prefix rebuild
-  double *fluid;                      // [world][9*nbody + nv]: body payloads, candidate force
+  real_t *fluid;                      // [world][9*nbody + nv]: body payloads, candidate force
   const int *mass_plan;                // immutable, shared by worlds; forward_mass.cuh
 };
 

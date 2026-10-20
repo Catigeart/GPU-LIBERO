@@ -19,6 +19,7 @@ one owner and later stages read producer scratch on device. The final commit
 copies validated written prefixes into separate public buffers on device.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -63,10 +64,10 @@ class PositionReferenceWorkspace:
 
         # ---- shared flat integrated buffers (single owner) ----------------
         nf_cap, nl_cap = SEG_FRICTION_ROWS, SEG_LIMIT_ROWS
-        self.qpos = wp.zeros(N * NQ, dtype=wp.float64, device=device)
+        self.qpos = wp.zeros(N * NQ, dtype=scalar.wp_real, device=device)
         self.active = wp.zeros(N, dtype=wp.int32, device=device)
         self.ncon = wp.zeros(N, dtype=wp.int32, device=device)
-        self.qvel = wp.zeros(N * NV, dtype=wp.float64, device=device)
+        self.qvel = wp.zeros(N * NV, dtype=scalar.wp_real, device=device)
         self.qvel_epoch = wp.zeros(N, dtype=wp.int64, device=device)
         self.zero_incoming = wp.zeros(N, dtype=wp.int32, device=device)
         self.row_cap_flat = wp.zeros(N, dtype=wp.int32, device=device)
@@ -77,39 +78,39 @@ class PositionReferenceWorkspace:
         self.expected_qvel_epoch = wp.zeros(N, dtype=wp.int64, device=device)
         self._held_buffers = {}
 
-        self.efc_J = wp.zeros(N * R * NV, dtype=wp.float64, device=device)
+        self.efc_J = wp.zeros(N * R * NV, dtype=scalar.wp_real, device=device)
         self.efc_type = wp.zeros(N * R, dtype=wp.int32, device=device)
         self.efc_id = wp.zeros(N * R, dtype=wp.int32, device=device)
-        self.efc_pos = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_margin = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_frictionloss = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.prediag = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_vel = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_aref = wp.zeros(N * R, dtype=wp.float64, device=device)
+        self.efc_pos = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_margin = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_frictionloss = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.prediag = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_vel = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_aref = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
         self.ref_epoch = wp.zeros(N, dtype=wp.int64, device=device)
         self.counts = wp.zeros(N * 5, dtype=wp.int32, device=device)
         self.status = wp.zeros(N, dtype=wp.int32, device=device)
         self.committed = wp.zeros(N, dtype=wp.int32, device=device)
         # All position producers write scratch until every stage validates.
-        self.stage_J = wp.zeros(N * R * NV, dtype=wp.float64, device=device)
+        self.stage_J = wp.zeros(N * R * NV, dtype=scalar.wp_real, device=device)
         self.stage_type = wp.zeros(N * R, dtype=wp.int32, device=device)
         self.stage_id = wp.zeros(N * R, dtype=wp.int32, device=device)
-        self.stage_pos = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.stage_margin = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.stage_frictionloss = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.stage_prediag = wp.zeros(N * R, dtype=wp.float64, device=device)
+        self.stage_pos = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.stage_margin = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.stage_frictionloss = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.stage_prediag = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
         self.stage_counts = wp.zeros(N * 5, dtype=wp.int32, device=device)
         self.position_ready = wp.zeros(N, dtype=wp.int32, device=device)
-        self.efc_R = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_D = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.efc_KBIP = wp.zeros(N * R * 4, dtype=wp.float64, device=device)
-        self.postdiag = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.contact_mu = wp.zeros(N * C, dtype=wp.float64, device=device)
+        self.efc_R = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_D = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.efc_KBIP = wp.zeros(N * R * 4, dtype=scalar.wp_real, device=device)
+        self.postdiag = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.contact_mu = wp.zeros(N * C, dtype=scalar.wp_real, device=device)
         self.contact_address = wp.zeros((N, C), dtype=wp.int32, device=device)
         self.contact_exclude = wp.zeros((N, C), dtype=wp.int32, device=device)
         self.route = wp.zeros(N * R, dtype=wp.int32, device=device)
-        self.stage_vel = wp.zeros(N * R, dtype=wp.float64, device=device)
-        self.stage_aref = wp.zeros(N * R, dtype=wp.float64, device=device)
+        self.stage_vel = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
+        self.stage_aref = wp.zeros(N * R, dtype=scalar.wp_real, device=device)
         # Private group boundaries for the handwritten block impedance pass.
         # Allocated before the runtime seals its owner/layout inventory.
         self._cuda_impedance_heads = wp.zeros(N * R, dtype=wp.int32, device=device)
@@ -118,9 +119,9 @@ class PositionReferenceWorkspace:
         self.geom_body = wp.array(
             np.ascontiguousarray(checked['geom_bodyid']), dtype=wp.int32, device=device)
         self.body_inv = wp.array(
-            _flat(checked['body_invweight0']), dtype=wp.float64, device=device)
+            _flat(checked['body_invweight0']), dtype=scalar.wp_real, device=device)
         self.dof_inv = wp.array(
-            np.ascontiguousarray(checked['dof_invweight0']), dtype=wp.float64, device=device)
+            np.ascontiguousarray(checked['dof_invweight0']), dtype=scalar.wp_real, device=device)
         self.jnt_dofadr = wp.array(
             np.ascontiguousarray(checked['jnt_dofadr']), dtype=wp.int32, device=device)
 
@@ -383,7 +384,7 @@ class PositionReferenceWorkspace:
         for name, buffer in [('contact_H', contact_H), ('efc_AR', efc_AR)]:
             if not isinstance(buffer, wp.array) or buffer.device != wp.get_device(self.device):
                 raise ValueError(f'{name}: resident caller-owned array required')
-            if buffer.dtype != wp.float64:
+            if buffer.dtype != scalar.wp_real:
                 raise ValueError(f'{name}: float64 required')
         if contact_H.size != self.nworld * self.contacts * 36:
             raise ValueError('contact_H: complete contact Hessian shape required')

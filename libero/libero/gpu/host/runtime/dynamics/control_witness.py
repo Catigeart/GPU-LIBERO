@@ -6,6 +6,7 @@ Snapshots are D2D on the prepared stream; masks describe source reads/writes,
 including attempted writes subsequently rolled back by the dynamics wrapper.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 import warp as wp
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": True, "fast_math": False})
@@ -139,7 +140,7 @@ def refresh_write_mask(active: wp.array(dtype=wp.int32), error: wp.array(dtype=w
 @wp.kernel(enable_backward=False)
 def osc_write_mask(active: wp.array(dtype=wp.int32), before: wp.array(dtype=wp.int32),
                    after: wp.array(dtype=wp.int32), policy: wp.array(dtype=wp.int32),
-                   action: wp.array(dtype=wp.float64, ndim=2),
+                   action: wp.array(dtype=scalar.wp_real, ndim=2),
                    out: wp.array(dtype=wp.int32), kind: int, diagnostics: int):
     w = wp.tid()
     out[w] = 0
@@ -156,7 +157,7 @@ def osc_write_mask(active: wp.array(dtype=wp.int32), before: wp.array(dtype=wp.i
             out[w] = 1
         elif kind == 4 and policy[w] != 0:
             # clipping keeps nonzero/NaN nonzero; only signed zero suppresses.
-            if action[w,3] != wp.float64(0.0) or action[w,4] != wp.float64(0.0) or action[w,5] != wp.float64(0.0):
+            if action[w,3] != scalar.wp_real(0.0) or action[w,4] != scalar.wp_real(0.0) or action[w,5] != scalar.wp_real(0.0):
                 out[w] = 1
 
 @wp.kernel(enable_backward=False)

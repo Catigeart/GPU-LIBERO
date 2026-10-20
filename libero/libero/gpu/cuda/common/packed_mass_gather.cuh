@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #ifndef LIBERO_PACKED_MASS_GATHER_CUH
 #define LIBERO_PACKED_MASS_GATHER_CUH
@@ -11,10 +12,10 @@ namespace libero_packed_mass {
 // scratch are needed. Preserve the scalar scatter's contribution order,
 // including simple-row assignment rather than addition.
 __device__ __forceinline__ void multiply_gather(
-    const double* x, const double* qM, const int* madr, const int* parent,
-    const int* simple, double* result, int nv) {
+    const real_t* x, const real_t* qM, const int* madr, const int* parent,
+    const int* simple, real_t* result, int nv) {
     for (int row = int(threadIdx.x); row < nv; row += int(blockDim.x)) {
-        double value = 0.0;
+        real_t value = REAL_C(0.0);
         for (int i = 0; i < nv; ++i) {
             int adr = madr[i];
             if (simple && simple[i]) {
@@ -38,16 +39,16 @@ __device__ __forceinline__ void multiply_gather(
 // No floating-point reduction/reassociation and no implicit memory barrier.
 // Keep opt-in until whole-kernel timing justifies the repeated warp traversal.
 __device__ __forceinline__ void multiply_gather_warp(
-    const double* x, const double* qM, const int* madr, const int* parent,
-    const int* simple, double* result, int nv) {
+    const real_t* x, const real_t* qM, const int* madr, const int* parent,
+    const int* simple, real_t* result, int nv) {
     const int lane = int(threadIdx.x) & 31;
     const int warp_base = int(threadIdx.x) & ~31;
     for (int base = warp_base; base < nv; base += int(blockDim.x)) {
         const int row = base + lane;
-        double value = 0.0;
+        real_t value = REAL_C(0.0);
         for (int i = 0; i < nv; ++i) {
             int adr = 0, row_simple = 0;
-            double diagonal = 0.0, xi = 0.0;
+            real_t diagonal = REAL_C(0.0), xi = REAL_C(0.0);
             if (lane == 0) {
                 adr = madr[i];
                 row_simple = simple && simple[i];
@@ -65,7 +66,7 @@ __device__ __forceinline__ void multiply_gather_warp(
             if (row == i) value += diagonal * xi;
             ++adr;
             for (int j = parent[i]; j >= 0; j = parent[j], ++adr) {
-                double coefficient = 0.0, xj = 0.0;
+                real_t coefficient = REAL_C(0.0), xj = REAL_C(0.0);
                 if (lane == 0) { coefficient = qM[adr]; xj = x[j]; }
                 coefficient = __shfl_sync(0xffffffffu, coefficient, 0);
                 xj = __shfl_sync(0xffffffffu, xj, 0);
@@ -83,10 +84,10 @@ __device__ __forceinline__ void multiply_gather_warp(
 // diagonal event assigns, including overwriting earlier descendant additions.
 // No floating point reduction, no scratch, and no topology traversal at runtime.
 __device__ __forceinline__ void multiply_plan(
-    const double* x,const double* qM,const int* offsets,const int* coefficient,
-    const int* source,const int* assign,double* result,int nv) {
+    const real_t* x,const real_t* qM,const int* offsets,const int* coefficient,
+    const int* source,const int* assign,real_t* result,int nv) {
     for(int row=int(threadIdx.x);row<nv;row+=int(blockDim.x)) {
-        double value=0.0;
+        real_t value=REAL_C(0.0);
         for(int e=offsets[row];e<offsets[row+1];++e) {
             if(assign[e]) value=qM[coefficient[e]]*x[source[e]];
             else value+=qM[coefficient[e]]*x[source[e]];
@@ -98,13 +99,13 @@ __device__ __forceinline__ void multiply_plan(
 // Generic non-simple packed storage. Newton passes its dof_simple array to
 // the overload above; dropping that array there would change semantics.
 __device__ __forceinline__ void multiply_gather(
-    const double* x, const double* qM, const int* madr, const int* parent,
-    double* result, int nv) {
+    const real_t* x, const real_t* qM, const int* madr, const int* parent,
+    real_t* result, int nv) {
     multiply_gather(x, qM, madr, parent, nullptr, result, nv);
 }
 __device__ __forceinline__ void multiply_gather_warp(
-    const double* x, const double* qM, const int* madr, const int* parent,
-    double* result, int nv) {
+    const real_t* x, const real_t* qM, const int* madr, const int* parent,
+    real_t* result, int nv) {
     multiply_gather_warp(x, qM, madr, parent, nullptr, result, nv);
 }
 }

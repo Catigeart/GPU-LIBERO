@@ -4,6 +4,7 @@ One CUDA lane owns one independent world. Scratch is bounded by the sum of two
 body-tree sizes, never by the model's mesh-expanded nbvh.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -12,8 +13,8 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': F
 
 
 @wp.func
-def _dot(a0: wp.float64, a1: wp.float64, a2: wp.float64,
-         b0: wp.float64, b1: wp.float64, b2: wp.float64) -> wp.float64:
+def _dot(a0: scalar.wp_real, a1: scalar.wp_real, a2: scalar.wp_real,
+         b0: scalar.wp_real, b1: scalar.wp_real, b2: scalar.wp_real) -> scalar.wp_real:
     return a0*b0+a1*b1+a2*b2
 
 
@@ -25,38 +26,38 @@ def _base(i: wp.int32, a: wp.int32, b: wp.int32) -> wp.int32:
 
 
 @wp.func
-def _normal(mat: wp.array(dtype=wp.float64), base: wp.int32,
-            axis: wp.int32, coord: wp.int32) -> wp.float64:
+def _normal(mat: wp.array(dtype=scalar.wp_real), base: wp.int32,
+            axis: wp.int32, coord: wp.int32) -> scalar.wp_real:
     return mat[base+3*coord+axis]
 
 
 @wp.func
-def _center(aa: wp.array(dtype=wp.float64), ab: wp.int32,
-            pos: wp.array(dtype=wp.float64), pb: wp.int32,
-            mat: wp.array(dtype=wp.float64), mb: wp.int32,
-            axis: wp.int32) -> wp.float64:
+def _center(aa: wp.array(dtype=scalar.wp_real), ab: wp.int32,
+            pos: wp.array(dtype=scalar.wp_real), pb: wp.int32,
+            mat: wp.array(dtype=scalar.wp_real), mb: wp.int32,
+            axis: wp.int32) -> scalar.wp_real:
     return _dot(aa[ab],aa[ab+1],aa[ab+2],
                 mat[mb+3*axis],mat[mb+3*axis+1],mat[mb+3*axis+2])+pos[pb+axis]
 
 
 @wp.func
-def _obb(aa: wp.array(dtype=wp.float64), ab0: wp.int32, ab1: wp.int32,
-         pos: wp.array(dtype=wp.float64), pb0: wp.int32, pb1: wp.int32,
-         mat: wp.array(dtype=wp.float64), mb0: wp.int32, mb1: wp.int32,
-         cached: wp.int32, product: wp.array(dtype=wp.float64),
-         offset: wp.array(dtype=wp.float64), sb: wp.int32,
+def _obb(aa: wp.array(dtype=scalar.wp_real), ab0: wp.int32, ab1: wp.int32,
+         pos: wp.array(dtype=scalar.wp_real), pb0: wp.int32, pb1: wp.int32,
+         mat: wp.array(dtype=scalar.wp_real), mb0: wp.int32, mb1: wp.int32,
+         cached: wp.int32, product: wp.array(dtype=scalar.wp_real),
+         offset: wp.array(dtype=scalar.wp_real), sb: wp.int32,
          initialize: wp.int32) -> wp.int32:
     # Bit 0 overlap, bit 1 updated initialize, higher bits first reject axis+1.
-    inf10=aa[ab0+3]>=wp.float64(1.0e10)
-    inf11=aa[ab0+4]>=wp.float64(1.0e10)
-    inf12=aa[ab0+5]>=wp.float64(1.0e10)
-    inf20=aa[ab1+3]>=wp.float64(1.0e10)
-    inf21=aa[ab1+4]>=wp.float64(1.0e10)
-    inf22=aa[ab1+5]>=wp.float64(1.0e10)
+    inf10=aa[ab0+3]>=scalar.wp_real(1.0e10)
+    inf11=aa[ab0+4]>=scalar.wp_real(1.0e10)
+    inf12=aa[ab0+5]>=scalar.wp_real(1.0e10)
+    inf20=aa[ab1+3]>=scalar.wp_real(1.0e10)
+    inf21=aa[ab1+4]>=scalar.wp_real(1.0e10)
+    inf22=aa[ab1+5]>=scalar.wp_real(1.0e10)
     if (inf10 and inf11 and inf12) or (inf20 and inf21 and inf22):
         return 1+2*initialize
-    c00=wp.float64(0.0);c01=wp.float64(0.0);c02=wp.float64(0.0)
-    c10=wp.float64(0.0);c11=wp.float64(0.0);c12=wp.float64(0.0)
+    c00=scalar.wp_real(0.0);c01=scalar.wp_real(0.0);c02=scalar.wp_real(0.0)
+    c10=scalar.wp_real(0.0);c11=scalar.wp_real(0.0);c12=scalar.wp_real(0.0)
     if cached == 0:
         c00=_center(aa,ab0,pos,pb0,mat,mb0,0)
         c01=_center(aa,ab0,pos,pb0,mat,mb0,1)
@@ -85,11 +86,11 @@ def _obb(aa: wp.array(dtype=wp.float64), ab0: wp.int32, ab1: wp.int32,
         mj=_base(j,mb0,mb1)
         for k in range(3):
             n0=_normal(mat,mj,k,0);n1=_normal(mat,mj,k,1);n2=_normal(mat,mj,k,2)
-            p0=wp.float64(0.0);p1=wp.float64(0.0)
-            r0=wp.float64(0.0);r1=wp.float64(0.0)
+            p0=scalar.wp_real(0.0);p1=scalar.wp_real(0.0)
+            r0=scalar.wp_real(0.0);r1=scalar.wp_real(0.0)
             for i in range(2):
                 ab=_base(i,ab0,ab1);mi=_base(i,mb0,mb1)
-                proj=wp.float64(0.0);radius=wp.float64(0.0)
+                proj=scalar.wp_real(0.0);radius=scalar.wp_real(0.0)
                 if cached == 0:
                     if i==0:
                         proj=_dot(c00,c01,c02,n0,n1,n2)
@@ -114,24 +115,24 @@ def _obb(aa: wp.array(dtype=wp.float64), ab0: wp.int32, ab1: wp.int32,
 
 @wp.func
 def _sphere(g1: wp.int32,g2: wp.int32,
-            rbound: wp.array(dtype=wp.float64),gtype: wp.array(dtype=wp.int32),
-            pos: wp.array(dtype=wp.float64),mat: wp.array(dtype=wp.float64),
+            rbound: wp.array(dtype=scalar.wp_real),gtype: wp.array(dtype=wp.int32),
+            pos: wp.array(dtype=scalar.wp_real),mat: wp.array(dtype=scalar.wp_real),
             pbase: wp.int32,mbase: wp.int32) -> wp.int32:
     p1=pbase+3*g1;p2=pbase+3*g2
-    if rbound[g1]>wp.float64(0.0) and rbound[g2]>wp.float64(0.0):
-        bound=rbound[g1]+rbound[g2]+wp.float64(0.0)
+    if rbound[g1]>scalar.wp_real(0.0) and rbound[g2]>scalar.wp_real(0.0):
+        bound=rbound[g1]+rbound[g2]+scalar.wp_real(0.0)
         d0=pos[p1]-pos[p2];d1=pos[p1+1]-pos[p2+1];d2=pos[p1+2]-pos[p2+2]
         if d0*d0+d1*d1+d2*d2>bound*bound:
             return 0
-    if gtype[g1]==0 and rbound[g2]>wp.float64(0.0):
+    if gtype[g1]==0 and rbound[g2]>scalar.wp_real(0.0):
         m1=mbase+9*g1
         d0=pos[p2]-pos[p1];d1=pos[p2+1]-pos[p1+1];d2=pos[p2+2]-pos[p1+2]
-        if _dot(d0,d1,d2,mat[m1+2],mat[m1+5],mat[m1+8])>wp.float64(0.0)+rbound[g2]:
+        if _dot(d0,d1,d2,mat[m1+2],mat[m1+5],mat[m1+8])>scalar.wp_real(0.0)+rbound[g2]:
             return 0
-    if gtype[g2]==0 and rbound[g1]>wp.float64(0.0):
+    if gtype[g2]==0 and rbound[g1]>scalar.wp_real(0.0):
         m2=mbase+9*g2
         d0=pos[p1]-pos[p2];d1=pos[p1+1]-pos[p2+1];d2=pos[p1+2]-pos[p2+2]
-        if _dot(d0,d1,d2,mat[m2+2],mat[m2+5],mat[m2+8])>wp.float64(0.0)+rbound[g1]:
+        if _dot(d0,d1,d2,mat[m2+2],mat[m2+5],mat[m2+8])>scalar.wp_real(0.0)+rbound[g1]:
             return 0
     return 1
 
@@ -148,7 +149,7 @@ def _suppressed(g1: wp.int32,g2: wp.int32,merged: wp.int32,
 
 
 @wp.func
-def _surface(aa: wp.array(dtype=wp.float64), base: wp.int32) -> wp.float64:
+def _surface(aa: wp.array(dtype=scalar.wp_real), base: wp.int32) -> scalar.wp_real:
     x=aa[base+3]-aa[base];y=aa[base+4]-aa[base+1];z=aa[base+5]-aa[base+2]
     return x*y+y*z+z*x
 
@@ -156,16 +157,16 @@ def _surface(aa: wp.array(dtype=wp.float64), base: wp.int32) -> wp.float64:
 @wp.kernel(enable_backward=False)
 def _tree_kernel(stage:wp.array(dtype=wp.int32),stage_count:wp.array(dtype=wp.int32),
                  active_in:wp.array(dtype=wp.int32),
-                 xipos:wp.array(dtype=wp.float64),ximat:wp.array(dtype=wp.float64),
-                 geom_pos:wp.array(dtype=wp.float64),geom_mat:wp.array(dtype=wp.float64),
+                 xipos:wp.array(dtype=scalar.wp_real),ximat:wp.array(dtype=scalar.wp_real),
+                 geom_pos:wp.array(dtype=scalar.wp_real),geom_mat:wp.array(dtype=scalar.wp_real),
                  body_adr:wp.array(dtype=wp.int32),body_num:wp.array(dtype=wp.int32),
                  geom_adr:wp.array(dtype=wp.int32),geom_num:wp.array(dtype=wp.int32),
                  child:wp.array(dtype=wp.int32),geomid:wp.array(dtype=wp.int32),
-                 bvh_aa:wp.array(dtype=wp.float64),geom_aa:wp.array(dtype=wp.float64),
-                 rbound:wp.array(dtype=wp.float64),gtype:wp.array(dtype=wp.int32),
+                 bvh_aa:wp.array(dtype=scalar.wp_real),geom_aa:wp.array(dtype=scalar.wp_real),
+                 rbound:wp.array(dtype=scalar.wp_real),gtype:wp.array(dtype=wp.int32),
                  pair1:wp.array(dtype=wp.int32),pair2:wp.array(dtype=wp.int32),
                  stack1:wp.array(dtype=wp.int32),stack2:wp.array(dtype=wp.int32),
-                 product:wp.array(dtype=wp.float64),offset:wp.array(dtype=wp.float64),
+                 product:wp.array(dtype=scalar.wp_real),offset:wp.array(dtype=scalar.wp_real),
                  out_req:wp.array(dtype=wp.int32),out_visit:wp.array(dtype=wp.int32),
                  out_stack:wp.array(dtype=wp.int32),out_leaf:wp.array(dtype=wp.int32),
                  out_active:wp.array(dtype=wp.int32),
@@ -334,15 +335,15 @@ class CollisionTreeWorkspace:
             if len(arr)==0:arr=np.zeros(1,np.int32)
             setattr(self,target,wp.array(arr,dtype=wp.int32,device=device))
         for target,(name,shape) in doubles.items():
-            setattr(self,target,wp.array(exact(name,np.float64,shape),dtype=wp.float64,device=device))
+            setattr(self,target,wp.array(exact(name,np.float64,shape),dtype=scalar.wp_real,device=device))
         for name,length,dtype in (
             ('stage',nworld*stage_slots*6,wp.int32),('stage_count',nworld,wp.int32),
-            ('active_in',nworld,wp.int32),('xipos',nworld*self.nbody*3,wp.float64),
-            ('ximat',nworld*self.nbody*9,wp.float64),
-            ('geom_pos',nworld*self.ngeom*3,wp.float64),
-            ('geom_mat',nworld*self.ngeom*9,wp.float64),
+            ('active_in',nworld,wp.int32),('xipos',nworld*self.nbody*3,scalar.wp_real),
+            ('ximat',nworld*self.nbody*9,scalar.wp_real),
+            ('geom_pos',nworld*self.ngeom*3,scalar.wp_real),
+            ('geom_mat',nworld*self.ngeom*9,scalar.wp_real),
             ('stack1',nworld*self.max_stack,wp.int32),('stack2',nworld*self.max_stack,wp.int32),
-            ('product',nworld*36,wp.float64),('offset',nworld*12,wp.float64),
+            ('product',nworld*36,scalar.wp_real),('offset',nworld*12,scalar.wp_real),
             ('out_req',nworld*req_slots*4,wp.int32),
             ('out_visit',nworld*visit_slots*12,wp.int32),
             ('out_stack',nworld*stack_slots*5,wp.int32),

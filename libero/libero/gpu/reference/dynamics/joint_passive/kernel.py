@@ -3,6 +3,7 @@
 Apache-2.0 source: engine_passive.c:mj_passive lines 37-91. This scoped
 translation uses the fixed model's zero free/ball rotational stiffness.
 """
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -11,21 +12,21 @@ wp.set_module_options({'enable_backward': False, 'fuse_fp': True})
 
 
 @wp.kernel(enable_backward=False)
-def _passive(qpos: wp.array(dtype=wp.float64, ndim=2),
-             qvel: wp.array(dtype=wp.float64, ndim=2),
+def _passive(qpos: wp.array(dtype=scalar.wp_real, ndim=2),
+             qvel: wp.array(dtype=scalar.wp_real, ndim=2),
              active: wp.array(dtype=wp.int32),
              jtype: wp.array(dtype=wp.int32),
              qadr: wp.array(dtype=wp.int32),
              dadr: wp.array(dtype=wp.int32),
-             stiffness: wp.array(dtype=wp.float64),
-             spring: wp.array(dtype=wp.float64),
-             damping: wp.array(dtype=wp.float64),
-             out: wp.array(dtype=wp.float64, ndim=2),
+             stiffness: wp.array(dtype=scalar.wp_real),
+             spring: wp.array(dtype=scalar.wp_real),
+             damping: wp.array(dtype=scalar.wp_real),
+             out: wp.array(dtype=scalar.wp_real, ndim=2),
              status: wp.array(dtype=wp.int32)):
     w = wp.tid()
     status[w] = 0
     for k in range(43):
-        out[w, k] = wp.float64(0.0)
+        out[w, k] = scalar.wp_real(0.0)
     if active[w] == 0:
         return
     if active[w] != 1:
@@ -73,18 +74,18 @@ class JointPassiveWorkspace:
             if model.jnt_type[i] not in (0, 2, 3):
                 raise ValueError('unsupported joint type')
         self.capacity, self.device = capacity, device
-        self.qpos = wp.zeros((capacity, 48), wp.float64, device=device)
-        self.qvel = wp.zeros((capacity, 43), wp.float64, device=device)
+        self.qpos = wp.zeros((capacity, 48), scalar.wp_real, device=device)
+        self.qvel = wp.zeros((capacity, 43), scalar.wp_real, device=device)
         self.active = wp.zeros(capacity, wp.int32, device=device)
-        self.out = wp.zeros((capacity, 43), wp.float64, device=device)
+        self.out = wp.zeros((capacity, 43), scalar.wp_real, device=device)
         self.status = wp.zeros(capacity, wp.int32, device=device)
         for name, value, dtype in (
             ('jtype', model.jnt_type, wp.int32),
             ('qadr', model.jnt_qposadr, wp.int32),
             ('dadr', model.jnt_dofadr, wp.int32),
-            ('stiffness', model.jnt_stiffness, wp.float64),
-            ('spring', model.qpos_spring, wp.float64),
-            ('damping', model.dof_damping, wp.float64),
+            ('stiffness', model.jnt_stiffness, scalar.wp_real),
+            ('spring', model.qpos_spring, scalar.wp_real),
+            ('damping', model.dof_damping, scalar.wp_real),
         ):
             arr = np.ascontiguousarray(value, dtype=np.int32 if dtype == wp.int32 else np.float64)
             setattr(self, name, wp.array(arr, dtype=dtype, device=device))

@@ -1,3 +1,4 @@
+#include "precision.cuh"
 #pragma once
 #include <cuda_runtime.h>
 #include <cmath>
@@ -18,26 +19,26 @@ __device__ void gate(int w,const int32_t* mask,int32_t* error,
     if(state[w]!=source[w]) {error[w]=203;return;}
     if(valid[w]==1 && written[w]==epoch[w]) active[w]=1;
 }
-__device__ void site(int w,const double* pos,const double* mat,
-    const int32_t* active,double* outp,double* outm,int ns,int id) {
+__device__ void site(int w,const real_t* pos,const real_t* mat,
+    const int32_t* active,real_t* outp,real_t* outm,int ns,int id) {
     if(active[w]!=1) return;
     for(int k=0;k<3;k++) outp[3*w+k]=pos[(w*ns+id)*3+k];
     for(int k=0;k<9;k++) outm[9*w+k]=mat[(w*ns+id)*9+k];
 }
-__device__ void jacobian(int w,const double* cdof,const double* subtree,
-    const double* pos,const int32_t* active,const int32_t* ancestor,
-    int root,int body,int nv,int nb,double* jp,double* jr,int32_t* status,
+__device__ void jacobian(int w,const real_t* cdof,const real_t* subtree,
+    const real_t* pos,const int32_t* active,const int32_t* ancestor,
+    int root,int body,int nv,int nb,real_t* jp,real_t* jr,int32_t* status,
     const int32_t* body_dof_offsets=nullptr,const int32_t* body_dof_indices=nullptr) {
     if(threadIdx.x>=32) return;
     const int lane=libero_warp::lane();
-    double* p=jp+w*3*nv; double* r=jr+w*3*nv;
+    real_t* p=jp+w*3*nv; real_t* r=jr+w*3*nv;
     if(lane==0) status[w]=0;
     for(int k=lane;k<3*nv;k+=32) {p[k]=0;r[k]=0;}
     __syncwarp();
     if(active[w]==0) return;
     if(active[w]!=1) {if(lane==0)status[w]=4;return;}
     // One subtraction per offset, broadcast without changing arithmetic.
-    double ox=0,oy=0,oz=0;
+    real_t ox=0,oy=0,oz=0;
     if(lane==0){ox=pos[w*3]-subtree[(w*nb+root)*3];
         oy=pos[w*3+1]-subtree[(w*nb+root)*3+1];
         oz=pos[w*3+2]-subtree[(w*nb+root)*3+2];}
@@ -54,10 +55,10 @@ __device__ void jacobian(int w,const double* cdof,const double* subtree,
     for(int z=begin+lane;z<end;z+=32) {
         const int k=indexed?body_dof_indices[z]:z;
         if(!indexed&&ancestor[body*nv+k]!=1)continue;
-        const double* d=cdof+(w*nv+k)*6;
-        const double vx=d[3]+(d[1]*oz-d[2]*oy);
-        const double vy=d[4]+(d[2]*ox-d[0]*oz);
-        const double vz=d[5]+(d[0]*oy-d[1]*ox);
+        const real_t* d=cdof+(w*nv+k)*6;
+        const real_t vx=d[3]+(d[1]*oz-d[2]*oy);
+        const real_t vy=d[4]+(d[2]*ox-d[0]*oz);
+        const real_t vz=d[5]+(d[0]*oy-d[1]*ox);
         bool ok=isfinite(vx)&&isfinite(vy)&&isfinite(vz);
         for(int j=0;j<6;j++) ok=ok&&isfinite(d[j]);
         bad=bad||!ok;
@@ -75,24 +76,24 @@ __device__ void jacobian(int w,const double* cdof,const double* subtree,
 __device__ void route(int w,const int32_t* active,const int32_t* status,int32_t* out) {
     out[w]=(active[w]==1 && status[w]==0)?1:0;
 }
-__device__ void selected(int w,const double* qpos,const double* qvel,
-    const double* pos,const double* rot,const double* jp,const double* jr,
-    const double* qm,const double* qbias,const int32_t* active,
+__device__ void selected(int w,const real_t* qpos,const real_t* qvel,
+    const real_t* pos,const real_t* rot,const real_t* jp,const real_t* jr,
+    const real_t* qm,const real_t* qbias,const int32_t* active,
     const int32_t* qi,const int32_t* vi,const int32_t* sparse,int nq,int nv,int nm,
-    double* ee_pos,double* ee_mat,double* vp,double* vo,double* q,double* qd,
-    double* J,double* M,double* bias,int32_t* status) {
+    real_t* ee_pos,real_t* ee_mat,real_t* vp,real_t* vo,real_t* q,real_t* qd,
+    real_t* J,real_t* M,real_t* bias,int32_t* status) {
     if(threadIdx.x>=32) return;
     const int lane=libero_warp::lane();
     if(lane==0) status[w]=0;
-    libero_vec::fill_lane(ee_pos+w*3,3,0.0,lane,32);
-    libero_vec::fill_lane(vp+w*3,3,0.0,lane,32);
-    libero_vec::fill_lane(vo+w*3,3,0.0,lane,32);
-    libero_vec::fill_lane(ee_mat+w*9,9,0.0,lane,32);
-    libero_vec::fill_lane(q+w*7,7,0.0,lane,32);
-    libero_vec::fill_lane(qd+w*7,7,0.0,lane,32);
-    libero_vec::fill_lane(bias+w*7,7,0.0,lane,32);
-    libero_vec::fill_lane(J+w*42,42,0.0,lane,32);
-    libero_vec::fill_lane(M+w*49,49,0.0,lane,32);
+    libero_vec::fill_lane(ee_pos+w*3,3,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(vp+w*3,3,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(vo+w*3,3,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(ee_mat+w*9,9,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(q+w*7,7,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(qd+w*7,7,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(bias+w*7,7,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(J+w*42,42,REAL_C(0.0),lane,32);
+    libero_vec::fill_lane(M+w*49,49,REAL_C(0.0),lane,32);
     __syncwarp();
     if(active[w]==0) return;
     if(active[w]!=1) {if(lane==0)status[w]=1;return;}
@@ -113,7 +114,7 @@ __device__ void selected(int w,const double* qpos,const double* qvel,
     // Retain the accepted sequential GEMV. This patch changes gathers and
     // validation only; it does not replace standard BLAS with a warp sum.
     if(lane==0) for(int r=0;r<3;r++) {
-        double a=0,b=0;
+        real_t a=0,b=0;
         for(int k=0;k<nv;k++) {a+=jp[(w*3+r)*nv+k]*qvel[w*nv+k];b+=jr[(w*3+r)*nv+k]*qvel[w*nv+k];}
         vp[w*3+r]=a;vo[w*3+r]=b;
     }
@@ -124,16 +125,16 @@ __device__ void selected(int w,const double* qpos,const double* qvel,
         const int i=pair*2, v0=vi[i], q0=qi[i];
         if(i+1<7) {
             const int v1=vi[i+1],q1=qi[i+1];
-            double2 x=q1==q0+1?libero_vec::load_pair(qpos+w*nq+q0):make_double2(qpos[w*nq+q0],qpos[w*nq+q1]);
+            real2_t x=q1==q0+1?libero_vec::load_pair(qpos+w*nq+q0):make_real2(qpos[w*nq+q0],qpos[w*nq+q1]);
             libero_vec::store_pair(q+w*7+i,x.x,x.y);
-            x=v1==v0+1?libero_vec::load_pair(qvel+w*nv+v0):make_double2(qvel[w*nv+v0],qvel[w*nv+v1]);
+            x=v1==v0+1?libero_vec::load_pair(qvel+w*nv+v0):make_real2(qvel[w*nv+v0],qvel[w*nv+v1]);
             libero_vec::store_pair(qd+w*7+i,x.x,x.y);
-            x=v1==v0+1?libero_vec::load_pair(qbias+w*nv+v0):make_double2(qbias[w*nv+v0],qbias[w*nv+v1]);
+            x=v1==v0+1?libero_vec::load_pair(qbias+w*nv+v0):make_real2(qbias[w*nv+v0],qbias[w*nv+v1]);
             libero_vec::store_pair(bias+w*7+i,x.x,x.y);
             for(int r=0;r<3;r++) {
-                x=v1==v0+1?libero_vec::load_pair(jp+(w*3+r)*nv+v0):make_double2(jp[(w*3+r)*nv+v0],jp[(w*3+r)*nv+v1]);
+                x=v1==v0+1?libero_vec::load_pair(jp+(w*3+r)*nv+v0):make_real2(jp[(w*3+r)*nv+v0],jp[(w*3+r)*nv+v1]);
                 libero_vec::store_pair(J+w*42+r*7+i,x.x,x.y);
-                x=v1==v0+1?libero_vec::load_pair(jr+(w*3+r)*nv+v0):make_double2(jr[(w*3+r)*nv+v0],jr[(w*3+r)*nv+v1]);
+                x=v1==v0+1?libero_vec::load_pair(jr+(w*3+r)*nv+v0):make_real2(jr[(w*3+r)*nv+v0],jr[(w*3+r)*nv+v1]);
                 libero_vec::store_pair(J+w*42+(r+3)*7+i,x.x,x.y);
             }
         } else {
@@ -148,7 +149,7 @@ __device__ void selected(int w,const double* qpos,const double* qvel,
         const int a0=sparse[row*nv+col];
         if(z+1<49){
             const int a1=sparse[vi[(z+1)/7]*nv+vi[(z+1)%7]];
-            if(a0>=0&&a0<nm-1&&a1==a0+1){const double2 x=libero_vec::load_pair(qm+w*nm+a0);libero_vec::store_pair(M+w*49+z,x.x,x.y);}
+            if(a0>=0&&a0<nm-1&&a1==a0+1){const real2_t x=libero_vec::load_pair(qm+w*nm+a0);libero_vec::store_pair(M+w*49+z,x.x,x.y);}
             else {if(a0>=0)M[w*49+z]=qm[w*nm+a0];if(a1>=0)M[w*49+z+1]=qm[w*nm+a1];}
         }else if(a0>=0)M[w*49+z]=qm[w*nm+a0];
     }
@@ -158,25 +159,25 @@ __device__ void status(int w,const int32_t* producer,const int32_t* adapter,int3
     out[w]=producer[w]?10+producer[w]:adapter[w];
 }
 __device__ void publish_velocity(int w,const int32_t* active,const int32_t* status,
-    const double* vp,const double* vo,double* target,int32_t* first) {
+    const real_t* vp,const real_t* vo,real_t* target,int32_t* first) {
     if(active[w]!=1) return;
     if(status[w]!=0) {if(first[w]==0) first[w]=202;return;}
     for(int k=0;k<3;k++) {target[w*6+k]=vp[w*3+k];target[w*6+k+3]=vo[w*3+k];}
 }
 __device__ void live_bias(int w,const int32_t* mask,const int32_t* first,
     const int64_t* state,const int64_t* source,const int64_t* epoch,
-    const int32_t* valid,const int64_t* written,const double* bias,double* selected,
+    const int32_t* valid,const int64_t* written,const real_t* bias,real_t* selected,
     const int32_t* indices,int32_t* parent_valid,int64_t* parent_written,int nv) {
     parent_valid[w]=0;
     if(mask[w]!=1 || first[w]!=0 || state[w]!=source[w]) return;
     if(valid[w]!=1 || written[w]!=epoch[w]) return;
     const uintptr_t src=(uintptr_t)(bias+w*nv),dst=(uintptr_t)(selected+w*7);
-    const bool overlap=src<=dst?dst-src<(uintptr_t)nv*sizeof(double):src-dst<7*sizeof(double);
+    const bool overlap=src<=dst?dst-src<(uintptr_t)nv*sizeof(real_t):src-dst<7*sizeof(real_t);
     if(overlap){for(int k=0;k<7;k++)selected[w*7+k]=bias[w*nv+indices[k]];}
     else {
     int k=0;
     for(;k+1<7;k+=2){const int i=indices[k],j=indices[k+1];
-        const double2 x=j==i+1?libero_vec::load_pair(bias+w*nv+i):make_double2(bias[w*nv+i],bias[w*nv+j]);
+        const real2_t x=j==i+1?libero_vec::load_pair(bias+w*nv+i):make_real2(bias[w*nv+i],bias[w*nv+j]);
         libero_vec::store_pair(selected+w*7+k,x.x,x.y);}
     selected[w*7+k]=bias[w*nv+indices[k]];
     }
@@ -188,13 +189,13 @@ __device__ void live_bias(int w,const int32_t* mask,const int32_t* first,
 #ifndef OSC_NV
 #define OSC_NV 1
 #endif
-__device__ void local_selected(int w,const double* cdof,const double* subtree,
- const double* pos,const int32_t* active,const int32_t* ancestor,
- int root,int body,int nv,int nb,double* jp,double* jr,int32_t* jac_status,
- int32_t* adapter_active,const double* qpos,const double* qvel,const double* rot,
- const double* qm,const double* qbias,const int32_t* qi,const int32_t* vi,
- const int32_t* sparse,int nq,int nm,double* ep,double* er,double* vp,double* vo,
- double* q,double* qd,double* J,double* M,double* bias,int32_t* adapter_status,int32_t* out_status,
+__device__ void local_selected(int w,const real_t* cdof,const real_t* subtree,
+ const real_t* pos,const int32_t* active,const int32_t* ancestor,
+ int root,int body,int nv,int nb,real_t* jp,real_t* jr,int32_t* jac_status,
+ int32_t* adapter_active,const real_t* qpos,const real_t* qvel,const real_t* rot,
+ const real_t* qm,const real_t* qbias,const int32_t* qi,const int32_t* vi,
+ const int32_t* sparse,int nq,int nm,real_t* ep,real_t* er,real_t* vp,real_t* vo,
+ real_t* q,real_t* qd,real_t* J,real_t* M,real_t* bias,int32_t* adapter_status,int32_t* out_status,
  const int32_t* body_dof_offsets=nullptr,const int32_t* body_dof_indices=nullptr){
  if(threadIdx.x>=32) return;
  jacobian(w,cdof,subtree,pos,active,ancestor,root,body,nv,nb,jp,jr,jac_status,body_dof_offsets,body_dof_indices);

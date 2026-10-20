@@ -1,4 +1,5 @@
 """Cold allocation and real same-stream consumers for RP03/RP06 new ABI."""
+import libero.gpu.precision as scalar
 from pathlib import Path
 from types import SimpleNamespace
 import hashlib
@@ -26,7 +27,7 @@ class _WarpPayloadStorage:
         self.stream=stream;self.names=tuple(dynamic)
         self._schema={n:_payload(v)[1:] for n,v in dynamic.items()}
         self._data={};self._saved={};self._closed=False
-        types={np.dtype('float64'):wp.float64,np.dtype('int32'):wp.int32,np.dtype('int64'):wp.int64}
+        types={np.dtype('float64'):scalar.wp_real,np.dtype('int32'):wp.int32,np.dtype('int64'):wp.int64}
         def allocate(value):
             raw,dtype,shape=_payload(value)
             return wp.array(np.frombuffer(raw,dtype=dtype).reshape(shape),dtype=types[dtype],device=stream.device)

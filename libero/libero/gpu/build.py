@@ -5,10 +5,8 @@ from pathlib import Path
 
 
 def main():
-    from libero.gpu.host.build.aot import project_root, compile_catalog
-    from libero.gpu.host.build.task_catalog import prepare_catalog, write_parameter_catalog
-    from libero.gpu.host.paths import GPU_ROOT
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--precision', choices=('fp64', 'fp32'), default=None)
     parser.add_argument('--build-root', type=Path)
     parser.add_argument('--num-envs', type=int, default=8)
     parser.add_argument('--seed', type=int, default=0)
@@ -18,8 +16,13 @@ def main():
     args = parser.parse_args()
     if min(args.num_envs, args.jobs, args.catalog_jobs) < 1:
         parser.error('environment and worker counts must be positive')
-    root = project_root(args.build_root)
-    root.mkdir(parents=True, exist_ok=True)
+    import libero.gpu.precision as scalar
+    scalar.select(args.precision)
+    from libero.gpu.host.build.aot import compile_catalog
+    from libero.gpu.host.build.project_paths import prepare_precision_project
+    from libero.gpu.host.build.task_catalog import prepare_catalog, write_parameter_catalog
+    from libero.gpu.host.paths import GPU_ROOT
+    root = prepare_precision_project(args.build_root).precision
     def census(row, done, total):
         print(json.dumps(dict(phase='instantiate', done=done, total=total, task=row['key'])), flush=True)
     tasks = prepare_catalog(root, jobs=args.catalog_jobs, seed=args.seed, progress=census)

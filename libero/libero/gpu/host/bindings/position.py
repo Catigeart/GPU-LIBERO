@@ -4,6 +4,7 @@ Python only binds stable arrays and retains prepared admission/history boundarie
 The body recurrence and mass tree retain their native topological order; frame
 objects run cooperatively between block barriers. No generated arithmetic is used.
 """
+import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from types import MethodType
@@ -148,7 +149,7 @@ def _create_position_snapshot_plan(d, build_root):
     if (mask.dtype!=wp.int32 or mask.shape!=(d.capacity,) or
             mask.device!=d.device or not mask.is_contiguous):
         raise ValueError('position snapshot requires the retained world mask')
-    kinds={wp.float64:'f64',wp.int32:'i32',wp.int64:'i64'}
+    kinds={scalar.wp_real:'f64',wp.int32:'i32',wp.int64:'i64'}
     stages=[]
     for name,source in hold.views.items():
         before=hold.before[name]
@@ -232,7 +233,7 @@ def _dataflow_source(d,*,bounds_cache=None):
     if bounds_cache:
         originals.append((bounds_cache['function'],bounds_cache['args'],'lane0'))
     values=[];specs=[];seen={};rows={};objects=0
-    ctypes={wp.float64:'double*',wp.float32:'float*',wp.int32:'int32_t*',wp.int64:'int64_t*'}
+    ctypes={scalar.wp_real:'real_t*',wp.float32:'float*',wp.int32:'int32_t*',wp.int64:'int64_t*'}
     for name,args,mode in originals:
         key=name.split('::')[-1]
         if key in ('frames_objects','frames_objects_typed'):key=('geom','site')[objects];objects+=1
@@ -273,18 +274,18 @@ def _dataflow_source(d,*,bounds_cache=None):
         return '    libero_position::copy_block(%s,%s,%d);'%(shifted(key,index),source,value.size//d.capacity)
     # This shared prefix lives through frames -> compos; body quaternions and
     # normalization scratch expire before the packed mass phase reuses memory.
-    code=[r'extern __shared__ double position_scratch[];']
+    code=['extern __shared__ real_t position_scratch[];']
     offset=0
     for name,count in [('s_xmat',9*nb),('s_anchor',3*nj),('s_axis',3*nj),
                        ('s_xipos',3*nb),('s_ximat',9*nb)]:
-        code.append('double* %s=position_scratch+%d;'%(name,offset));offset+=count
+        code.append('real_t* %s=position_scratch+%d;'%(name,offset));offset+=count
     if bounds_cache:
-        code.append('double* s_geom_positions=position_scratch+%d;'%offset);offset+=geom_shared
-    code.append('double* phase=position_scratch+%d;'%offset)
+        code.append('real_t* s_geom_positions=position_scratch+%d;'%offset);offset+=geom_shared
+    code.append('real_t* phase=position_scratch+%d;'%offset)
     offset=0
     for name,count in [('s_xpos',3*nb),('s_xquat',4*nb),('s_qtmp',nq),
                        ('s_mqtmp',4*nm),('s_world_xipos',3),('s_world_ximat',9)]:
-        code.append('double* %s=phase+%d;'%(name,offset));offset+=count
+        code.append('real_t* %s=phase+%d;'%(name,offset));offset+=count
     body_base_count=len(_MODEL)+4+len(_DATA)+len(_DIAG)
     body={i:shifted('body',i) for i in range(15,body_base_count)}
     body.update({19:'s_qtmp',20:'s_mqtmp',21:'s_xpos',22:'s_xquat',23:'s_xmat',
@@ -323,7 +324,7 @@ def _dataflow_source(d,*,bounds_cache=None):
     offset=0
     for name,count in [('s_com',3*nb),('s_cinert',10*nb),('s_crb',10*nb),('s_cdof',6*nv),
                        ('s_qm',nM),('s_ld',nM),('s_inv',nv),('s_sqrt_inv',nv),('s_solution',4*nv)]:
-        code.append('double* %s=phase+%d;'%(name,offset));offset+=count
+        code.append('real_t* %s=phase+%d;'%(name,offset));offset+=count
     compos={0:shifted('compos',0),1:'s_xipos',2:'s_ximat',3:'s_anchor',4:'s_xmat',5:'s_axis',
             17:'s_com',18:'s_cinert',19:'s_cdof',20:shifted('compos',20)}
     crb={0:shifted('crb',0),1:'s_cinert',2:'s_cdof',13:'s_crb',14:'s_qm',15:shifted('crb',15)}

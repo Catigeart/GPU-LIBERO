@@ -6,6 +6,7 @@ Pass the existing function as fallback; all disabled, negative, mixed and
 unmeasured selections return that same object. This API retains local function
 qualification, not episode cadence or composition performance qualification.
 """
+import libero.gpu.precision as scalar
 from pathlib import Path
 from types import MappingProxyType
 from .osc_local_policy import CONTRACTS, select_scope
@@ -124,8 +125,8 @@ def prepare_local(algorithm_id, nworld, bindings, build_root, *, device, stream,
             stages.append(('osc_cuda::seed_int' if key in INTS else 'osc_cuda::seed_double',
                 [a,data[key]] if key in INTS else [a,data[key],WIDTHS[key]], 'lane0'))
         cache = [wp.zeros(nworld,dtype=wp.int32,device=device),
-                 wp.zeros((nworld,91),dtype=wp.float64,device=device),
-                 wp.zeros((nworld,145),dtype=wp.float64,device=device),
+                 wp.zeros((nworld,91),dtype=scalar.wp_real,device=device),
+                 wp.zeros((nworld,145),dtype=scalar.wp_real,device=device),
                  wp.zeros((nworld,3),dtype=wp.int32,device=device),
                  wp.zeros(nworld,dtype=wp.int32,device=device),
                  wp.zeros(nworld,dtype=wp.int32,device=device),
@@ -136,7 +137,7 @@ def prepare_local(algorithm_id, nworld, bindings, build_root, *, device, stream,
                         for key in CONTROL] + cache, 'block'))
     elif algorithm_id == 'OSC02':
         defines['OSC_MASS_RECEIPT'] = 0
-        receipt = wp.zeros((nworld,49),dtype=wp.float64,device=device)
+        receipt = wp.zeros((nworld,49),dtype=scalar.wp_real,device=device)
         leaves.append(receipt)
         stages = [('osc_component::mass',[get('mass',(7,7)),get('jacobian',(6,7)),
             get('X',42),get('A',36),get('status',None,'int32'),1,receipt],'block')]
@@ -176,7 +177,7 @@ def prepare_local(algorithm_id, nworld, bindings, build_root, *, device, stream,
         ints = {'active','ancestor','jac_status','adapter_active','qi','vi','sparse',
                 'adapter_status','status','body_dof_offsets','body_dof_indices'}
         for key,shape in shapes.items():
-            a = _array(wp,device,b[key],shape,wp.int32 if key in ints else wp.float64)
+            a = _array(wp,device,b[key],shape,wp.int32 if key in ints else scalar.wp_real)
             leaves.append(a)
             leaf_keys.add((id(b), key))
         offsets,indices,ancestor = (b[key].numpy() for key in

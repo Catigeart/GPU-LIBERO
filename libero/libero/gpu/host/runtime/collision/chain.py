@@ -23,6 +23,7 @@ error blocks the finalize commit for that world; unwritten outputs keep the
 dirty prefill. Unimplemented routes never return a clean zero-contact set.
 """
 from __future__ import annotations
+import libero.gpu.precision as scalar
 
 import numpy as np
 import warp as wp
@@ -31,27 +32,27 @@ from .errors import ERR_BAD_ACTIVE, ERR_BAD_COUNT, ERR_CAPACITY, ERR_INTERNAL, E
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
 
-MINVAL = wp.float64(1.0e-15)
+MINVAL = scalar.wp_real(1.0e-15)
 
 
 # --------------------------------------------------------------------- bounds
 
 
 @wp.func
-def _q2m(out: wp.array(dtype=wp.float64), o: wp.int32,
-         w: wp.float64, x: wp.float64, y: wp.float64, z: wp.float64):
+def _q2m(out: wp.array(dtype=scalar.wp_real), o: wp.int32,
+         w: scalar.wp_real, x: scalar.wp_real, y: scalar.wp_real, z: scalar.wp_real):
     # mju_quat2Mat, engine_util_spatial.c:144-180 (row-major, exact form).
     # null-quat identity branch first (original res[0..8] = identity).
-    if w == wp.float64(1.0) and x == wp.float64(0.0) and y == wp.float64(0.0) and z == wp.float64(0.0):
-        out[o] = wp.float64(1.0)
-        out[o + 1] = wp.float64(0.0)
-        out[o + 2] = wp.float64(0.0)
-        out[o + 3] = wp.float64(0.0)
-        out[o + 4] = wp.float64(1.0)
-        out[o + 5] = wp.float64(0.0)
-        out[o + 6] = wp.float64(0.0)
-        out[o + 7] = wp.float64(0.0)
-        out[o + 8] = wp.float64(1.0)
+    if w == scalar.wp_real(1.0) and x == scalar.wp_real(0.0) and y == scalar.wp_real(0.0) and z == scalar.wp_real(0.0):
+        out[o] = scalar.wp_real(1.0)
+        out[o + 1] = scalar.wp_real(0.0)
+        out[o + 2] = scalar.wp_real(0.0)
+        out[o + 3] = scalar.wp_real(0.0)
+        out[o + 4] = scalar.wp_real(1.0)
+        out[o + 5] = scalar.wp_real(0.0)
+        out[o + 6] = scalar.wp_real(0.0)
+        out[o + 7] = scalar.wp_real(0.0)
+        out[o + 8] = scalar.wp_real(1.0)
     else:
         q00 = w * w
         q01 = w * x
@@ -66,18 +67,18 @@ def _q2m(out: wp.array(dtype=wp.float64), o: wp.int32,
         out[o] = q00 + q11 - q22 - q33
         out[o + 4] = q00 - q11 + q22 - q33
         out[o + 8] = q00 - q11 - q22 + q33
-        out[o + 1] = wp.float64(2.0) * (q12 - q03)
-        out[o + 2] = wp.float64(2.0) * (q13 + q02)
-        out[o + 3] = wp.float64(2.0) * (q12 + q03)
-        out[o + 5] = wp.float64(2.0) * (q23 - q01)
-        out[o + 6] = wp.float64(2.0) * (q13 - q02)
-        out[o + 7] = wp.float64(2.0) * (q23 + q01)
+        out[o + 1] = scalar.wp_real(2.0) * (q12 - q03)
+        out[o + 2] = scalar.wp_real(2.0) * (q13 + q02)
+        out[o + 3] = scalar.wp_real(2.0) * (q12 + q03)
+        out[o + 5] = scalar.wp_real(2.0) * (q23 - q01)
+        out[o + 6] = scalar.wp_real(2.0) * (q13 - q02)
+        out[o + 7] = scalar.wp_real(2.0) * (q23 + q01)
 
 
 @wp.func
-def _mulq(ar: wp.array(dtype=wp.float64), ai: wp.int32,
-          br: wp.array(dtype=wp.float64), bi: wp.int32,
-          dst: wp.array(dtype=wp.float64), di: wp.int32):
+def _mulq(ar: wp.array(dtype=scalar.wp_real), ai: wp.int32,
+          br: wp.array(dtype=scalar.wp_real), bi: wp.int32,
+          dst: wp.array(dtype=scalar.wp_real), di: wp.int32):
     a0 = ar[ai]
     a1 = ar[ai + 1]
     a2 = ar[ai + 2]
@@ -93,17 +94,17 @@ def _mulq(ar: wp.array(dtype=wp.float64), ai: wp.int32,
 
 
 @wp.func
-def _norm4(x: wp.array(dtype=wp.float64), o: wp.int32) -> bool:
+def _norm4(x: wp.array(dtype=scalar.wp_real), o: wp.int32) -> bool:
     n = wp.sqrt(x[o] * x[o] + x[o + 1] * x[o + 1] + x[o + 2] * x[o + 2] + x[o + 3] * x[o + 3])
-    if not (n == n) or n > wp.float64(1.0e300):
+    if not (n == n) or n > scalar.wp_real(scalar.norm_limit):
         return False
     if n < MINVAL:
-        x[o] = wp.float64(1.0)
-        x[o + 1] = wp.float64(0.0)
-        x[o + 2] = wp.float64(0.0)
-        x[o + 3] = wp.float64(0.0)
+        x[o] = scalar.wp_real(1.0)
+        x[o + 1] = scalar.wp_real(0.0)
+        x[o + 2] = scalar.wp_real(0.0)
+        x[o + 3] = scalar.wp_real(0.0)
     else:
-        inv = wp.float64(1.0) / n
+        inv = scalar.wp_real(1.0) / n
         x[o] *= inv
         x[o + 1] *= inv
         x[o + 2] *= inv
@@ -112,19 +113,28 @@ def _norm4(x: wp.array(dtype=wp.float64), o: wp.int32) -> bool:
 
 
 @wp.func
-def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
-          eig: wp.array(dtype=wp.float64), eo: wp.int32,
-          frame: wp.array(dtype=wp.float64), fo: wp.int32,
-          quat: wp.array(dtype=wp.float64), qo: wp.int32,
-          tmp: wp.array(dtype=wp.float64), tm: wp.int32,
-          scratch: wp.array(dtype=wp.float64), sc: wp.int32) -> wp.int32:
+def _eig3(cov: wp.array(dtype=scalar.wp_real), co: wp.int32,
+          eig: wp.array(dtype=scalar.wp_real), eo: wp.int32,
+          frame: wp.array(dtype=scalar.wp_real), fo: wp.int32,
+          quat: wp.array(dtype=scalar.wp_real), qo: wp.int32,
+          tmp: wp.array(dtype=scalar.wp_real), tm: wp.int32,
+          scratch: wp.array(dtype=scalar.wp_real), sc: wp.int32) -> wp.int32:
     """Port of the accepted C02 c02_eig3 (500-iter quaternion Jacobi,
     strict offdiagonal pivot ties, three strict eigenvalue sort passes).
     Returns iteration count or -1 on nonfinite."""
-    quat[qo] = wp.float64(1.0)
-    quat[qo + 1] = wp.float64(0.0)
-    quat[qo + 2] = wp.float64(0.0)
-    quat[qo + 3] = wp.float64(0.0)
+    quat[qo] = scalar.wp_real(1.0)
+    quat[qo + 1] = scalar.wp_real(0.0)
+    quat[qo + 2] = scalar.wp_real(0.0)
+    quat[qo + 3] = scalar.wp_real(0.0)
+    off_tolerance = scalar.wp_real(1.0e-12)
+    if scalar.bits == 32:
+        norm = scalar.wp_real(0.0)
+        for row in range(3):
+            row_sum = scalar.wp_real(0.0)
+            for col in range(3):
+                row_sum += wp.abs(cov[co + 3 * row + col])
+            norm = wp.max(norm, row_sum)
+        off_tolerance = wp.max(off_tolerance, scalar.wp_real(8.0 * scalar.epsilon) * norm)
     iters = wp.int32(0)
     converged = wp.int32(0)
     for it in range(500):
@@ -133,13 +143,13 @@ def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
         # D = frame^T * cov * frame
         for i in range(3):
             for j in range(3):
-                acc = wp.float64(0.0)
+                acc = scalar.wp_real(0.0)
                 for k in range(3):
                     acc += frame[fo + 3 * k + i] * cov[co + 3 * k + j]
                 scratch[sc + 3 * i + j] = acc
         for i in range(3):
             for j in range(3):
-                acc = wp.float64(0.0)
+                acc = scalar.wp_real(0.0)
                 for k in range(3):
                     acc += scratch[sc + 3 * i + k] * frame[fo + 3 * k + j]
                 tmp[tm + 3 * i + j] = acc
@@ -150,13 +160,13 @@ def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
         ck = wp.int32(1)
         rotk = wp.int32(2)
         d01 = tmp[tm + 1]
-        if d01 < wp.float64(0.0):
+        if d01 < scalar.wp_real(0.0):
             d01 = -d01
         d02 = tmp[tm + 2]
-        if d02 < wp.float64(0.0):
+        if d02 < scalar.wp_real(0.0):
             d02 = -d02
         d12 = tmp[tm + 5]
-        if d12 < wp.float64(0.0):
+        if d12 < scalar.wp_real(0.0):
             d12 = -d12
         if d01 > d02 and d01 > d12:
             rk = 0
@@ -172,35 +182,39 @@ def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
             rotk = 0
         off = tmp[tm + 3 * rk + ck]
         aoff = off
-        if aoff < wp.float64(0.0):
+        if aoff < scalar.wp_real(0.0):
             aoff = -aoff
-        if aoff < wp.float64(1.0e-12):
+        if aoff < off_tolerance:
             converged = wp.int32(1)
             break
-        tau = (tmp[tm + 4 * ck] - tmp[tm + 4 * rk]) / (wp.float64(2.0) * off)
-        t = wp.float64(0.0)
-        if tau >= wp.float64(0.0):
-            t = wp.float64(1.0) / (tau + wp.sqrt(wp.float64(1.0) + tau * tau))
+        tau = (tmp[tm + 4 * ck] - tmp[tm + 4 * rk]) / (scalar.wp_real(2.0) * off)
+        t = scalar.wp_real(0.0)
+        if tau >= scalar.wp_real(0.0):
+            t = scalar.wp_real(1.0) / (tau + wp.sqrt(scalar.wp_real(1.0) + tau * tau))
         else:
-            t = wp.float64(-1.0) / (-tau + wp.sqrt(wp.float64(1.0) + tau * tau))
-        c = wp.float64(1.0) / wp.sqrt(wp.float64(1.0) + t * t)
-        if c > wp.float64(1.0) - wp.float64(1.0e-12):
+            t = scalar.wp_real(-1.0) / (-tau + wp.sqrt(scalar.wp_real(1.0) + tau * tau))
+        c = scalar.wp_real(1.0) / wp.sqrt(scalar.wp_real(1.0) + t * t)
+        if scalar.bits == 64 and c > scalar.wp_real(1.0) - scalar.wp_real(1.0e-12):
             converged = wp.int32(1)
             break
         # express rotation as quaternion (engine_util_solve.c:770-774)
         #   tmp[rotk+1] = (tau >= 0 ? -sqrt(0.5-0.5*c) : +sqrt(0.5-0.5*c));
         #   if (rotk == 1) tmp[rotk+1] = -tmp[rotk+1];
-        tmp[tm] = wp.float64(0.0)
-        tmp[tm + 1] = wp.float64(0.0)
-        tmp[tm + 2] = wp.float64(0.0)
-        tmp[tm + 3] = wp.float64(0.0)
-        s = wp.sqrt(wp.float64(0.5) - wp.float64(0.5) * c)
-        if tau >= wp.float64(0.0):
+        tmp[tm] = scalar.wp_real(0.0)
+        tmp[tm + 1] = scalar.wp_real(0.0)
+        tmp[tm + 2] = scalar.wp_real(0.0)
+        tmp[tm + 3] = scalar.wp_real(0.0)
+        s = scalar.wp_real(0.0)
+        if scalar.bits == 32:
+            s = wp.abs(t) * c / wp.sqrt(scalar.wp_real(2.0) * (scalar.wp_real(1.0) + c))
+        else:
+            s = wp.sqrt(scalar.wp_real(0.5) - scalar.wp_real(0.5) * c)
+        if tau >= scalar.wp_real(0.0):
             s = -s
         if rotk == 1:
             s = -s
         tmp[tm + rotk + 1] = s
-        tmp[tm] = wp.sqrt(wp.float64(1.0) - s * s)
+        tmp[tm] = wp.sqrt(scalar.wp_real(1.0) - s * s)
         if not _norm4(tmp, tm):
             return wp.int32(-1)
         # quat = quat * tmp  (mulquat writes into scratch then copy)
@@ -216,10 +230,10 @@ def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
             tv = eig[eo + j1]
             eig[eo + j1] = eig[eo + j1 + 1]
             eig[eo + j1 + 1] = tv
-            tmp[tm] = wp.float64(0.707106781186548)
-            tmp[tm + 1] = wp.float64(0.0)
-            tmp[tm + 2] = wp.float64(0.0)
-            tmp[tm + 3] = wp.float64(0.0)
+            tmp[tm] = scalar.wp_real(0.707106781186548)
+            tmp[tm + 1] = scalar.wp_real(0.0)
+            tmp[tm + 2] = scalar.wp_real(0.0)
+            tmp[tm + 3] = scalar.wp_real(0.0)
             tmp[tm + (j1 + 2) % 3 + 1] = tmp[tm]
             _mulq(quat, qo, tmp, tm, scratch, sc)
             for k in range(4):
@@ -234,15 +248,15 @@ def _eig3(cov: wp.array(dtype=wp.float64), co: wp.int32,
 
 @wp.kernel(enable_backward=False)
 def _bounds_kernel(
-        xpos: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
+        xpos: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32),
         gates: wp.array(dtype=wp.int32), collision_mode: wp.array(dtype=wp.int32),
-        geom_rbound: wp.array(dtype=wp.float64), geom_margin: wp.array(dtype=wp.float64),
+        geom_rbound: wp.array(dtype=scalar.wp_real), geom_margin: wp.array(dtype=scalar.wp_real),
         body_geomadr: wp.array(dtype=wp.int32), body_geomnum: wp.array(dtype=wp.int32),
         geom_bodyid: wp.array(dtype=wp.int32),
-        aabb: wp.array(dtype=wp.float64), frame: wp.array(dtype=wp.float64),
+        aabb: wp.array(dtype=scalar.wp_real), frame: wp.array(dtype=scalar.wp_real),
         entered: wp.array(dtype=wp.int32), count: wp.array(dtype=wp.int32),
         status: wp.array(dtype=wp.int32),
-        scratch: wp.array(dtype=wp.float64),
+        scratch: wp.array(dtype=scalar.wp_real),
         ngeom: int, nbody: int):
     """C02-equivalent bounds: cen/cov over nonworld geoms (ascending geom id),
     eig3, then per-body AABB projecting onto frame rows with rbound then margin."""
@@ -259,9 +273,9 @@ def _bounds_kernel(
     if gates[0] != 0 or gates[1] != 0 or gates[2] == 0 or nbody < 2 or collision_mode[0] == 1:
         return
     gp = w * ngeom * 3
-    cx = wp.float64(0.0)
-    cy = wp.float64(0.0)
-    cz = wp.float64(0.0)
+    cx = scalar.wp_real(0.0)
+    cy = scalar.wp_real(0.0)
+    cz = scalar.wp_real(0.0)
     cnt = wp.int32(0)
     for i in range(ngeom):
         if geom_bodyid[i] != 0:
@@ -278,15 +292,15 @@ def _bounds_kernel(
     if cnt == 0:
         # accepted C02: entered stays 0 on the zero-nonworld-geom early exit
         return
-    cx /= wp.float64(cnt)
-    cy /= wp.float64(cnt)
-    cz /= wp.float64(cnt)
+    cx /= scalar.wp_real(cnt)
+    cy /= scalar.wp_real(cnt)
+    cz /= scalar.wp_real(cnt)
     # scratch layout per world (34 doubles):
     #   [0:9] cov, [9:18] eig3 D/tmp, [18:27] eig3 work, [27:30] eigval,
     #   [30:34] quat
     sc = w * 34
     for k in range(9):
-        scratch[sc + k] = wp.float64(0.0)
+        scratch[sc + k] = scalar.wp_real(0.0)
     for i in range(ngeom):
         if geom_bodyid[i] != 0:
             dx = xpos[gp + 3 * i] - cx
@@ -304,7 +318,7 @@ def _bounds_kernel(
     # original: cov[i] /= cnt (engine_collision_driver.c:729); division, not
     # multiplication by a reciprocal (R01-33 bit-exactness).
     for k in range(9):
-        scratch[sc + k] = scratch[sc + k] / wp.float64(cnt)
+        scratch[sc + k] = scratch[sc + k] / scalar.wp_real(cnt)
     iters = _eig3(scratch, sc, scratch, sc + 27, frame, w * 9,
                   scratch, sc + 30, scratch, sc + 9, scratch, sc + 18)
     if iters < 0:
@@ -315,7 +329,7 @@ def _bounds_kernel(
     for b in range(nbody):
         if b == 0 or body_geomnum[b] == 0:
             for k in range(6):
-                aabb[w * nbody * 6 + 6 * b + k] = wp.float64(0.0)
+                aabb[w * nbody * 6 + 6 * b + k] = scalar.wp_real(0.0)
             continue
         first = wp.bool(True)
         for i in range(body_geomnum[b]):
@@ -355,7 +369,7 @@ def _can_collide(geom_contype: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _broadphase_kernel(
-        aabb: wp.array(dtype=wp.float64), active: wp.array(dtype=wp.int32),
+        aabb: wp.array(dtype=scalar.wp_real), active: wp.array(dtype=wp.int32),
         gates: wp.array(dtype=wp.int32), collision_mode: wp.array(dtype=wp.int32),
         body_weldid: wp.array(dtype=wp.int32), body_parentid: wp.array(dtype=wp.int32),
         body_geomadr: wp.array(dtype=wp.int32), body_geomnum: wp.array(dtype=wp.int32),
@@ -642,7 +656,7 @@ def _stagebuild_kernel(
 def _req_to_dispatch_kernel(
         out_req: wp.array(dtype=wp.int32), req_count: wp.array(dtype=wp.int32),
         active: wp.array(dtype=wp.int32),
-        d_raw: wp.array(dtype=wp.int32), d_usermargin: wp.array(dtype=wp.float64),
+        d_raw: wp.array(dtype=wp.int32), d_usermargin: wp.array(dtype=scalar.wp_real),
         d_counts: wp.array(dtype=wp.int32), d_active: wp.array(dtype=wp.int32),
         d_origin: wp.array(dtype=wp.int32),
         seg_count: wp.array(dtype=wp.int32),
@@ -678,7 +692,7 @@ def _req_to_dispatch_kernel(
             d_raw[(w * d_slots + req) * 3] = p
             d_raw[(w * d_slots + req) * 3 + 1] = -1
             d_raw[(w * d_slots + req) * 3 + 2] = 0
-            d_usermargin[w * d_slots + req] = wp.float64(0.0)
+            d_usermargin[w * d_slots + req] = scalar.wp_real(0.0)
             d_origin[(w * d_slots + req) * 2] = -req - 1
             d_origin[(w * d_slots + req) * 2 + 1] = -1
             req += 1
@@ -696,7 +710,7 @@ def _req_to_dispatch_kernel(
                     d_raw[(w * d_slots + req) * 3] = g1
                     d_raw[(w * d_slots + req) * 3 + 1] = g2
                     d_raw[(w * d_slots + req) * 3 + 2] = 0
-                    d_usermargin[w * d_slots + req] = wp.float64(0.0)
+                    d_usermargin[w * d_slots + req] = scalar.wp_real(0.0)
                     d_origin[(w * d_slots + req) * 2] = gs
                     d_origin[(w * d_slots + req) * 2 + 1] = r
                     req += 1
@@ -712,7 +726,7 @@ def _req_to_dispatch_kernel(
             d_raw[(w * d_slots + req) * 3] = p
             d_raw[(w * d_slots + req) * 3 + 1] = -1
             d_raw[(w * d_slots + req) * 3 + 2] = 0
-            d_usermargin[w * d_slots + req] = wp.float64(0.0)
+            d_usermargin[w * d_slots + req] = scalar.wp_real(0.0)
             d_origin[(w * d_slots + req) * 2] = -req - 1
             d_origin[(w * d_slots + req) * 2 + 1] = -1
             req += 1
@@ -724,14 +738,14 @@ def _req_to_dispatch_kernel(
 
 @wp.kernel(enable_backward=False)
 def _dispatch_to_calls_kernel(
-        out_i: wp.array(dtype=wp.int32), out_f: wp.array(dtype=wp.float64),
+        out_i: wp.array(dtype=wp.int32), out_f: wp.array(dtype=scalar.wp_real),
         call_index: wp.array(dtype=wp.int32), call_count: wp.array(dtype=wp.int32),
         active: wp.array(dtype=wp.int32), d_status: wp.array(dtype=wp.int32),
         d_origin: wp.array(dtype=wp.int32),
         stage_route: wp.array(dtype=wp.int32), stage_slots: int,
         c_g1: wp.array(dtype=wp.int32), c_g2: wp.array(dtype=wp.int32),
         c_t1: wp.array(dtype=wp.int32), c_t2: wp.array(dtype=wp.int32),
-        c_margin: wp.array(dtype=wp.float64),
+        c_margin: wp.array(dtype=scalar.wp_real),
         c_ipair: wp.array(dtype=wp.int32), c_user: wp.array(dtype=wp.int32),
         c_segment: wp.array(dtype=wp.int32), c_sort: wp.array(dtype=wp.int32),
         c_route_slot: wp.array(dtype=wp.int32),
@@ -776,14 +790,14 @@ def _calls_to_finalize_kernel(
         c_t1: wp.array(dtype=wp.int32), c_t2: wp.array(dtype=wp.int32),
         c_ipair: wp.array(dtype=wp.int32), c_user: wp.array(dtype=wp.int32),
         c_segment: wp.array(dtype=wp.int32), c_sort: wp.array(dtype=wp.int32),
-        c_count: wp.array(dtype=wp.int32), c_margin: wp.array(dtype=wp.float64),
-        det_raw: wp.array(dtype=wp.float64), det_raw_count: wp.array(dtype=wp.int32),
+        c_count: wp.array(dtype=wp.int32), c_margin: wp.array(dtype=scalar.wp_real),
+        det_raw: wp.array(dtype=scalar.wp_real), det_raw_count: wp.array(dtype=wp.int32),
         det_status: wp.array(dtype=wp.int32),
-        f_raw: wp.array(dtype=wp.float64), f_raw_count: wp.array(dtype=wp.int32),
+        f_raw: wp.array(dtype=scalar.wp_real), f_raw_count: wp.array(dtype=wp.int32),
         f_call_count: wp.array(dtype=wp.int32), f_active: wp.array(dtype=wp.int32),
         f_types: wp.array(dtype=wp.int32), f_segment: wp.array(dtype=wp.int32),
         f_sort: wp.array(dtype=wp.int32),
-        p_route: wp.array(dtype=wp.int32), p_usermargin: wp.array(dtype=wp.float64),
+        p_route: wp.array(dtype=wp.int32), p_usermargin: wp.array(dtype=scalar.wp_real),
         p_counts: wp.array(dtype=wp.int32),
         f_status: wp.array(dtype=wp.int32),
         active: wp.array(dtype=wp.int32),
@@ -949,8 +963,8 @@ def _reset_error_kernel(reset: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _restore_failed_contacts_kernel(active: wp.array(dtype=wp.int32),
-        fe_code: wp.array(dtype=wp.int32), before_f: wp.array(dtype=wp.float64),
-        before_i: wp.array(dtype=wp.int32), public_f: wp.array(dtype=wp.float64),
+        fe_code: wp.array(dtype=wp.int32), before_f: wp.array(dtype=scalar.wp_real),
+        before_i: wp.array(dtype=wp.int32), public_f: wp.array(dtype=scalar.wp_real),
         public_i: wp.array(dtype=wp.int32), capacity: int):
     w = wp.tid()
     if active[w] == 0 or fe_code[w] != 0:
@@ -1059,7 +1073,7 @@ def _restore_inactive_i32(active: wp.array(dtype=wp.int32),
 
 @wp.kernel(enable_backward=False)
 def _restore_inactive_f64(active: wp.array(dtype=wp.int32),
-        before: wp.array(dtype=wp.float64), public: wp.array(dtype=wp.float64),
+        before: wp.array(dtype=scalar.wp_real), public: wp.array(dtype=scalar.wp_real),
         stride: int):
     i = wp.tid()
     if active[i // stride] == 0:
@@ -1169,8 +1183,8 @@ class CollisionChainWorkspace:
         self.geom_type = wp.array(i32('geom_type', (self.ngeom,)), dtype=wp.int32, device=device)
         self.geom_contype = wp.array(i32('geom_contype', (self.ngeom,)), dtype=wp.int32, device=device)
         self.geom_conaffinity = wp.array(i32('geom_conaffinity', (self.ngeom,)), dtype=wp.int32, device=device)
-        self.geom_rbound = wp.array(f64('geom_rbound', (self.ngeom,)), dtype=wp.float64, device=device)
-        self.geom_margin = wp.array(f64('geom_margin', (self.ngeom,)), dtype=wp.float64, device=device)
+        self.geom_rbound = wp.array(f64('geom_rbound', (self.ngeom,)), dtype=scalar.wp_real, device=device)
+        self.geom_margin = wp.array(f64('geom_margin', (self.ngeom,)), dtype=scalar.wp_real, device=device)
         self.filterparent_disabled = wp.array(
             np.array([int(static.get('filterparent_disabled', 0))], np.int32),
             dtype=wp.int32, device=device)
@@ -1201,15 +1215,15 @@ class CollisionChainWorkspace:
 
         # ---- chain buffers
         N = nworld
-        self.xpos = wp.zeros(N * self.ngeom * 3, dtype=wp.float64, device=device)
-        self.xmat = wp.zeros(N * self.ngeom * 9, dtype=wp.float64, device=device)
+        self.xpos = wp.zeros(N * self.ngeom * 3, dtype=scalar.wp_real, device=device)
+        self.xmat = wp.zeros(N * self.ngeom * 9, dtype=scalar.wp_real, device=device)
         self.active = wp.zeros(N, dtype=wp.int32, device=device)
-        self.aabb = wp.zeros(N * self.nbody * 6, dtype=wp.float64, device=device)
-        self.frame = wp.zeros(N * 9, dtype=wp.float64, device=device)
+        self.aabb = wp.zeros(N * self.nbody * 6, dtype=scalar.wp_real, device=device)
+        self.frame = wp.zeros(N * 9, dtype=scalar.wp_real, device=device)
         self.bounds_entered = wp.zeros(N, dtype=wp.int32, device=device)
         self.bounds_count = wp.zeros(N, dtype=wp.int32, device=device)
         self.bounds_status = wp.zeros(N, dtype=wp.int32, device=device)
-        self.bounds_scratch = wp.zeros(N * 34, dtype=wp.float64, device=device)
+        self.bounds_scratch = wp.zeros(N * 34, dtype=scalar.wp_real, device=device)
         self.out_pair = wp.zeros(N * self.pair_capacity, dtype=wp.int32, device=device)
         self.out_npair = wp.zeros(N, dtype=wp.int32, device=device)
         self.bp_status = wp.zeros(N, dtype=wp.int32, device=device)
@@ -1355,7 +1369,7 @@ class CollisionChainWorkspace:
         self.fe_item = wp.full(N, -1, dtype=wp.int32, device=device)
         self.effective_active = wp.zeros(N, dtype=wp.int32, device=device)
         self.reset_mask = wp.zeros(N, dtype=wp.int32, device=device)
-        self.before_contact_f = wp.zeros(N * self.contact_capacity * 65, dtype=wp.float64, device=device)
+        self.before_contact_f = wp.zeros(N * self.contact_capacity * 65, dtype=scalar.wp_real, device=device)
         self.before_contact_i = wp.zeros(N * self.contact_capacity * 5, dtype=wp.int32, device=device)
         self.outputs = {}
         chain_names = (
@@ -1650,7 +1664,7 @@ class CollisionChainWorkspace:
             device=self.device, stream=stream)
         for name, arr in self.outputs.items():
             restore = {wp.int32: _restore_inactive_i32,
-                       wp.float64: _restore_inactive_f64,
+                       scalar.wp_real: _restore_inactive_f64,
                        wp.float32: _restore_inactive_f32}[arr.dtype]
             wp.launch(restore, dim=arr.size, inputs=[
                 self.active, self.before_outputs[name], arr, arr.size // N],

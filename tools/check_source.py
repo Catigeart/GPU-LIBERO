@@ -16,7 +16,7 @@ SKIP = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "n
 CPU_TESTS = ("test_installation_layout.py", "test_resource_paths.py", "test_product_tool_paths.py",
              "test_native_capsule_sources.py", "test_gpu_memory_budget.py", "test_gpu_batch_env.py",
              "test_deferred_native_build.py", "test_release_inputs.py",
-             "test_validation_tools.py", "test_validation_runner.py")
+             "test_validation_tools.py", "test_validation_runner.py", "test_validation_precision.py", "test_precision_policy.py")
 
 
 def source_files(root):

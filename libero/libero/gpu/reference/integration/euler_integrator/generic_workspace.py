@@ -5,6 +5,7 @@ This new allocation path reuses their exact device arithmetic, including native
 pivot repair and certified quaternion trigonometry. New model qualification is
 independent: structural readiness alone is never a production acceptance.
 """
+import libero.gpu.precision as scalar
 import warp as wp
 from .kernel import EulerWorkspace
 from .specialization import validate_specialization
@@ -17,10 +18,10 @@ class GenericMassWorkspace(MassSolveWorkspace):
         for n in ('dof_Madr','dof_parentid','dof_simplenum'):
             setattr(self,n,wp.array(arrays[n],dtype=wp.int32,device=device))
         for n,shape,dtype in (
-            ('qm',(capacity,self.nM),wp.float64),('rhs',(capacity,4,self.nv),wp.float64),
+            ('qm',(capacity,self.nM),scalar.wp_real),('rhs',(capacity,4,self.nv),scalar.wp_real),
             ('count',(capacity,),wp.int32),('active',(capacity,),wp.int32),
-            ('ld',(capacity,self.nM),wp.float64),('inv',(capacity,self.nv),wp.float64),
-            ('sqrt_inv',(capacity,self.nv),wp.float64),('solution',(capacity,4,self.nv),wp.float64),
+            ('ld',(capacity,self.nM),scalar.wp_real),('inv',(capacity,self.nv),scalar.wp_real),
+            ('sqrt_inv',(capacity,self.nv),scalar.wp_real),('solution',(capacity,4,self.nv),scalar.wp_real),
             ('pivot',(capacity,self.nv),wp.int32),('status',(capacity,),wp.int32),
             ('warning_count',(capacity,),wp.int32),('warning_last',(capacity,),wp.int32)):
             setattr(self,n,wp.zeros(shape,dtype=dtype,device=device))
@@ -46,7 +47,7 @@ class GenericEulerWorkspace(EulerWorkspace):
         self.capacity,self.device,self.dt=capacity,device,float(model.opt.timestep)
         self.mass=GenericMassWorkspace(metadata,arrays,capacity,device)
         for n in ('dof_damping','jnt_type','jnt_qposadr','jnt_dofadr'):
-            setattr(self,n,wp.array(arrays[n],dtype=wp.float64 if n=='dof_damping' else wp.int32,device=device))
+            setattr(self,n,wp.array(arrays[n],dtype=scalar.wp_real if n=='dof_damping' else wp.int32,device=device))
         self.nquat=sum(int(t) in (0,1) for t in arrays['jnt_type'])
         for n,shape in (
             ('qpos',(capacity,self.nq)),('qvel',(capacity,self.nv)),('time',(capacity,)),
@@ -58,10 +59,10 @@ class GenericEulerWorkspace(EulerWorkspace):
             ('axis',(capacity,self.nquat,3)),('angle',(capacity,self.nquat)),
             ('increment',(capacity,self.nquat,4)),('pre_norm',(capacity,self.nquat,4)),
             ('qacc_warmstart',(capacity,self.nv)),('zero_work',(capacity,self.nv))):
-            setattr(self,n,wp.zeros(shape,dtype=wp.float64,device=device))
+            setattr(self,n,wp.zeros(shape,dtype=scalar.wp_real,device=device))
         for n,shape in (('active',(capacity,)),('damped',(capacity,)),('status',(capacity,)),
                         ('axis_fallback',(capacity,self.nquat)),('zero_angle',(capacity,self.nquat)),
                         ('quat_fallback',(capacity,self.nquat)),('zero_skip',(capacity,self.nv))):
             setattr(self,n,wp.zeros(shape,dtype=wp.int32,device=device))
-        self.ctrl=wp.zeros((capacity,self.nu),dtype=wp.float64,device=device) if self.nu else None
-        self.sensordata=wp.zeros((capacity,self.nsensordata),dtype=wp.float64,device=device) if self.nsensordata else None
+        self.ctrl=wp.zeros((capacity,self.nu),dtype=scalar.wp_real,device=device) if self.nu else None
+        self.sensordata=wp.zeros((capacity,self.nsensordata),dtype=scalar.wp_real,device=device) if self.nsensordata else None
