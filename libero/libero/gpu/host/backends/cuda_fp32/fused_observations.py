@@ -2,6 +2,7 @@
 import ctypes as ct
 import hashlib
 from pathlib import Path
+from .bridges import Observe
 
 FIELDS=('qpos','qvel','body_xpos','body_xquat','site_xpos')
 
@@ -37,9 +38,21 @@ class FusedRawPack:
             offset=(ct.c_int*5)(*(packer.layout[name][0] for name in FIELDS)))
         self.launch=lib.flash_fp32_observations_pack
         self.launch.argtypes=[ct.POINTER(RawPackInputs),ct.c_void_p];self.launch.restype=ct.c_int
+        size=lib.flash_fp32_observations_sample_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(Observe):raise ValueError('Fused sampling ABI differs')
+        self.sample_launch=lib.flash_fp32_observations_sample
+        self.sample_launch.argtypes=[ct.POINTER(RawPackInputs),ct.POINTER(Observe),ct.c_float,ct.c_int,ct.c_void_p]
+        self.sample_launch.restype=ct.c_int
 
     def enqueue(self,fields):
         self.sources=tuple(fields[name] for name in FIELDS)
         self.arguments.source=(ct.c_void_p*5)(*(source.ptr for source in self.sources))
         error=self.launch(ct.byref(self.arguments),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused raw packing failed: CUDA error '+str(error))
+
+    def sample(self,lowdim,fields,timestep,force=False,world_mask=None,stream=None):
+        self.sources=tuple(fields[name] for name in FIELDS)
+        self.arguments.source=(ct.c_void_p*5)(*(source.ptr for source in self.sources))
+        args=lowdim.sample_arguments(self.output,timestep,world_mask,stream)
+        error=self.sample_launch(ct.byref(self.arguments),ct.byref(args),float(timestep),int(force),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused observation sampling failed: CUDA error '+str(error))

@@ -88,15 +88,17 @@ class DeviceObservations:
         return pack_observations(self.plan, values, images=images)
 
 
-    def update(self,source,timestep,force=False,world_mask=None,stream=None):
+    def sample_arguments(self,source,timestep,world_mask=None,stream=None):
         if not np.isfinite(timestep) or timestep<=0:raise ValueError('Invalid sampling timestep')
         if source.dtype!=cuda.float32 or source.size!=self.nworld*self.source_stride:raise ValueError('Sampling source layout differs')
         self.last_stream=stream or cuda.get_stream(self.device)
         mask=self.all_worlds if world_mask is None else world_mask
         names=('op','offset','size','index_offset','indices','dep0','dep1','dep2','presence','enabled','periods')
-        args=Observe(worlds=self.nworld,ns=len(self.plan.specs),width=self.plan.width,stride=self.source_stride,
+        return Observe(worlds=self.nworld,ns=len(self.plan.specs),width=self.plan.width,stride=self.source_stride,
             **{name:value.ptr for name,value in zip(names,self.meta)},source=source.ptr,
             **{k:getattr(self,k).ptr for k in ('cache','observed','sidequat','elapsed','sampled','present','events')},mask=mask.ptr)
+    def update(self,source,timestep,force=False,world_mask=None,stream=None):
+        args=self.sample_arguments(source,timestep,world_mask,stream)
         self.bridge.call('observe',ct.byref(args),float(timestep),int(force))
 
     def reset(self,world_mask=None,stream=None):
@@ -251,6 +253,11 @@ from libero.gpu.host.adapters.observations.adapter import GpuObservationAdapter
 
 class ObservationAdapter(GpuObservationAdapter):
     """FP32 device fields published into the CPU renderer's FP64 container."""
+
+    def _sample_lowdim(self,fields,timestep,force,world_mask,stream):
+        if self.raw_packer.fused_raw is None:
+            return super()._sample_lowdim(fields,timestep,force,world_mask,stream)
+        self.raw_packer.fused_raw.sample(self.lowdim,fields,timestep,force,world_mask,stream)
 
     def render(self,fields,width=640,height=480,camera_name=None,depth=False,segmentation=False):
         from libero.gpu.host.adapters.observations.boundary import RENDER_FIELDS

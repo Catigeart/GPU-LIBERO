@@ -217,8 +217,7 @@ class GpuObservationAdapter:
                     raise ValueError(f"invalid camera scene field: {name}")
         self.valid=False
         try:
-            source=self.raw_packer.copy_from(fields,stream=stream)
-            self.lowdim.update(source,timestep,force,world_mask,stream)
+            self._sample_lowdim(fields,timestep,force,world_mask,stream)
             if self.scene_cache is not None:
                 fields.update(self.scene_transforms.update(fields["body_xpos"],fields["body_xmat"],world_mask,stream))
                 fields.update(self.visual_sources)
@@ -228,6 +227,11 @@ class GpuObservationAdapter:
             raise
         self.valid=True
         self._after_gpu_sample(timestep,force,world_mask,stream)
+
+    def _sample_lowdim(self,fields,timestep,force,world_mask,stream):
+        """Backend numerical entry; clocks and host hooks stay in sample()."""
+        source=self.raw_packer.copy_from(fields,stream=stream)
+        self.lowdim.update(source,timestep,force,world_mask,stream)
 
     def _after_gpu_sample(self,timestep,force=False,world_mask=None,stream=None):
         """Shared completion hook for baseline/direct GPU sampling, once per event.

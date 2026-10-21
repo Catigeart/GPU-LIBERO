@@ -152,3 +152,29 @@ separate concerns.
 Use the [stable validation tools](../../../tools/validation/README.md) for
 same-input endpoints and frozen-old budgets. Source, import and packaging changes
 use CPU integration checks rather than an automatic full physics sweep.
+
+### Independent FP32 world-local fusions
+
+The independent backend retains the component graph. Readable CUDA translation
+units in `cuda/fp32/` fuse only world-owned producers and consumers. Their
+CMake recipes are independent and their loaders verify source, ABI and GPU
+architecture before capture; normal execution never compiles them.
+
+`Physics.integrate` uses `FusedAdvance` in `host/backends/cuda_fp32/fused_tail.py`
+to join velocity/position advancement, warmstart copying and publication in
+`cuda/fp32/fused_tail.cu`. Damping preparation and the mass solve remain upstream.
+The copied warmstart is Newton's acceleration, not the damping-corrected Euler
+acceleration. The outer graph still organizes 25 physical substeps.
+
+`ObservationAdapter._sample_lowdim` uses `FusedRawPack.sample` in
+`host/backends/cuda_fp32/fused_observations.py`. Its CUDA body in
+`cuda/fp32/fused_observations.cu` gathers the current five raw fields directly,
+advances independent sampling clocks cooperatively, then evaluates dependent
+observations in plan order. The clock bitmap occupies a fixed 16 bytes per CTA;
+plans above 128 items retain scalar clocks. Standalone `DeviceFieldPacker`
+packing retains its five-copy fusion; other layouts keep the original copies.
+Masks, disabled observations, events, forced sampling, camera publication and
+post-sample host hooks retain their existing contracts. Pose epochs are unchanged:
+post-integration qpos/qvel coexist with the previously computed body/site frames.
+These changes have local endpoint and region-timing evidence; they do not add a
+claim about complete-task throughput to the published benchmark table.
