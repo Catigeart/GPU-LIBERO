@@ -191,3 +191,15 @@ The cold attachment CSR contains only immutable canonical-branch indices, never
 physical values. Static geom and world-pose holds remain exact. The original
 five component leaves remain available; superseded intermediate fused bodies
 were removed rather than kept as runtime choices.
+
+`Physics.position -> CenteredFrames.enqueue_fused -> centered_frames<64>` in
+`cuda/dynamics/mjwarp_com_pos.cu` joins weighted subtree construction, reverse
+child gathering, normalization, centered inertia and motion axes. A parent has
+one writer; layer barriers order child reads, replacing separate depth launches
+and sibling atomic additions. Division remains parallel across bodies. The
+common model path uses 768 bytes of shared storage; larger trees use global
+storage without a larger shared allocation. All public subtree/inertia/axis
+outputs, including the accepted MJWarp zero-mass and world-body conventions,
+remain current. `MotionTopology.prepare_layer_tree` owns reusable immutable
+layer/child indices through `ResidentTree`; CoM borrows that owner, so downstream
+world-local tree fusions can reuse the indices without a physical-value cache.

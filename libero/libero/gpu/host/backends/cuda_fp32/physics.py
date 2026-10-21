@@ -88,6 +88,7 @@ class Physics:
         self.kinematics=kinematics.KinematicFrames(m,d,products('kinematics'),stream,topology=top)
         self.kinematics.prepare_fusion()
         self.com_pos=com_pos.CenteredFrames(m,d,products('com_pos'),stream)
+        self.com_pos.prepare_fusion(top)
         self.camlight=camlight.CamLightFrames(m,d,products('camlight'),stream,admission=camlight.qualify(m,d,implementation='cuda'))
         self.matrix=mass_matrix.MassMatrix(m,d,products('mass_matrix'),stream)
         self.factor_plan=mass_factor.MassFactorPlan(m,d,products('mass_factor'),stream)
@@ -122,7 +123,7 @@ class Physics:
 
     def position(self,factorize=True):
         self.kinematics.enqueue_fused()
-        self.com_pos.enqueue();self.camlight.enqueue();self.matrix.enqueue()
+        self.com_pos.enqueue_fused();self.camlight.enqueue();self.matrix.enqueue()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue();self.transmission.enqueue(0)

@@ -1,7 +1,7 @@
 """Borrow current CoM inputs/outputs and immutable layers; no numerical workspace."""
 import ctypes as ct
 import hashlib
-from .mjwarp_motion import source_id, load_leaf, bind_array, reject_output_overlap
+from .mjwarp_motion import source_id, load_leaf, bind_array, reject_output_overlap, ResidentTree
 
 
 def caller_unsupported_reason(model, data):
@@ -80,6 +80,7 @@ class CenteredFrames:
         self.layers = tuple(model.body_tree)
         levels = [bind_array(a, 'layer'+str(i), layer, wp.int32, (layer.size,), stream).numpy() for i,layer in enumerate(self.layers)]
         validate_indices(nv, *(values[k] for k in ('parent','root','kind','dofadr','jbody')), levels)
+        self.host_tree=values['parent'],levels
         rows = {}
         for key, field, dtype, components in (('mass','body_mass',wp.float32,1),('subtreemass','body_subtreemass',wp.float32,1),
                                              ('inertia','body_inertia',wp.vec3,3)):
@@ -102,7 +103,7 @@ class CenteredFrames:
     @property
     def identity(self):
         return dict(source_id=source_id('com_pos'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
-            numerical_workspace_bytes=0,additional_topology_bytes=0,layers=[a.size for a in self.layers],
+            numerical_workspace_bytes=0,additional_topology_bytes=self.tree.nbytes if hasattr(self,'tree') and self.owns_tree else 0,layers=[a.size for a in self.layers],
             reduction='FP32 atomics including world, reverse depth',values='borrow-current-input-no-cache')
 
     def enqueue(self, phase=None):
@@ -117,3 +118,21 @@ class CenteredFrames:
                                 layer.size if layer is not None else 0,self.stream.cuda_stream)
             if error:
                 raise RuntimeError('CoM launch failed: CUDA error '+str(error))
+
+    def prepare_fusion(self,topology=None):
+        """Share immutable layer/child indices after independent admission."""
+        if hasattr(self,'tree'):return
+        self.owns_tree=topology is None
+        if topology is None:self.tree=ResidentTree(self.model,self.data,self.stream,*self.host_tree)
+        else:
+            if topology.model is not self.model or topology.data is not self.data or topology.stream is not self.stream:
+                raise ValueError('CoM fused tree owner differs')
+            self.tree=topology.prepare_layer_tree()
+        self.fused=self.library.flash_mjwarp_com_pos_fused
+        self.fused.argtypes=[ct.POINTER(ComPosInputs),ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p]
+        self.fused.restype=ct.c_int
+
+    def enqueue_fused(self):
+        tree=self.tree
+        error=self.fused(ct.byref(self.arguments),tree.bodies.ptr,tree.starts.ptr,tree.levels,tree.child_start.ptr,tree.child_id.ptr,self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused CoM launch failed: CUDA error '+str(error))

@@ -122,6 +122,24 @@ def reject_output_overlap(arrays, outputs):
                 raise ValueError('Motion output overlaps another array: ' + key + '/' + name)
 
 
+class ResidentTree:
+    """Owned immutable indices from a caller-admitted body tree; no physics cache."""
+    def __init__(self,model,data,stream,parent,layers):
+        import numpy as np
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp=array_api(stream)
+        self.model,self.data,self.stream=model,data,stream
+        self.levels=len(layers);self.max_width=max(len(a) for a in layers)
+        values=dict(bodies=np.concatenate(layers),starts=np.r_[0,np.cumsum([len(a) for a in layers])],
+            child_start=np.r_[0,np.cumsum(np.bincount(parent[1:],minlength=len(parent)))],
+            child_id=np.argsort(parent[1:],kind='stable')+1)
+        for key,value in values.items():setattr(self,key,wp.array(np.asarray(value,np.int32),dtype=wp.int32,device=stream.device))
+
+    @property
+    def nbytes(self):
+        return sum(getattr(self,k).capacity for k in ('bodies','starts','child_start','child_id'))
+
+
 class MotionTopology:
     def __init__(self, model, data, stream):
         from libero.gpu.host.runtime.cuda_api import array_api
@@ -148,10 +166,16 @@ class MotionTopology:
         owner = validate_motion(*(values[k] for k in ('body_parent','body_jntnum','body_jntadr','body_dofnum',
             'body_dofadr','jnt_type','joint_dof','dof_body','branch_bodies','branch_start')), levels)
         arrays['body_owner'] = wp.array(owner, dtype=int, device=stream.device)
+        self.host_tree=values['body_parent'],levels
         self.duplicate_body_visits = int(model.body_branches.size-(nb-1))
+
+    def prepare_layer_tree(self):
+        if not hasattr(self,'resident_tree'):
+            self.resident_tree=ResidentTree(self.model,self.data,self.stream,*self.host_tree)
+        return self.resident_tree
 
     @property
     def identity(self):
         return dict(branches=self.model.nbranch, layers=[a.size for a in self.layers],
             duplicate_body_visits=self.duplicate_body_visits, owner_policy='first-full-leaf-path',
-            topology_bytes=self.arrays['body_owner'].capacity, numerical_workspace_bytes=0)
+            topology_bytes=self.arrays['body_owner'].capacity+(self.resident_tree.nbytes if hasattr(self,'resident_tree') else 0), numerical_workspace_bytes=0)
