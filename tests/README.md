@@ -15,6 +15,11 @@ This source checkout includes a small regression suite for installation and publ
 | `test_gpu_collision_dataflow.py` | Formal collision uses live routes/rows while preserving physical copies; debug retains diagnostics. Immutable pair tables initialize once per model; mutable and large models use direct mixing. |
 | `test_deferred_native_build.py` | Deferred reference compilation, preserved source/PTX rejection, and lazy reset graph capture. |
 | `test_gpu_build_cache.py` | Persistent build reuse, stable generated namespaces, changed source/flags, tampered artifacts, and verified migration of prior builds. |
+| `test_gpu_build_lifetime.py` | Current temporary runtime ownership, constructor failure, close retries, and independent replacement generations; does not use the retired storage manager. |
+| `test_gpu_legacy_storage.py` | Explicit offline maintenance of retired storage: process leases, crash recovery, damaged markers, and deletion boundaries. |
+| `test_gpu_compatibility_build.py` | Offline/load-only authority, fixed build identity, private artifact cleanup, library/function ownership, and launcher retirement. |
+| `test_gpu_cache_hardening.py` | Signed product completion, budgets, source/toolchain drift, and read-only authority loading. |
+| `test_gpu_environment_lifecycle.py` | Read-only scene/project loads, partial close retry, shared stateless code, and in-memory model/Newton intake. |
 | `test_gpu_substep_build.py` | Stable CMake build directories across single-substep source edits and load-only runtime boundaries. |
 | `test_gpu_controller_copy_plan.py` | Cold all-world copy packets, odd tails, private gate wiring and snapshot/field alias fallback. |
 | `test_gpu_aot_build.py` | Complete task/shape instance coverage, runtime template loading, rejected cache misses, and compilation guards in Warp worker threads. |
@@ -50,12 +55,14 @@ separately; it performs no performance measurement.
 Run from the repository root after installing the project and its dependencies:
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py'
+python tools/check_source.py --cpu-tests
 python -m unittest discover -s tests/gpu_product_compatibility -p 'test_*.py'
 python tests/test_gpu_vector_protocol.py
 ```
 
-The vector protocol file exposes standalone test functions, so run its final command separately from unittest discovery.
+The supported CPU check command also runs the vector protocol file. Its standalone
+command is useful for focused work; those test functions are not collected by
+unittest discovery. Individual optional suites retain their dependency requirements.
 
 These tests use temporary fixtures and mock or injected runtime components. They do not compile CUDA, execute GPU physics, render through a real OpenGL context, or benchmark performance. They do not establish full-application numerical qualification.
 

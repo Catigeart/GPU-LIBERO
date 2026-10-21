@@ -1,9 +1,7 @@
 """Static-only model preparation for a private cold arena transaction."""
-from pathlib import Path
 from types import SimpleNamespace
 import hashlib
-import json
-import tempfile
+import copy
 import uuid
 import numpy as np
 
@@ -43,7 +41,7 @@ def prepare_parameter_model(bundle, built, changes, token, model_generation):
         raise ValueError('actual cold payload differs from prepared parameter digest')
     # The native decoder computes fresh all-array/header digests. Existing task
     # naming/robot selector metadata remains explicit source metadata.
-    native=mujoco.MjModel.from_binary_path(str(bundle.model_pack.mjb_path))
+    native=copy.copy(bundle.model_pack.model)
     actual_base=native_model_metadata(native)
     actual_spec=ModelSpec.from_factory_metadata(actual_base,features=bundle.model_spec.features)
     if actual_spec.identity_key != bundle.model_spec.identity_key:
@@ -55,20 +53,21 @@ def prepare_parameter_model(bundle, built, changes, token, model_generation):
     derived,preflight=derive_native_parameter_spec(bundle.model_spec,built.metadata,metadata,
                                                   declared_fields=tuple(changes))
     plan=prepare_parameter_descriptor(model_generation,token,derived,metadata_preparation=preflight)
-    directory=Path(tempfile.mkdtemp(prefix='parameter-',dir=Path('/proc/self/cwd/tmp').resolve()))
-    mjb=directory/'actual_model.mjb';mujoco.mj_saveModel(native,str(mjb),None)
-    digest=hashlib.sha256(mjb.read_bytes()).hexdigest()
-    if digest != derived.model_sha256:raise ValueError('saved actual parameter model digest differs')
+    from ..core.model_bytes import model_bytes
+    from ..core.product_paths import build_directory
+    directory=None
+    digest=hashlib.sha256(model_bytes(native)).hexdigest()
+    if digest != derived.model_sha256:raise ValueError('actual parameter model digest differs')
     static={name:np.ascontiguousarray(getattr(native,name)).copy() for name in STATIC_SCHEMA}
     facts={name:int(getattr(native,name)) for name in ('neq','ntendon','nplugin','nmocap','na','nq','nv','nu','nM','nbody','ngeom','nsite','njnt')}
     facts.update({name:int(getattr(native.opt,name)) for name in ('solver','cone','jacobian','disableflags','enableflags','noslip_iterations')})
     facts.update({name:float(getattr(native.opt,name)) for name in ('timestep','impratio')})
-    manifest=dict(model_sha256=digest,model_path=str(mjb),model_facts=facts,
+    manifest=dict(model_sha256=digest,model_facts=facts,
         dimensions=dict(metadata['dimensions']),mujoco_version=mujoco.__version__,
         static={name:dict(shape=list(a.shape),dtype=str(a.dtype),sha256=hashlib.sha256(a.tobytes()).hexdigest()) for name,a in static.items()})
+    directory=build_directory('parameter')
     package=directory/('parameter_s_'+uuid.uuid4().hex)
     generate_specialization(manifest,static,package)
-    (directory/'PARAMETER_PREFLIGHT.json').write_text(json.dumps(preflight,indent=2))
     fresh=BuiltTaskModel(native,built.xml,built.domain_shell,metadata)
     return SimpleNamespace(built=fresh,spec=derived,constraint_package=package,
         descriptor_plan=plan,preflight=preflight,directory=directory)

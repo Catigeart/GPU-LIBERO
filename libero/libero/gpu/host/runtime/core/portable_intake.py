@@ -3,15 +3,12 @@
 This binds descriptors and generated S sources to their real owner and bytes.
 It never publishes numerical acceptance, a ready device, or a kernel license.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
 import inspect
-import json
 import os
 from pathlib import Path
-import tempfile
 import uuid
 from types import MappingProxyType
 
@@ -196,7 +193,7 @@ class NativeIntakeBinding:
 def prepare_native_intake(built, *, cache_dir=None):
     """Generate current S specialization from native bytes, retaining exact owner.
 
-    Owner receipts are always fresh; identical generated sources may use the
+    Owner bindings are always fresh; identical generated sources may use the
     persistent project cache. Structural/static/capacity and source checks remain.
     The returned binding validates cold changes and supports explicit revocation.
     """
@@ -223,15 +220,11 @@ def prepare_native_intake(built, *, cache_dir=None):
     # keep the original S rejection rather than being silently omitted.
     from libero.gpu.host.runtime.constraints.specialization import validate_manifest
     validate_manifest(manifest, static)
-    root = Path(cache_dir or os.environ.get('LIBERO_GPU_CACHE_DIR') or
-                Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) /
-                'libero-gpu') / 'intake'
-    root.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix='native-', dir=root))
-    from .product_paths import current_build_project, record_build
+    from .product_paths import current_build_project, record_build, build_directory
     project = current_build_project()
     if project is None:
-        # Standalone intake retains its original isolated namespace.
+        # Explicit standalone source preparation owns its output directory.
+        directory = build_directory('intake')
         package = directory / ('shape_s_' + uuid.uuid4().hex)
         generated = generate_specialization(manifest, static, package)
     else:
@@ -248,11 +241,6 @@ def prepare_native_intake(built, *, cache_dir=None):
                  Path(descriptor['decoder_record']['path']).with_name('cold_assets.py'),
                  package / 'MODEL_MANIFEST.json', package / 'SOURCE_GENERATION.json'):
         pins[str(path.resolve())] = _sha(path)
-    receipt = dict(descriptor, source_files=pins, source_sha256=_hash(pins),
-                   generated_package=str(package), generated_arithmetic_unchanged=
-                   dict(generated['kernel_arithmetic_bodies_unchanged']))
-    (directory / 'INTAKE_SOURCE.json').write_text(
-        json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + '\n')
     binding = NativeIntakeBinding(built, model, spec, package, descriptor, MappingProxyType(pins))
     binding.validate()
     return binding

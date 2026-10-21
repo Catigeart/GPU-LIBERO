@@ -10,7 +10,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import MethodType, SimpleNamespace
 from typing import Any
 
@@ -150,11 +149,10 @@ def native_model_metadata(model, *, return_snapshot=False, snapshot_pool=None, r
     slices = {name: [int(model.jnt_qposadr[index]),
                      int(model.jnt_qposadr[index]) + qpos_sizes[int(model.jnt_type[index])]]
               for name, index in maps["joint"].items()}
-    with TemporaryDirectory(prefix="libero-model-only-") as tmp:
-        path = Path(tmp) / "compiled.mjb"
-        mujoco.mj_saveModel(model, str(path), None)
-        model_blob = path.read_bytes()
-        model_digest = sha256(model_blob).hexdigest()
+    buffer = np.empty(mujoco.mj_sizeModel(model), dtype=np.uint8)
+    mujoco.mj_saveModel(model, None, buffer)
+    model_blob = buffer.tobytes()
+    model_digest = sha256(model_blob).hexdigest()
     snapshot = ReadOnlyModelSnapshot(snapshot.fields, model_blob)
     if reference_snapshot is not None:
         snapshot = snapshot.reuse_unchanged(reference_snapshot)

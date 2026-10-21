@@ -8,6 +8,7 @@ import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path
 import ctypes as ct
+from libero.gpu.host.build.library_lifetime import load_cdll
 import hashlib
 import inspect
 import json
@@ -195,7 +196,7 @@ class PersistentCudaCore:
             result=subprocess.run(command,capture_output=True,text=True)
             (self.root/'compile.log').write_text(result.stdout+result.stderr)
             if result.returncode:raise RuntimeError('persistent CUDA compilation failed: '+str(self.root/'compile.log'))
-        self.library=ct.CDLL(str(target));self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
+        self.library=load_cdll(target);self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
         raw=np.frombuffer(bytes(self.params),dtype=np.uint8).copy()
         with wp.ScopedStream(ws.stream):
             self.device_params=wp.array(raw,dtype=wp.uint8,device=ws.device)

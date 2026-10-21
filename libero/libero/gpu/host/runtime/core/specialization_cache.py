@@ -46,7 +46,6 @@ def index_packages(root, packages=None):
 
 def generated_package(manifest, static, generator, root):
     root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
     from libero.gpu.host.build.compilation import compilation_allowed, MissingCompiledProduct
     if not compilation_allowed():
         index = root / 'INSTANCES.json'
@@ -59,6 +58,7 @@ def generated_package(manifest, static, generator, root):
             if hashlib.sha256((package / name).read_bytes()).hexdigest() != digest:
                 raise ValueError('prebuilt specialization source differs: ' + str(package / name))
         return package, json.loads((package / 'SOURCE_GENERATION.json').read_text()), True
+    root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.generate-', dir=root) as staging:
         candidate = Path(staging) / 'package'
         report = generator(manifest, static, candidate)

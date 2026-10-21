@@ -13,11 +13,37 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--catalog-jobs', type=int, default=4)
+    parser.add_argument('--compatibility', action='store_true',
+                        help='prepare signed public OffScreenRenderEnv FP64 products instead of the batch catalogue')
+    parser.add_argument('--suite', default='libero_10',
+                        choices=('libero_spatial', 'libero_object', 'libero_goal', 'libero_90', 'libero_10'))
+    parser.add_argument('--task-ids', type=int, nargs='+', help='compatibility profile task IDs (default: selected suite)')
     args = parser.parse_args()
     if min(args.num_envs, args.jobs, args.catalog_jobs) < 1:
         parser.error('environment and worker counts must be positive')
     import libero.gpu.precision as scalar
-    scalar.select(args.precision)
+    scalar.select(args.precision or ('fp64' if args.compatibility else None))
+    if args.compatibility:
+        if scalar.bits != 64:
+            parser.error('--compatibility requires --precision fp64')
+        if args.device != 'cuda:0':
+            parser.error('the compatibility entry uses cuda:0; select the visible device before launching')
+        from libero.gpu.host.build.compatibility import prepare
+        from libero.gpu.host.build.project_paths import project_paths
+        from libero.libero import benchmark
+        suite = benchmark.get_benchmark(args.suite)()
+        ids = list(range(suite.n_tasks)) if args.task_ids is None else args.task_ids
+        if any(not 0 <= i < suite.n_tasks for i in ids):
+            parser.error('task ID outside the selected suite')
+        tasks = [dict(key=args.suite + '/' + suite.get_task(i).name,
+                      bddl=suite.get_task_bddl_file_path(i)) for i in ids]
+        result = prepare(project_paths(args.build_root).base, tasks,
+                         progress=lambda event: print(json.dumps(event), flush=True))
+        print(json.dumps(dict(status=result['status'], tasks=len(result['tasks']),
+                              directory=result['project'], profile='compatibility')), flush=True)
+        return
+    if args.task_ids is not None:
+        parser.error('--task-ids is a compatibility profile option')
     from libero.gpu.host.build.aot import compile_catalog
     from libero.gpu.host.build.project_paths import prepare_precision_project
     from libero.gpu.host.build.task_catalog import prepare_catalog, write_parameter_catalog

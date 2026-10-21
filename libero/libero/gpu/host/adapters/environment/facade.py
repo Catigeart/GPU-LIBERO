@@ -12,6 +12,7 @@ from types import MappingProxyType
 import numpy as np
 from .model_names import bind_original_name_maps, install_original_name_methods
 from robosuite.utils.binding_utils import MjData
+from libero.gpu.host.build.compilation import load_only_entry
 
 
 @dataclass(frozen=True)
@@ -383,6 +384,7 @@ _DataView.get_joint_qvel = MjData.get_joint_qvel
 
 
 def _serialized(method):
+    @load_only_entry
     @wraps(method)
     def call(self, *args, **kwargs):
         with self._lock:

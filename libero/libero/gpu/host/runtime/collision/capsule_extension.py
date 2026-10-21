@@ -173,11 +173,23 @@ def prepare_workspace_extension(workspace, destination):
     # build program hashes both generated files and actual toolchain/artifacts.
     import os
     key = (str(target.resolve()), str(workspace.device), os.environ.get('P06C_NATIVE_BUILD_ROOT'))
+    from libero.gpu.host.runtime.core.product_paths import current_build_lifetime
+    owner = current_build_lifetime()
+    if owner is not None:
+        # The source/compiler bank is shared, but a mutable native instance
+        # belongs to one runtime generation, including its CDLL borrow.
+        key += (str(owner.path),)
     if key not in _PREPARED_NATIVE:
         program = runpy.run_path(str((GPU_ROOT / 'host/runtime/collision/native.py')))
         prepare = program['prepare_native']
         prepare.__globals__['MODULE'] = target
         _PREPARED_NATIVE[key] = prepare(workspace.device)
+        if owner is not None:
+            prepared = _PREPARED_NATIVE[key]
+            def retire():
+                if _PREPARED_NATIVE.get(key) is prepared:
+                    _PREPARED_NATIVE.pop(key)
+            owner.retire_callbacks.append(retire)
     native = _PREPARED_NATIVE[key]
     import numpy as np
     from libero.gpu.host.runtime.collision.detectors import DET_CONVEX_MPR, DET_CAPSULE_BOX_NATIVE

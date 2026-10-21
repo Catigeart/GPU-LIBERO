@@ -59,7 +59,7 @@ def install_model_only_gpu_factory(problem_name, runtime_factory, *, replace=Fal
     if not callable(runtime_factory):
         raise ValueError("runtime_factory must be callable")
 
-    def factory(*, bddl_file_name, **options):
+    def construct(*, bddl_file_name, **options):
         from libero.gpu.model import build_task_model
         from .task_driver import GpuTaskEnvironment
 
@@ -99,6 +99,12 @@ def install_model_only_gpu_factory(problem_name, runtime_factory, *, replace=Fal
                 except BaseException as close_error: cleanup_errors.append(repr(close_error))
             if cleanup_errors: exc.gpu_cleanup_errors = cleanup_errors
             raise
+
+    def factory(*, bddl_file_name, **options):
+        from contextlib import nullcontext
+        scope = getattr(runtime_factory, 'construction_scope', nullcontext)
+        with scope():
+            return construct(bddl_file_name=bddl_file_name, **options)
 
     register_gpu_task_factory(problem_name, factory, replace=replace)
     return factory

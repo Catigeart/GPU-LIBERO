@@ -13,6 +13,7 @@ import numpy as np
 
 from libero.gpu.host.runtime.core.contracts import ModelGeneration
 from libero.gpu.host.runtime.core.native_model_update import prepare_native_model_update
+from libero.gpu.host.runtime.core.build_lifetime import cold_build_scope
 
 
 def _snapshot(bundle):
@@ -108,6 +109,7 @@ def bind_native_update_runtime(components, bundle, *, prepare, assemble,
         bound_sim[0] = current
         current.bind_native_model_updates(update, components.built.metadata['native_write_schema'])
 
+    @cold_build_scope(project_root=lambda: getattr(holder[0], 'build_project_root', None))
     def update(array_changes, option_changes):
         if handler[0] is None:
             raise RuntimeError('native model writes require the installed task owner')

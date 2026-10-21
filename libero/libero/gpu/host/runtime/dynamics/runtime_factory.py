@@ -4,13 +4,13 @@ No MjData, CPU forward, controller reset or dynamic intermediate is produced.
 The decoded native model and independently pinned decoder/source metadata are
 the authority. Preparation and diagnostics do not grant production numerics.
 """
-from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
+from libero.gpu.host.paths import GPU_ROOT
 from pathlib import Path
 import hashlib,json
 import numpy as np
-import mujoco
 from libero.gpu.host.runtime.core.contracts import ModelSpec
 from libero.gpu.host.runtime.core.registry import CapabilityRegistry, KernelCandidate
+from ..core.model_bytes import memory_record, checked_records
 from .generic_runtime import GenericRuntimeDynamicsAdapter
 from .generic_post import GenericPostWorkspace
 from .runtime_adapter import RuntimePostAdapter
@@ -25,21 +25,19 @@ def prepare_from_built(built,capacity,*,directory,decoder_record,state_epoch,fir
     """Return ``(dynamics, intake)`` for the actual supplied BuiltTaskModel.
 
     ``decoder_record`` is an exact archived/live factory source record matching
-    built.metadata.decoder_pin.source_sha256. ``directory`` is a fresh cold
-    evidence directory. Existing models are never reloaded to infer counts.
+    built.metadata.decoder_pin.source_sha256. ``directory`` is retained for call compatibility;
+    model and metadata intake remain in memory. Existing models are never reloaded to infer counts.
     """
-    out=Path(directory);out.mkdir(parents=True,exist_ok=False)
     md=json.loads(json.dumps(built.metadata))
     decoder=_pin(decoder_record['path'])
     if decoder!=decoder_record or decoder['sha256']!=md['decoder_pin']['source_sha256']:
         raise ValueError('actual BuiltTaskModel decoder source record mismatch')
     if model_record is None:
-        path=out/'ACTUAL_MODEL.mjb';mujoco.mj_saveModel(built.native_model,str(path),None);model_record=_pin(path)
-    elif _pin(model_record['path'])!=model_record:
-        raise ValueError('actual supplied model file record drift')
-    if model_record['sha256']!=md['model_sha256']:
-        raise ValueError('BuiltTaskModel native file identity differs')
-    metadata_path=out/'ACTUAL_METADATA.json';metadata_path.write_text(json.dumps(md,indent=2)+'\n')
+        model_record = dict(model=built.native_model, sha256=md['model_sha256'])
+    checked_records([model_record])
+    if model_record['sha256'] != md['model_sha256']:
+        raise ValueError('BuiltTaskModel native model identity differs')
+    metadata_record = memory_record((json.dumps(md, indent=2)+'\n').encode())
     arrays={name:np.array(getattr(built.native_model,name),copy=True,order='C') for name in md['array_sha256']}
     if spec is None:
         spec=ModelSpec.from_factory_metadata(md,features=features)
@@ -58,7 +56,7 @@ def prepare_from_built(built,capacity,*,directory,decoder_record,state_epoch,fir
         'reference/position/mass_solve/kernel.py','reference/integration/euler_integrator/generic_workspace.py','reference/position/body_mass_chain/chain.py','reference/dynamics/comvel/kernel.py',
         'reference/dynamics/rne_bias/kernel.py','reference/dynamics/external_force_projection/kernel.py','reference/postprocess/rne_postconstraint/kernel.py',
         'reference/postprocess/force_sensor/kernel.py','reference/control/osc/controller.py')
-    records=[_pin(gpu/name) for name in names]+[decoder,model_record,_pin(metadata_path)]
+    records=[_pin(gpu/name) for name in names]+[decoder,model_record,metadata_record]
     registry=CapabilityRegistry() if registry is None else registry
     bundle={r['path']:r['sha256'] for r in records[:len(names)]}
     bundle_sha=hashlib.sha256(json.dumps(bundle,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -73,12 +71,11 @@ def prepare_from_built(built,capacity,*,directory,decoder_record,state_epoch,fir
                 source_files={} if source else bundle))
         ids[component]=cid
     kwargs=dict(arrays=arrays,metadata=md,spec=spec,registry=registry,candidate_ids=ids,
-        source_records=records,metadata_record=_pin(metadata_path),mode=mode,device=device)
+        source_records=records,metadata_record=metadata_record,mode=mode,device=device)
     d=GenericRuntimeDynamicsAdapter(capacity=capacity,robot=md['robot_metadata'][0],state_epoch=state_epoch,
         first_error=first_error,stream=stream,**kwargs)
-    intake=dict(kwargs=kwargs,model_record=model_record,metadata_record=_pin(metadata_path),
+    intake=dict(kwargs=kwargs,model_record=model_record,metadata_record=metadata_record,
         candidate_ids=ids,mode=mode,qualification='pending independent actual model numeric/writes/provenance acceptance')
-    (out/'INTAKE.json').write_text(json.dumps({k:v for k,v in intake.items() if k!='kwargs'},indent=2)+'\n')
     return d,intake
 
 

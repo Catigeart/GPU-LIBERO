@@ -6,6 +6,7 @@ are bound before the retained generated solver makes pointer aliases.
 """
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
+from ..core.model_bytes import load_native_model
 import hashlib
 from types import SimpleNamespace
 import numpy as np
@@ -49,7 +50,7 @@ def _validate_native(model):
     return warm_disabled
 
 
-def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
+def prepare_live_copy_runtime(*, model_path=None, model=None, model_spec, rows, contacts, nworld,
                          build_root, live_inputs, canonical_outputs=None,
                          registry=None, registered_candidate_id=None,
                          mode='diagnostic', device='cuda:0', diagnostic_profile='compatible'):
@@ -66,11 +67,9 @@ def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
         diagnostic_profile = 'compatible'
     if diagnostic_profile not in ('compatible', 'fast'):
         raise ValueError('Newton diagnostic profile')
-    path = Path(model_path).resolve()
-    model_sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    if model_sha != model_spec.model_sha256:
-        raise ValueError('native MJB identity differs from ModelSpec')
-    model = mujoco.MjModel.from_binary_path(str(path))
+    model, path = load_native_model(model=model, model_path=model_path,
+                                    expected_sha256=model_spec.model_sha256)
+    model_sha = model_spec.model_sha256
     if (int(model.nv), int(model.nM)) != (model_spec.dimensions.nv, model_spec.dimensions.nM):
         raise ValueError('native dimensions differ from ModelSpec')
     warm_disabled = _validate_native(model)
@@ -120,5 +119,5 @@ def prepare_live_copy_runtime(*, model_path, model_spec, rows, contacts, nworld,
     adapter.source_manifest['parallel_tape_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/parallel_tape.py').read_bytes()).hexdigest()
     adapter.source_manifest['optimization'] = 'cold-parallel-tape-only; independent model runtime review pending'
     adapter.native_model = model
-    adapter.native_model_path = str(path)
+    adapter.native_model_path = path
     return adapter

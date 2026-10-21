@@ -8,6 +8,7 @@ import libero.gpu.precision as scalar
 from pathlib import Path
 import hashlib
 import warp as wp
+from ..core.model_bytes import checked_records, source_ref, source_bytes
 from ..core.static_readset import immutable_array, StaticReadsetSeal
 from .device import SharedProtocol
 from .binding import array_token, allocation_origin, origin_token
@@ -49,10 +50,7 @@ class FoundationForwardAdapter:
             raise ValueError('positive model nq/nv required')
         if not source_records:
             raise ValueError('pinned original backend/model source licence required')
-        self.source_records = tuple((str(Path(r['path']).resolve()), r['sha256']) for r in source_records)
-        for path, digest in self.source_records:
-            if len(digest) != 64 or hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-                raise ValueError('original runtime source drift: ' + path)
+        self.source_records = checked_records(source_records)
         self._source_records = self.source_records
         self.backend, self._backend, self.stream = backend, backend, stream
         self.nq, self.nv = nq, nv
@@ -198,7 +196,7 @@ class FoundationForwardAdapter:
 
     def source_catalog(self):
         self.validate_bindings()
-        return {'sources': self.source_records, 'nworld': self.nworld, 'nq': self.nq, 'nv': self.nv,
+        return {'sources': tuple((ref if type(ref) is str else 'memory:'+sha, sha) for ref,sha in self.source_records), 'nworld': self.nworld, 'nq': self.nq, 'nv': self.nv,
                 'roots': {n: token for n, _, token in self._roots},
                 'forward_clock_owner': 'actual dynamics backend; F does not increment it',
                 'hot_host_copies': False, 'extra_forward_calls': False,
@@ -223,11 +221,11 @@ def _native_field_digest(name, array):
 
 def _pin_native_metadata(metadata, spec, records, metadata_record, fields):
     import json
-    path = str(Path(metadata_record['path']).resolve())
+    path = source_ref(metadata_record)
     digest = metadata_record['sha256']
-    if (path,digest) not in records or hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
+    if (path,digest) not in records or hashlib.sha256(source_bytes(path)).hexdigest() != digest:
         raise ValueError('authoritative native metadata source pin missing')
-    original = json.loads(Path(path).read_text())
+    original = json.loads(source_bytes(path))
     for name in ('model_sha256','static_arrays_sha256','dimensions','decoder_pin'):
         if metadata[name] != original[name]:
             raise ValueError('native metadata differs from pinned original: '+name)
@@ -264,10 +262,7 @@ class PreparedKinematicModel(FrozenModel):
                  source_records, metadata_record, mode='production', base_spec=None):
         if not source_records:
             raise ValueError('native static decoding/source records required')
-        self.source_records = tuple((str(Path(r['path']).resolve()), r['sha256']) for r in source_records)
-        for path, digest in self.source_records:
-            if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-                raise ValueError('native static/source bytes drift: ' + path)
+        self.source_records = checked_records(source_records)
         _pin_native_metadata(metadata,spec,self.source_records,metadata_record,STATIC)
         self.spec, self.registry, self.candidate_id, self.mode = spec, registry, candidate_id, mode
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:
@@ -391,12 +386,9 @@ class PreparedFrameWorkspace(FrameWorkspace):
                  source_records, metadata_record, mode='production', device='cuda:0', body_inputs=None, base_spec=None):
         if type(nworld) is not int or nworld < 1:
             raise ValueError('positive actual world count required')
-        records = tuple((str(Path(r['path']).resolve()),r['sha256']) for r in source_records)
+        records = checked_records(source_records)
         if not records:
             raise ValueError('actual frame readset source licence required')
-        for path,digest in records:
-            if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-                raise ValueError('original frame/native decoder bytes drift: ' + path)
         _pin_native_metadata(metadata,spec,records,metadata_record,MODEL_FIELDS)
         digests = {digest for _,digest in records}
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:
@@ -483,11 +475,8 @@ class PreparedCamlightModel(FrozenCamlightModel):
     """
     def __init__(self, arrays, metadata, spec, *, registry, candidate_id,
                  source_records, metadata_record, mode='production', base_spec=None):
-        records = tuple((str(Path(r['path']).resolve()),r['sha256']) for r in source_records)
+        records = checked_records(source_records)
         if not records:raise ValueError('actual camlight source licence required')
-        for path,digest in records:
-            if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-                raise ValueError('camlight/static source bytes drift: '+path)
         _pin_native_metadata(metadata,spec,records,metadata_record,CAMLIGHT_FIELDS)
         digests={digest for _,digest in records}
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:

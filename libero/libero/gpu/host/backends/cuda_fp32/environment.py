@@ -39,33 +39,34 @@ class CudaFP32BatchEnv(GpuBatchEnv):
         self._lock=RLock();self._closed=self._failed=self._initialized=False
         self._snapshot_cache=None;self._held_contacts={};self._facades=[];self.shells=[];self._goal_plans=[]
         self.num_envs=self.env_num=num_envs;self.seed(seed);self._integrations=np.zeros(num_envs,np.int64)
-        self.build_root=project_paths(build_root).base;self.build_report=dict(events=[],physics_engine=self.physics_engine)
-        folder=self.build_root/'cmake-control'/('sm80-dev' if fast else 'sm80-release')
-        self.cuda_runtime=cuda.Runtime(folder/'cuda_runtime.so')
-        if not str(device).startswith('cuda:'):raise ValueError('A CUDA device is required')
-        self.stream=cuda.Stream(self.cuda_runtime.device(int(str(device).split(':')[1])))
-        options.setdefault('use_camera_obs',False)
-        if options.get('has_renderer') or options.get('hard_reset'):raise ValueError('Fixed-model offscreen/soft-reset batch required')
-        options.update(has_renderer=False,has_offscreen_renderer=bool(options['use_camera_obs']),hard_reset=False)
-        with self._cleanup_on_error(),self.stream:
-            self.built,bank,self.task,self.identity=build_scene(self.build_root,bddl_file_name,seed,options,collision=collision,prepare=allow_compile)
-            self.initial_states=_state_bank(bank if init_states is None else init_states,self.built.native_model.nq,self.built.native_model.nv)
-            self.model=upload(prepare(self.built.native_model));self._nq=self.model.nq;self._nv=self.model.nv
-            self.action_dim=7;self.control_freq=self.built.metadata['control_freq']
-            self.substeps=int(self.built.metadata['control_timestep']/self.built.metadata['model_timestep'])
-            self.capacities=capacity_budget(self.built.native_model,nconmax=controls.pop('nconmax',None),njmax=controls.pop('njmax',None))
-            if controls:raise ValueError('Unknown independent FP32 options: '+str(sorted(controls)))
-            self.data=make_data(self.built.native_model,self.model,num_envs,self.capacities['nconmax'],self.capacities['njmax'])
-            self.identity.update(worlds=num_envs,capacities=self.capacities,physics_engine=self.physics_engine,
-                warp_dependency=False,schedule='step1-osc-step2',arch=self.stream.device.arch)
-            self.observer=ObservationAdapter(self.built.native_model,self.built.metadata,num_envs,device=self.stream.device)
-            self._physics=self.runtime=Runtime(self,fast_compile=fast)
-            self._all=np.ones(num_envs,np.int32);self._selection=cuda.array(self._all,dtype=int)
-            self._fields={k:ResidentField(v,v.shape[1:]) for k,v in self.observation_fields().items()}
-            self._bind_shells()
-            if initialize:
-                self.reset(init_states=self.initial_states[np.arange(num_envs)%len(self.initial_states)])
-                self.runtime.prepare_control_graph()
+        with self._cleanup_on_error():
+            self.build_root=project_paths(build_root).base;self.build_report=dict(events=[],physics_engine=self.physics_engine)
+            folder=self.build_root/'cmake-control'/('sm80-dev' if fast else 'sm80-release')
+            self.cuda_runtime=cuda.Runtime(folder/'cuda_runtime.so')
+            if not str(device).startswith('cuda:'):raise ValueError('A CUDA device is required')
+            self.stream=cuda.Stream(self.cuda_runtime.device(int(str(device).split(':')[1])))
+            options.setdefault('use_camera_obs',False)
+            if options.get('has_renderer') or options.get('hard_reset'):raise ValueError('Fixed-model offscreen/soft-reset batch required')
+            options.update(has_renderer=False,has_offscreen_renderer=bool(options['use_camera_obs']),hard_reset=False)
+            with self.stream:
+                self.built,bank,self.task,self.identity=build_scene(self.build_root,bddl_file_name,seed,options,collision=collision,prepare=allow_compile)
+                self.initial_states=_state_bank(bank if init_states is None else init_states,self.built.native_model.nq,self.built.native_model.nv)
+                self.model=upload(prepare(self.built.native_model));self._nq=self.model.nq;self._nv=self.model.nv
+                self.action_dim=7;self.control_freq=self.built.metadata['control_freq']
+                self.substeps=int(self.built.metadata['control_timestep']/self.built.metadata['model_timestep'])
+                self.capacities=capacity_budget(self.built.native_model,nconmax=controls.pop('nconmax',None),njmax=controls.pop('njmax',None))
+                if controls:raise ValueError('Unknown independent FP32 options: '+str(sorted(controls)))
+                self.data=make_data(self.built.native_model,self.model,num_envs,self.capacities['nconmax'],self.capacities['njmax'])
+                self.identity.update(worlds=num_envs,capacities=self.capacities,physics_engine=self.physics_engine,
+                    warp_dependency=False,schedule='step1-osc-step2',arch=self.stream.device.arch)
+                self.observer=ObservationAdapter(self.built.native_model,self.built.metadata,num_envs,device=self.stream.device)
+                self._physics=self.runtime=Runtime(self,fast_compile=fast)
+                self._all=np.ones(num_envs,np.int32);self._selection=cuda.array(self._all,dtype=int)
+                self._fields={k:ResidentField(v,v.shape[1:]) for k,v in self.observation_fields().items()}
+                self._bind_shells()
+                if initialize:
+                    self.reset(init_states=self.initial_states[np.arange(num_envs)%len(self.initial_states)])
+                    self.runtime.prepare_control_graph()
 
     def _activate_all(self):
         with self.stream:self.runtime.intent.assign(self._all)
@@ -304,14 +305,25 @@ class CudaFP32BatchEnv(GpuBatchEnv):
 
 
     def close(self):
-        if getattr(self,'_closed',True):return
-        if hasattr(self,'stream'):self.stream.synchronize()
-        if getattr(self,'runtime',None) is not None:self.runtime.close()
-        if getattr(self,'observer',None) is not None:self.observer.close()
-        for facade in self._facades:facade.close()
-        self._facades.clear();self.shells.clear();self._goal_plans.clear();self._held_contacts.clear()
-        self._fields={};self._raw_fields={}
-        if getattr(self,'runtime',None) is not None:self.runtime.env=None
-        self._selection=self.data=self.model=self.observer=self.runtime=self._physics=None
-        if hasattr(self,'stream'):self.stream.close()
-        self._closed=True
+        with self._lock:
+            if self._closed:return
+            self._failed=True  # A partial release may be retried, never resumed as a live environment.
+            if getattr(self,'stream',None) is not None:self.stream.synchronize()
+            runtime=getattr(self,'runtime',None)
+            if runtime is not None:
+                runtime.close()
+                runtime.env=None
+                self.runtime=self._physics=None
+            observer=getattr(self,'observer',None)
+            if observer is not None:
+                observer.close()
+                self.observer=None
+            for facade in self._facades:facade.close()
+            self._facades.clear();self.shells.clear();self._goal_plans.clear();self._held_contacts.clear()
+            self._fields={};self._raw_fields={}
+            self._selection=self.data=self.model=self.built=self.initial_states=None
+            if getattr(self,'stream',None) is not None:
+                self.stream.close()
+                self.stream=None
+            self.cuda_runtime=None
+            self._closed=True

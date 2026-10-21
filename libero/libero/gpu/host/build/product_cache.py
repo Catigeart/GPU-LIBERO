@@ -5,7 +5,7 @@ owner/binding. The local user's private signing key lives outside the product
 cache. The trust boundary is the user's account, not hostile code in that same
 account. Self-hashed legacy receipts are deliberately not accepted here.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 import fcntl
 import hashlib
@@ -17,6 +17,7 @@ import stat
 import time
 import uuid
 import base64
+import errno
 
 
 def _canonical(value):
@@ -27,17 +28,46 @@ def _digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def _load_identity(identity):
+    """An installed product retains its build environment, not the caller's shell.
+
+    All sources, flags, selected dependency/toolchain files and ABI still match.
+    Only the recorded environment of a *future compiler invocation* is omitted.
+    """
+    identity = json.loads(_canonical(identity))
+    build = identity.get('build', identity)
+    toolchain = build.get('toolchain', {})
+    toolchain.pop('environment_sha256', None)
+    toolchain.pop('environment_schema', None)
+    return identity
+
+
 _scope = ContextVar('libero_product_cache_authority', default=None)
+_persistence_required = ContextVar('libero_product_persistence_required', default=False)
 
 
 @contextmanager
-def product_cache_scope(cache_root, *, authority_root=None, max_bytes=4*1024**3,
-                        max_entries=4096, lock_timeout=1800):
+def require_product_persistence():
+    """Offline readiness requires durable products, including nested authorities."""
+    token = _persistence_required.set(True)
+    try:
+        yield
+    finally:
+        _persistence_required.reset(token)
+
+
+@contextmanager
+def product_cache_scope(cache_root, *, authority_root=None, max_bytes=None,
+                        max_entries=None, lock_timeout=1800):
     """Enable exact build reuse only for the enclosed public cold constructor.
 
     Combine with native.strict_build_receipts_scope(True). This is deliberately
     independent of LIBERO_BUILD_RECEIPTS and the historical diagnostic cache.
     """
+    if max_bytes is None:
+        max_bytes = int(os.environ.get('LIBERO_GPU_PRODUCT_CACHE_MAX_BYTES', 4*1024**3))
+    if max_entries is None:
+        max_entries = int(os.environ.get('LIBERO_GPU_PRODUCT_CACHE_MAX_ENTRIES', 4096))
     authority = ProductBuildAuthority(cache_root, authority_root=authority_root,
         max_bytes=max_bytes, max_entries=max_entries, lock_timeout=lock_timeout)
     token = _scope.set(authority)
@@ -107,9 +137,14 @@ class ProductBuildAuthority:
                  max_entries=4096, lock_timeout=1800):
         self.cache_root = Path(cache_root).expanduser().resolve()
         self.root = self.cache_root/'signed-v1'
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.authority_root = _private_directory(authority_root or
-            Path.home()/'.local/share/libero-gpu/build-authority')
+        from .compilation import compilation_allowed, MissingCompiledProduct
+        writable = compilation_allowed()
+        authority_path = Path(authority_root or Path.home()/'.local/share/libero-gpu/build-authority').expanduser().absolute()
+        if writable:
+            self.root.mkdir(parents=True, exist_ok=True)
+        elif not self.root.is_dir() or not (authority_path/'signing.key').is_file():
+            raise MissingCompiledProduct('Signed native products/signing authority are absent; prepare offline.')
+        self.authority_root = _private_directory(authority_path)
         authority_location = self.authority_root.resolve()
         if authority_location == self.cache_root or authority_location.is_relative_to(self.cache_root):
             raise ValueError('signing key must live outside the product cache')
@@ -119,7 +154,7 @@ class ProductBuildAuthority:
         self.max_entries = max_entries
         self.lock_timeout = float(lock_timeout)
         key_path = self.authority_root/'signing.key'
-        with _lock(self.authority_root/'key.lock', self.lock_timeout):
+        with _lock(self.authority_root/'key.lock', self.lock_timeout) if writable else nullcontext():
             if not key_path.exists():
                 fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -140,6 +175,57 @@ class ProductBuildAuthority:
 
     def _signature(self, receipt):
         return hmac.new(self._key, _canonical(receipt), hashlib.sha256).hexdigest()
+
+    def find_completed(self, identity, required_symbols):
+        """Read a signed completed product with the same actual load inputs."""
+        expected = _load_identity(identity)
+        for path in sorted(self.root.glob('*/receipt.json')):
+            try:
+                receipt = json.loads(path.read_bytes())['receipt']
+                if _load_identity(receipt['identity']) != expected:
+                    continue
+                key = path.parent.name
+                found = self._read(path.parent, key, receipt['identity'], required_symbols)
+                if found is not None:
+                    raw, receipt = found
+                    return raw, receipt, {'hit': True, 'persisted': True, 'key': key,
+                        'build_environment_changed': receipt['identity'] != identity}
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return None
+
+    def find_native(self, source, bridges, flags, architecture, archive, required_symbols):
+        """Load fixed native code using its signed source and actual file inputs.
+
+        No compiler dependency/version commands run while loading an installed
+        product. All dependency and toolchain bytes named by its receipt are
+        still checked. Missing offline source inputs retain the legacy path.
+        """
+        from .build_receipts import file_record
+        expected = dict(source_sha256=_digest(source.encode()),
+                        bridges_sha256=[_digest(text.encode()) for text in bridges],
+                        flags=list(flags), architecture=architecture, archive=archive)
+        for path in sorted(self.root.glob('*/receipt.json')):
+            try:
+                receipt = json.loads(path.read_bytes())['receipt']
+                identity = receipt['identity']
+                if identity.get('schema') != 'compiler-dependency-build-v1' or any(
+                        identity.get(name) != value for name, value in expected.items()):
+                    continue
+                found = self._read(path.parent, path.parent.name, identity, required_symbols)
+                if found is None:
+                    continue
+                inputs = [path.parent/'inputs'/('unit%d.cu' % index) for index in range(1+len(bridges))]
+                if not all(p.is_file() and p.read_text() == text for p, text in zip(inputs, [source, *bridges])):
+                    continue
+                files = [*identity['dependencies'], *identity['toolchain']['components']]
+                if archive is not None:files.append(archive)
+                if any(file_record(row['path']) != row for row in files):
+                    continue
+                return path.parent/'product.so', inputs, found[1]
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return None
 
     def _read(self, folder, key, identity, required_symbols):
         try:
@@ -170,22 +256,40 @@ class ProductBuildAuthority:
         # Full cache still allows the private build to run, but grants no future
         # persistent reuse until the user explicitly makes room.
         with _lock(self.root/'catalog.lock', self.lock_timeout):
-            products = list(self.root.glob('*/product.so'))
-            occupied = sum(p.stat().st_size+p.with_name('receipt.json').stat().st_size
-                           for p in products if p.with_name('receipt.json').is_file())
-            prior = (folder/'product.so')
-            replacing = prior.exists()
-            old = prior.stat().st_size if replacing else 0
-            if replacing and (folder/'receipt.json').exists():
-                old += (folder/'receipt.json').stat().st_size
-            if occupied-old+len(raw)+len(encoded) > self.max_bytes or len(products)+(not replacing) > self.max_entries:
+            # Interrupted publications count too. They are not usable products,
+            # but excluding their bytes would allow repeated crashes to evade
+            # the bound. Keep them as evidence rather than silently deleting.
+            artifacts = [p for p in self.root.glob('*/*') if p.is_file() and (
+                p.name in ('product.so', 'receipt.json') or
+                (p.suffix in ('.so', '.json') and len(p.stem) == 32 and
+                 all(c in '0123456789abcdef' for c in p.stem)))]
+            occupied = sum(p.stat().st_size for p in artifacts)
+            occupied_entries = {p.parent for p in artifacts}
+            old = sum(p.stat().st_size for p in (folder/'product.so', folder/'receipt.json') if p.exists())
+            if (occupied-old+len(raw)+len(encoded) > self.max_bytes or
+                    len(occupied_entries | {folder}) > self.max_entries):
+                if _persistence_required.get():
+                    raise OSError(errno.ENOSPC,
+                        'Offline native product was built but cannot be persisted: signed cache '
+                        f'{self.root} exceeds max_bytes={self.max_bytes} or max_entries={self.max_entries}. '
+                        'No ready build profile was produced. Make room or enlarge the product cache budget.')
                 return receipt, False
             nonce = uuid.uuid4().hex
-            for name, content in ((nonce+'.so',raw),(nonce+'.json',encoded)):
-                with (folder/name).open('xb') as stream:
-                    stream.write(content); stream.flush(); os.fsync(stream.fileno())
-            os.replace(folder/(nonce+'.so'), folder/'product.so')
-            os.replace(folder/(nonce+'.json'), folder/'receipt.json')
+            temporary = [folder/(nonce+'.so'), folder/(nonce+'.json')]
+            try:
+                for path, content in zip(temporary, (raw, encoded)):
+                    with path.open('xb') as stream:
+                        stream.write(content); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temporary[0], folder/'product.so')
+                os.replace(temporary[1], folder/'receipt.json')
+                fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                for path in temporary:
+                    path.unlink(missing_ok=True)
         return receipt, True
 
     def obtain(self, identity, required_symbols, *, build, validate, exports):
@@ -202,6 +306,19 @@ class ProductBuildAuthority:
         if any(type(s) is not str or not s for s in symbols):
             raise ValueError('native product symbols must be nonempty strings')
         key = _digest(_canonical({'identity':identity, 'required_symbols':list(symbols)}))
+        from .compilation import compilation_allowed
+        if not compilation_allowed():
+            # Loading fixed products performs no cache registration or writes.
+            validate()
+            found = self.find_completed(identity, symbols)
+            if found is not None:
+                raw, receipt, status = found
+                exports(raw)
+                validate()
+                return raw, receipt, status
+            from .compilation import MissingCompiledProduct
+            raise MissingCompiledProduct('No completed signed product matches the current source, '
+                                         'dependency, architecture and ABI inputs; prepare offline.')
         folder = self.root/key; folder.mkdir(exist_ok=True)
         with _lock(folder/'build.lock', self.lock_timeout):
             validate()

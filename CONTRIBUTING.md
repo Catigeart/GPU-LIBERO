@@ -43,6 +43,10 @@ Use the [runtime path index](libero/libero/gpu/ARCHITECTURE.md) to locate defaul
 fallback and explicitly configured implementations. Product GPU modules must not
 import development scripts. Common model/build/runtime helpers belong in their
 own package; experiments and generated evidence stay outside the source checkout.
+The [environment lifecycle guide](libero/libero/gpu/ENVIRONMENT_LIFECYCLE.md)
+separates runtime resource ownership, fixed offline products and retired storage
+maintenance. Current lifetime tests and legacy collector tests are kept separate;
+see [the test index](tests/README.md).
 Use the [stable validation entry](tools/validation/README.md) instead of creating
 another dated copy of actions, reference comparison or timing calculations.
 

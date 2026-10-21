@@ -643,13 +643,18 @@ class GpuBuildCacheTests(unittest.TestCase):
             target.mkdir(parents=True)
             (target / 'libcollision.so').write_bytes(b'shared compiled image')
             files = []
+            lifetimes = []
             for address in (101, 202):
                 with paths.build_project(Path(directory) / 'project'), paths.product_build():
+                    lifetimes.append(paths.current_build_lifetime().retain())
                     files.append(Path(paths.record_module_binding(target, {'cuda_function': address})))
             self.assertNotEqual(files[0], files[1])
             self.assertEqual([json.loads(p.read_text())['cuda_function'] for p in files], [101, 202])
-            self.assertTrue(all(p.is_relative_to(Path(directory) / 'builds') for p in files))
+            self.assertTrue(all(p.is_relative_to(Path(directory) / 'storage-v1/runs') for p in files))
             self.assertEqual((target / 'libcollision.so').read_bytes(), b'shared compiled image')
+            for lifetime in lifetimes:
+                lifetime.close()
+            self.assertTrue(all(not p.exists() for p in files))
 
     def test_distinct_generated_source_paths_do_not_collide_in_build_cache(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -736,6 +741,7 @@ class GpuBuildCacheTests(unittest.TestCase):
                          hashlib=hashlib, json=json, re=re, os=os, shutil=shutil,
                          subprocess=SimpleNamespace(run=compiler),
                          nvcc_path=lambda: '/toolkit/bin/nvcc',
+                         load_cdll=lambda path: str(path),
                          ct=SimpleNamespace(CDLL=lambda path: path))
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), 'exec'), namespace)
         compile_ = namespace['_compile_library_legacy']

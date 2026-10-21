@@ -17,6 +17,7 @@ def load_driver():
     nodes = [node for node in ast.parse(SOURCE.read_text()).body
              if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in selected]
     namespace = {'__name__': __name__, 'dataclass': dataclass, 'nullcontext': nullcontext,
+                 'cold_build_scope': lambda function: function,
                  'stack_reset_states': lambda states: ('stacked', states)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), namespace)
     return namespace

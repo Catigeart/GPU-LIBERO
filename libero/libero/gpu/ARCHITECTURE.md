@@ -40,6 +40,22 @@ profiles and build caches also belong outside the source checkout.
 | Collision model intake | Extract live MuJoCo arrays without private test XML or CPU contact outputs. | `model/collision_static.py::static_from_model` |
 | Capsule extension | Cold source closure and route extension before binding/launch, with independent source identity. | `host/runtime/collision/capsule_extension.py::prepare_workspace_extension` |
 
+## Environment ownership and offline products
+
+See [Environment Lifecycle](ENVIRONMENT_LIFECYCLE.md) for runtime filesystem
+behavior, cleanup guarantees and the differences from CPU LIBERO reset semantics.
+
+| Responsibility | Implementation |
+| --- | --- |
+| Read-only FP32 scene inputs | `host/backends/cuda_fp32/scene.py::_scene_files` |
+| FP32 Graph, renderer and stream release | `host/backends/cuda_fp32/environment.py::CudaFP32BatchEnv.close` |
+| Native compatibility preparation and load-only scope | `host/build/compatibility.py`; `host/adapters/environment/product_factory.py::compatibility_scope` |
+| Signed stateless native code and per-caller parameters | `host/build/native.py`; `host/build/product_cache.py` |
+| Temporary native loader ownership and retry | `host/runtime/core/build_lifetime.py::BuildLifetime` |
+| In-memory native model intake and replacement | `host/runtime/core/model_bytes.py`; `host/runtime/core/native_model_update.py` |
+| Private library release after borrowed functions expire | `host/build/library_lifetime.py` |
+| Retired storage maintenance, outside environment execution | `host/build/legacy_storage.py` |
+
 ## Control-step execution
 
 The default FP32 path is:

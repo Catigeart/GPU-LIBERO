@@ -4,21 +4,18 @@ Only static CPU model bytes are prepared here. GPU owners must snapshot their
 actual continuation, release the old arena before allocation and restore without
 reset/forward. A new owner/source identity never inherits an acceptance bridge.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 import copy
 import hashlib
-import json
-import os
 from pathlib import Path
-import tempfile
 
 import mujoco
 import numpy as np
 
 from .contracts import ContractError, _hash
 from .portable_intake import describe_native_model, prepare_native_intake
+from .model_bytes import model_bytes
 
 # Public physical inputs, not compiled indices/addresses, name tables, resource
 # bytes or derived compiler caches such as body_subtreemass/dof_invweight0.
@@ -157,7 +154,7 @@ class NativeModelUpdatePlan:
     array_fields: tuple
     option_fields: tuple
     source_generation: int
-    directory: Path
+    directory: object
     producer_sha256: str
     state: str = 'prepared'
 
@@ -166,7 +163,7 @@ class NativeModelUpdatePlan:
     @property
     def constraint_package(self): return self.intake_binding.package
     @property
-    def mjb_path(self): return self.directory / 'actual_model.mjb'
+    def mjb_path(self): return None
 
     def validate_base(self):
         if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != self.producer_sha256:
@@ -179,9 +176,9 @@ class NativeModelUpdatePlan:
         if spec.identity_key != self.base_spec.identity_key or descriptor != self.base_descriptor:
             raise ContractError('native update source identity changed')
         self.intake_binding.validate()
-        if (hashlib.sha256((self.directory / 'base.mjb').read_bytes()).hexdigest() != self.base_spec.model_sha256 or
-                hashlib.sha256(self.mjb_path.read_bytes()).hexdigest() != self.spec.model_sha256):
-            raise ContractError('native model update private MJB bytes changed')
+        if (hashlib.sha256(model_bytes(self.source_native_model)).hexdigest() != self.base_spec.model_sha256 or
+                hashlib.sha256(model_bytes(self.built.native_model)).hexdigest() != self.spec.model_sha256):
+            raise ContractError('native model update bytes changed')
         return self
 
     def discard(self, reason='cold model update rejected before publication'):
@@ -231,15 +228,9 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
     option_payload = {name: _checked_option(name, value, getattr(model.opt, name))
                       for name, value in option_changes.items()}
     base_spec, base_descriptor = describe_native_model(built)
-    root = Path(cache_dir or os.environ.get('LIBERO_GPU_CACHE_DIR') or
-                Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'libero-gpu') / 'model-updates'
-    root.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix='native-', dir=root))
-    base_file = directory / 'base.mjb'
-    mujoco.mj_saveModel(model, str(base_file), None)
-    if hashlib.sha256(base_file.read_bytes()).hexdigest() != base_spec.model_sha256:
-        raise ContractError('saved native update source model changed')
-    native = mujoco.MjModel.from_binary_path(str(base_file))
+    if hashlib.sha256(model_bytes(model)).hexdigest() != base_spec.model_sha256:
+        raise ContractError('native update source model changed')
+    native = copy.copy(model)
     original = native_model_metadata(native)
     for field in ('dimensions', 'options', 'model_sha256', 'static_arrays_sha256', 'topology_sha256', 'array_sha256'):
         if original[field] != built.metadata[field]:
@@ -275,11 +266,9 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
     # specialization and each component checks its own source/owner/capacity.
     intake = prepare_native_intake(fresh, cache_dir=cache_dir)
     fresh._gpu_native_intake_binding = intake
-    actual_file = directory / 'actual_model.mjb'
-    mujoco.mj_saveModel(native, str(actual_file), None)
-    if hashlib.sha256(actual_file.read_bytes()).hexdigest() != intake.spec.model_sha256:
-        intake.invalidate('actual saved update model differs')
-        raise ContractError('actual saved update model differs from fresh intake')
+    if hashlib.sha256(model_bytes(native)).hexdigest() != intake.spec.model_sha256:
+        intake.invalidate('actual update model differs')
+        raise ContractError('actual update model differs from fresh intake')
     preflight = {
         'schema': 'native-model-full-replacement-preflight-v1',
         'base_model_identity': base_spec.identity_key, 'new_model_identity': intake.spec.identity_key,
@@ -291,15 +280,14 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
                                         for name, a in payload.items()},
         'option_payload_sha256': _hash({name: value.tolist() if isinstance(value, np.ndarray) else value
                                        for name, value in option_payload.items()}),
-        'actual_model_path': str(actual_file), 'actual_model_sha256': intake.spec.model_sha256,
+        'actual_model_storage': 'native-model', 'actual_model_sha256': intake.spec.model_sha256,
         'old_owner_unchanged': True, 'CPU_physics': False,
         'generation_bridge_granted': False, 'GPU_continuation_restored': False,
         'GPU_owner_published': False, 'numerical_acceptance_published': False,
     }
-    (directory / 'NATIVE_PREFLIGHT.json').write_text(
-        json.dumps(preflight, indent=2, sort_keys=True, allow_nan=False) + '\n')
     plan = NativeModelUpdatePlan(built, model, base_spec, base_descriptor, fresh, intake,
                                 tuple(sorted(payload)), tuple(sorted(option_payload)),
-                                source_generation, directory, _PRODUCER_SHA_AT_IMPORT)
+                                source_generation, None, _PRODUCER_SHA_AT_IMPORT)
+    plan.preflight = preflight
     plan.validate_base()
     return plan

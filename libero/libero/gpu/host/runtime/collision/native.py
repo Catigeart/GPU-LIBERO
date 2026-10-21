@@ -8,6 +8,7 @@ import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path
 import ctypes as ct
+from libero.gpu.host.build.library_lifetime import load_cdll
 import hashlib,json,os,re,subprocess,time
 from pathlib import Path
 import warp as wp
@@ -17,6 +18,17 @@ import uuid
 
 MODULE=GPU_ROOT / 'cuda/collision/native'
 _CACHE={}
+
+
+def _store_native_cache(key, obj, target):
+    _CACHE[key] = obj
+    from libero.gpu.host.runtime.core.product_paths import current_build_lifetime
+    owner = current_build_lifetime()
+    if owner is not None and Path(target).resolve().is_relative_to(owner.path):
+        def retire():
+            if _CACHE.get(key) is obj:
+                _CACHE.pop(key)
+        owner.retire_callbacks.append(retire)
 
 def _sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -83,8 +95,8 @@ def _prepare_native(device):
     if not dev.is_cuda:raise ValueError('native collision requires CUDA device')
     root=os.environ.get('P06C_NATIVE_BUILD_ROOT')
     if not root:raise ValueError('P06C_NATIVE_BUILD_ROOT must name private build directory')
-    from libero.gpu.host.runtime.core.product_paths import collision_build_root
-    root = collision_build_root(root, MODULE, GPU_ROOT)
+    from libero.gpu.host.runtime.core.product_paths import collision_build_root, private_product_root
+    root = private_product_root(collision_build_root(root, MODULE, GPU_ROOT))
     vector_header=(GPU_ROOT / 'cuda/common/vector.cuh').resolve()
     sources=_native_source_bindings(vector_header)
     key=hashlib.sha256(json.dumps({'sources':sources,'fma':True,'real_bits':scalar.bits,'forced_include':str(vector_header)},sort_keys=True).encode()).hexdigest()
@@ -135,7 +147,7 @@ def _prepare_native(device):
         record['product_build']=product_result
         (target/'BUILD.json').write_text(json.dumps(record,indent=2))
         obj=loaded['object'];obj['build_sha256']=_sha(target/'BUILD.json');obj['product_build']=product_result
-        _CACHE[cache_key]=obj
+        _store_native_cache(cache_key, obj, target)
         record_build('collision-native', key, product_result['compile_commands_executed'])
         return obj
     reused = target.exists()
@@ -195,11 +207,11 @@ def _prepare_native(device):
         (target/'BUILD.json').write_text(json.dumps(record,indent=2))
     obj=_bind_native_product(target,record,nvcc,dev,sources)
     record_build('collision-native', key, () if reused else (argv, ptx_argv))
-    _CACHE[cache_key]=obj
+    _store_native_cache(cache_key, obj, target)
     return obj
 
 def _bind_native_product(target,record,nvcc,dev,sources):
-    lib=ct.CDLL(str(target/'libcollision.so'))
+    lib=load_cdll(target/'libcollision.so')
     lib.native_private_abi.argtypes=[ct.POINTER(ct.c_int)]
     lib.native_private_abi.restype=ct.c_int
     sizes=(ct.c_int*7)()

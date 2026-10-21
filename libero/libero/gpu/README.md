@@ -132,6 +132,11 @@ Start with `cuda/` to inspect device mathematics and `host/` to inspect memory, 
 
 ## Configuration and Lifecycle
 
+[Environment Lifecycle](ENVIRONMENT_LIFECYCLE.md) describes fixed offline inputs,
+in-memory model ownership, reset/replacement, temporary loader files and cleanup.
+Runtime environment operations do not maintain a disk catalog or LRU. The retired
+storage collector is an explicit offline maintenance tool.
+
 [Algorithm Configuration](ALGORITHM_NOTES.md) describes algorithm choices, defaults, and capacity boundaries. Batched cone/rebuild selection and Post radix/topology reuse retain their configured conditions. Newton islands and collision temporal caching are explicit experimental choices with their original admission checks.
 
 `GpuBatchEnv(..., algorithm_options=...)` also accepts `collision_schedule`

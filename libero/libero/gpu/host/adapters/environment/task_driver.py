@@ -11,6 +11,7 @@ import numpy as np
 import random
 import gc
 from .facade import UnsupportedGpuOperation, CompletedColdModelUpdate
+from libero.gpu.host.build.compilation import load_only_entry
 
 _PLACEMENT_LOCK = RLock()
 
@@ -92,6 +93,7 @@ class GpuTaskComponents:
 class GpuTaskEnvironment:
     physics_backend = "gpu"
 
+    @load_only_entry
     def __init__(self, components, *, rebuild=None, initialize=True):
         components.validate()
         self._lock = RLock()
@@ -132,9 +134,9 @@ class GpuTaskEnvironment:
             # Capture this generation's owners. Replacement binds a new sim;
             # retained old facades fail their closed-owner checks.
             components = self.components
-            self.sim.bind_renderer(lambda **options: render(
+            self.sim.bind_renderer(load_only_entry(lambda **options: render(
                 components.observation_fields(), world=components.world,
-                stream=components.stream, **options),
+                stream=components.stream, **options)),
                 context_provider=getattr(components.observations, "public_render_context", None))
         # These are static references only; never call shell._setup_references,
         # because it invokes normal robot/controller initialization.
@@ -249,11 +251,13 @@ class GpuTaskEnvironment:
     def get_object(self, object_name): return self.shell.get_object(object_name)
     def is_fixture(self, object_name): return self.shell.is_fixture(object_name)
 
+    @load_only_entry
     def edit_model_xml(self, xml_str):
         with self._lock:
             self._open()
             return self.shell.edit_model_xml(xml_str)
 
+    @load_only_entry
     def set_xml_processor(self, processor):
         with self._lock:
             self._open()
@@ -261,17 +265,20 @@ class GpuTaskEnvironment:
             # the same callback rather than a shadow value on the public proxy.
             self.shell.set_xml_processor(processor)
 
+    @load_only_entry
     def set_camera_pos_quat(self, camera_pos, camera_quat):
         with self._lock:
             self._open()
             return self.shell.set_camera_pos_quat(camera_pos, camera_quat)
 
+    @load_only_entry
     def set_visualization(self):
         with self._lock:
             self._open()
             self.shell.set_visualization()
             self.sim.flush_public_arrays()
 
+    @load_only_entry
     def initialize_renderer(self):
         with self._lock:
             self._open()
@@ -283,6 +290,7 @@ class GpuTaskEnvironment:
     def observation_modalities(self):
         return set(self.components.observations.observation_modalities)
 
+    @load_only_entry
     def reward(self, action=None):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -290,6 +298,7 @@ class GpuTaskEnvironment:
             self.components.synchronize_and_check()
             with boundary_predicates(self.shell, self.sim): return self.shell.reward(action)
 
+    @load_only_entry
     def visualize(self, vis_settings):
         with self._lock:
             self._open()
@@ -299,6 +308,7 @@ class GpuTaskEnvironment:
                 self.shell.visualize(vis_settings)
                 self.sim.flush_public_arrays()
 
+    @load_only_entry
     def check_contact(self, geoms_1, geoms_2=None):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -307,6 +317,7 @@ class GpuTaskEnvironment:
             with boundary_predicates(self.shell, self.sim):
                 return self.shell.check_contact(geoms_1, geoms_2)
 
+    @load_only_entry
     def get_contacts(self, model):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -338,6 +349,7 @@ class GpuTaskEnvironment:
         return {spec.name for spec in plan.specs if spec.active} | {
             spec["name"] for spec in plan.image_specs if spec.get("active", True)}
 
+    @load_only_entry
     def modify_observable(self, observable_name, attribute, modifier):
         with self._lock:
             self._open()
@@ -346,6 +358,7 @@ class GpuTaskEnvironment:
                 raise UnsupportedGpuOperation("GPU observable schema mutation is not bound")
             return callback(observable_name, attribute, modifier, stream=self.components.stream)
 
+    @load_only_entry
     def add_observable(self, observable):
         with self._lock:
             self._open()
@@ -353,23 +366,27 @@ class GpuTaskEnvironment:
             if not callable(callback): raise UnsupportedGpuOperation("GPU observable addition is not bound")
             return callback(observable, stream=self.components.stream)
 
+    @load_only_entry
     def render(self):
         with self._lock:
             self._open()
             self.sim.flush_public_arrays()
             return self.shell.viewer.render()
 
+    @load_only_entry
     def get_pixel_obs(self):
         with self._lock:
             self._open()
             self.sim.flush_public_arrays()
             return self.shell.viewer.get_pixel_obs()
 
+    @load_only_entry
     def close_renderer(self):
         with self._lock:
             self._open()
             return self.shell.viewer.close()
 
+    @load_only_entry
     def clear_objects(self, object_names):
         names = {object_names} if isinstance(object_names, str) else set(object_names)
         with self._lock:
@@ -439,12 +456,14 @@ class GpuTaskEnvironment:
         c.observations.sample(c.observation_fields(), force=force,
                               world_mask=c.world_mask, stream=c.stream)
 
+    @load_only_entry
     def _update_observables(self, force=False):
         with self._lock:
             self._open()
             with self._mutation():
                 self._sample(force=force)
 
+    @load_only_entry
     def _get_observations(self, force_update=False):
         with self._lock:
             self._open()
@@ -489,6 +508,7 @@ class GpuTaskEnvironment:
         quarantine=getattr(self.sim,'_quarantine',None)
         if callable(quarantine):quarantine('model_replacement')
 
+    @load_only_entry
     def replace_native_components(self, build_new, source_sim):
         """Restore a freshly sourced model/arena into the stable public facade.
 
@@ -573,6 +593,7 @@ class GpuTaskEnvironment:
             finally:
                 self._replacing = False
 
+    @load_only_entry
     def replace_components_for_model_update(self,build_new,token,model_generation):
         """Install restored actual owners atomically after cold model replacement.
 
@@ -651,6 +672,7 @@ class GpuTaskEnvironment:
                 raise
             finally:
                 self._replacing=False
+    @load_only_entry
     def reset(self):
         with self._lock:
             self._open(allow_reset_pending=True)
@@ -684,6 +706,7 @@ class GpuTaskEnvironment:
                 if rgba[index,3] > 0.0: rgba[index,3] = -rgba[index,3]
         self.sim.update_visual_parameters({"site_rgba":rgba})
 
+    @load_only_entry
     def reset_from_xml_string(self, xml_string):
         if not isinstance(xml_string, str) or not xml_string.strip():
             raise ValueError('nonempty XML string required')
@@ -709,11 +732,13 @@ class GpuTaskEnvironment:
                 finally:
                     self.shell.deterministic_reset = False
 
+    @load_only_entry
     def get_sim_state(self):
         with self._lock:
             self._open()
             return self.sim.get_state().flatten()
 
+    @load_only_entry
     def set_state(self, value):
         with self._lock:
             self._open()
@@ -721,6 +746,7 @@ class GpuTaskEnvironment:
             with self._mutation():
                 self.sim.set_state_from_flattened(value)
 
+    @load_only_entry
     def regenerate_obs_from_state(self, value):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -735,6 +761,7 @@ class GpuTaskEnvironment:
                     self.shell._post_process()
                 return self._get_observations(force_update=True)
 
+    @load_only_entry
     def _check_success(self):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -742,12 +769,14 @@ class GpuTaskEnvironment:
             self.components.synchronize_and_check()
             with boundary_predicates(self.shell, self.sim): return self.shell._check_success()
 
+    @load_only_entry
     def _post_process(self):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
             self._open()
             self.components.synchronize_and_check()
             with boundary_predicates(self.shell, self.sim): return self.shell._post_process()
+    @load_only_entry
     def step(self, action):
         from libero.gpu.host.adapters.observations.boundary import boundary_predicates
         with self._lock:
@@ -772,16 +801,19 @@ class GpuTaskEnvironment:
                     done = self.shell._check_success()
                 return self._get_observations(), reward, done, info
 
+    @load_only_entry
     def runtime_owner_evidence(self):
         with self._lock:
             self._open()
             return self.sim._call('runtime_owner_evidence')
 
+    @load_only_entry
     def gpu_physics_evidence(self):
         with self._lock:
             self._open()
             return self.sim._call("gpu_physics_evidence")
 
+    @load_only_entry
     def diagnostic_evidence(self):
         with self._lock:
             if self._closed:raise RuntimeError("GPU task environment is closed")
@@ -791,6 +823,7 @@ class GpuTaskEnvironment:
                     "reset_pending":self._needs_reset,"last_failure":self.last_failure,
                     "actual":reader()}
 
+    @load_only_entry
     def close(self):
         with self._lock:
             if not self._closed:

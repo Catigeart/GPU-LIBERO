@@ -24,7 +24,9 @@ def actual_model_descriptor(bundle, *, output=None):
     """Pin this arena's actual model blob and identity, not a raw ancestor."""
     if getattr(bundle, 'closed', False):
         raise RuntimeError('closed arena has no current model')
-    model = _record(bundle.model_pack.mjb_path)
+    from ..core.model_bytes import model_bytes
+    raw = model_bytes(bundle.model_pack.model)
+    model = dict(storage='native-model', sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw))
     if model['sha256'] != bundle.model_spec.model_sha256:
         raise ValueError('actual model blob differs from current ModelSpec')
     packet = dict(schema='actual-runtime-model-descriptor-v1', model=model,
@@ -36,7 +38,7 @@ def actual_model_descriptor(bundle, *, output=None):
         directory = Path(output)
         directory.mkdir(parents=True, exist_ok=False)
         destination = directory / 'ACTUAL_MODEL.mjb'
-        shutil.copyfile(model['path'], destination)
+        destination.write_bytes(raw)
         if _record(destination)['sha256'] != model['sha256']:
             raise RuntimeError('model transport changed bytes')
         packet['model'] = _record(destination)
@@ -50,33 +52,28 @@ def actual_model_descriptor_from_task(task, *, output=None):
     This works with the existing R10 task interface. It neither inspects Python
     closure cells nor searches filenames for a replacement model.
     """
-    witness = task.runtime_owner_evidence()
-    expected = witness['model_sha256']
-    records = witness['source_records']
-    matches = [record for record in records
-               if str(record['path']).endswith('.mjb') and record['sha256'] == expected]
-    if len(matches) != 1:
-        raise ValueError('current owner must publish one exact actual model source')
-    model = _record(matches[0]['path'])
-    if model['sha256'] != expected:
-        raise ValueError('published current model source changed')
-    packet = dict(schema='actual-task-model-descriptor-v1', model=model,
-                  model_identity=witness['model_identity'],
-                  device_model_epoch=witness['device_model_epoch'],
-                  independent_model_expected=witness['independent_model_expected'],
-                  device_model_ready=witness['device_model_ready'],
-                  source_records=records, independent_numerical_licence=False)
-    if output is not None:
-        directory = Path(output)
-        directory.mkdir(parents=True, exist_ok=False)
-        destination = directory / 'ACTUAL_MODEL.mjb'
-        shutil.copyfile(model['path'], destination)
-        copied = _record(destination)
-        if copied['sha256'] != model['sha256']:
-            raise RuntimeError('current model transport changed bytes')
-        packet['model'] = copied
-        (directory / 'MODEL_DESCRIPTOR.json').write_text(json.dumps(packet, indent=2) + '\n')
-    return packet
+    from ..core.model_bytes import model_bytes
+    with task._lock:
+        task._open()
+        witness = task.gpu_physics_evidence()
+        raw = model_bytes(task.built.native_model, witness['model_sha256'])
+        packet = dict(schema='actual-task-model-descriptor-v1',
+            model=dict(storage='native-model', sha256=witness['model_sha256'], bytes=len(raw)),
+            model_identity=witness['model_identity'],
+            device_model_epoch=witness['device_model_epoch'],
+            independent_model_expected=witness['independent_model_expected'],
+            device_model_ready=witness['device_model_ready'],
+            source_records=witness['source_records'], independent_numerical_licence=False)
+        if output is not None:
+            directory = Path(output)
+            directory.mkdir(parents=True, exist_ok=False)
+            destination = directory / 'ACTUAL_MODEL.mjb'
+            destination.write_bytes(raw)
+            packet['model'] = _record(destination)
+            if packet['model']['sha256'] != witness['model_sha256']:
+                raise RuntimeError('current model transport changed bytes')
+            (directory / 'MODEL_DESCRIPTOR.json').write_text(json.dumps(packet, indent=2) + '\n')
+        return packet
 
 
 def actual_stage_sources(bundle):

@@ -3,12 +3,39 @@ import hashlib,json,os,shutil,subprocess,uuid,re
 from pathlib import Path
 from contextlib import contextmanager
 import time
+from functools import lru_cache
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
 def canonical(value): return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+def _file_signature(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+@lru_cache(maxsize=8192)
+def _file_digest(path, signature):
+    result = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        if _file_signature(os.fstat(stream.fileno())) != signature:
+            raise RuntimeError('build input changed before hashing: ' + str(path))
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            result.update(chunk)
+        if _file_signature(os.fstat(stream.fileno())) != signature:
+            raise RuntimeError('build input changed while hashing: ' + str(path))
+    return result.hexdigest()
+
+
 def file_record(path):
-    path=Path(path).resolve();raw=path.read_bytes()
-    return {'path':str(path),'bytes':len(raw),'sha256':digest(raw)}
+    """Recheck file identity/metadata; hash bytes again after any file change.
+
+    The bounded cache is process-local. Recently changed files always read
+    bytes: filesystem timestamps can coalesce multiple writes in one tick.
+    For older files, ctime catches edits with restored mtime; inode/device
+    catch replacement. Dependency/tool discovery still runs on every admission.
+    """
+    path = Path(path).resolve()
+    signature = _file_signature(path.stat())
+    compute = _file_digest.__wrapped__ if time.time_ns() - signature[4] < 2_000_000_000 else _file_digest
+    return {'path': str(path), 'bytes': signature[2], 'sha256': compute(str(path), signature)}
 
 def _dependency_names(output):
     """Parse one fixed-target Make rule without evaluating Make expressions."""

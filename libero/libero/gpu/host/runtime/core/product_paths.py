@@ -12,6 +12,7 @@ import urllib.request
 import uuid
 
 _CURRENT = ContextVar('libero_gpu_product_build', default=None)
+_LIFETIME = ContextVar('libero_gpu_build_lifetime', default=None)
 _SDK = ContextVar('libero_gpu_product_sdk', default=None)
 _PROJECT = ContextVar('libero_gpu_build_project', default=None)
 _MATHDX_URL = ('https://developer.nvidia.com/downloads/compute/cublasdx/redist/'
@@ -102,7 +103,18 @@ def build_project(directory=None, *, lock_key=None):
         yield previous
         return
     import fcntl
-    root = Path(directory).expanduser().resolve() if directory is not None else cache_root() / 'project'
+    root = Path(directory).expanduser().resolve() if directory is not None else cache_root(create=False) / 'project'
+    from libero.gpu.host.build.compilation import compilation_allowed, MissingCompiledProduct
+    if not compilation_allowed():
+        if not root.is_dir():
+            raise MissingCompiledProduct('Prepare the compiler project offline: ' + str(root))
+        project = dict(root=root, events=[])
+        token = _PROJECT.set(project)
+        try:
+            yield project
+        finally:
+            _PROJECT.reset(token)
+        return
     root.mkdir(parents=True, exist_ok=True)
     lock_name = '.build.lock' if lock_key is None else '.build-' + hashlib.sha256(str(lock_key).encode()).hexdigest() + '.lock'
     with (root / lock_name).open('a+b') as lock:
@@ -220,17 +232,44 @@ def mathdx_root(*, download=True):
 
 @contextmanager
 def product_build():
-    """Bind cold constructors to one private arena without changing process env."""
+    """Own temporary loader files across construction and successful runtime close."""
     previous = _CURRENT.get()
     if previous is not None:
         yield previous
         return
-    root = build_directory('environment')
+    from libero.gpu.host.runtime.core.build_lifetime import BuildLifetime
+    lifetime = BuildLifetime()
+    root = lifetime.path
     token = _CURRENT.set(root)
+    owner_token = _LIFETIME.set(lifetime)
     try:
-        yield root
+        try:
+            yield root
+        except BaseException as error:
+            try:
+                lifetime.close()
+            except BaseException as cleanup:
+                error.gpu_cleanup_errors = list(getattr(error, 'gpu_cleanup_errors', ())) + [repr(cleanup)]
+            raise
+        else:
+            lifetime.close()
     finally:
         _CURRENT.reset(token)
+        _LIFETIME.reset(owner_token)
+
+
+def current_build_lifetime():
+    return _LIFETIME.get()
+
+
+def private_product_root(directory):
+    """Keep signed-cache materializations out of the persistent compiler bank."""
+    from libero.gpu.host.build.product_cache import current_product_authority
+    directory = Path(directory).resolve()
+    owner = current_build_lifetime()
+    if owner is None or current_product_authority() is None or directory.is_relative_to(owner.path):
+        return directory
+    return owner.path / 'native-products' / hashlib.sha256(str(directory).encode()).hexdigest()[:24]
 
 
 @contextmanager

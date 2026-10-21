@@ -10,6 +10,7 @@ import traceback
 import os
 import numpy as np
 import warp as wp
+from libero.gpu.host.runtime.core.build_lifetime import managed_build
 
 
 
@@ -28,6 +29,7 @@ def _cold_factories():
     return CollisionRuntimeAdapter, prepare_live_runtime, choice
 
 
+@managed_build
 def prepare_generic_physics(built, *, state, device='cuda:0', stream=None,
                             mode='diagnostic', with_controller=True, tape_steps=0,
                             model_spec=None, constraint_package=None, nworld=1, memory_budget=None):
@@ -104,12 +106,13 @@ def _prepare_generic_physics(built, *, state, device='cuda:0', stream=None,
         intent = wp.full(W,1,dtype=wp.int32,device=device)
         state_valid = wp.full(W,1,dtype=wp.int32,device=device)
         fmask = wp.zeros(W,dtype=wp.int32,device=device)
-        build = Path(tempfile.mkdtemp(prefix='raw-',dir=Path('/proc/self/cwd/tmp').resolve()))
+        from libero.gpu.host.runtime.core.product_paths import build_directory
+        build = build_directory('physics')
         d, intake = prepare_from_built(built,W,directory=build/'d-intake',
             decoder_record=built.metadata['decoder_record'],state_epoch=epoch,first_error=first,
             stream=stream,mode=mode,device=device,spec=shared_spec)
         spec = intake['kwargs']['spec']
-        actual_model = Path(intake['model_record']['path'])
+        actual_model = Path(intake['model_record']['path']) if 'path' in intake['model_record'] else None
         d.qpos.assign(state['qpos']);d.qvel.assign(state['qvel'])
         d.qfrc_applied.assign(state['qfrc_applied']);d.xfrc_applied.assign(state['xfrc_applied'])
         ctrl = wp.array(state['ctrl'],dtype=scalar.wp_real,device=device)
@@ -154,7 +157,7 @@ def _prepare_generic_physics(built, *, state, device='cuda:0', stream=None,
             lambda:dict(qvel=d.qvel,qvel_epoch=d.written['velocity'],expected_qvel_epoch=forward_plan))
         qm = pos.mass.mass.qm.reshape((W,153))
         warm = wp.array(state['qacc_warmstart'],dtype=scalar.wp_real,device=device)
-        n = newton_factory(model_path=actual_model,model_spec=spec,rows=R,contacts=C,nworld=W,
+        n = newton_factory(model=model,model_spec=spec,rows=R,contacts=C,nworld=W,
             build_root=build/'n-native',mode=mode,device=device,
             live_inputs=dict(J=sw.efc_J.reshape((W,R,43)),aref=sw.efc_aref.reshape((W,R)),
                 D=sw.efc_D.reshape((W,R)),R=sw.efc_R.reshape((W,R)),loss=sw.efc_frictionloss.reshape((W,R)),
@@ -207,7 +210,7 @@ def _prepare_generic_physics(built, *, state, device='cuda:0', stream=None,
             first_error=first,expected_state_epoch=expected_state)
     bundle = SimpleNamespace(runtime=loop,dynamics=d,collision=c,constraints=s,newton=n,foundation=f,
         expected_state=expected_state,initial_state=state,post=post,controller=controller,stream=stream,
-        model_pack=SimpleNamespace(model=model,mjb_path=actual_model),model_spec=spec,intake=intake,
+        model_pack=SimpleNamespace(model=model,mjb_path=actual_model,model_record=intake['model_record']),model_spec=spec,intake=intake,
         integration_tape=None,position_tape=None,reset_ctrl=ctrl,mode=mode,
         cold_copy_choice=copy_choice,memory_budget=cplan.memory_budget,
         collision_capacity_plan=cplan)

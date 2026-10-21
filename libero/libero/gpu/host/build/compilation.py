@@ -1,5 +1,5 @@
 """Explicit offline compilation and load-only runtime boundaries."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from functools import wraps
 import inspect
@@ -89,6 +89,21 @@ def environment_scope(function):
             finally:
                 if hasattr(self, 'build_report'):
                     self.build_report['events'].extend(scope['events'])
+    return wrapped
+
+
+def load_only_entry(function):
+    """Freeze ordinary public calls; reuse explicit offline authority/events.
+
+    The authority belongs to the call, not to the environment's constructor:
+    an environment prepared offline must become load-only afterwards too.
+    Nested entry points reuse the scope instead of adding per-operation gates.
+    """
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        scope = current_scope()
+        with compilation_scope(False) if scope is None else nullcontext(scope):
+            return function(*args, **kwargs)
     return wrapped
 
 

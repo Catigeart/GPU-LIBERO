@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import numpy as np
 import warp as wp
+from ..core.model_bytes import checked_records, source_ref, source_bytes
 from .runtime_adapter import _token, _array
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
@@ -20,12 +21,9 @@ def native_fields(arrays, metadata, spec, fields, *, source_records, metadata_re
                   registry, candidate_id, mode):
     """Cold native bytes -> readonly participating fields, independently pinned."""
     from libero.gpu.host.runtime.foundation.runtime_adapter import _native_field_digest, _pin_native_metadata
-    records = tuple((str(Path(r['path']).resolve()), r['sha256']) for r in source_records)
+    records = checked_records(source_records)
     if not records:
         raise ValueError('native/source records required')
-    for path, digest in records:
-        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-            raise ValueError('native/source bytes drift: ' + path)
     _pin_native_metadata(metadata, spec, records, metadata_record, fields)
     digests = {digest for _, digest in records}
     if (metadata['model_sha256'] != spec.model_sha256 or
@@ -408,7 +406,7 @@ class GenericJacobianInputsWorkspace:
             registry=registry, candidate_id=candidate_id, mode=mode)
         # Robot selectors must be in the original independently pinned decoder
         # report; matching nv does not license an arbitrary 0:7 arm selection.
-        original = json.loads(Path(metadata_record['path']).read_text())
+        original = json.loads(source_bytes(source_ref(metadata_record)))
         if robot not in original.get('robot_metadata', ()):
             raise ValueError('robot selectors absent from original metadata source')
         d = metadata['dimensions']

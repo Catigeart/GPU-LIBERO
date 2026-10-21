@@ -8,6 +8,7 @@ import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import nvcc_path, serialized_build
 import ctypes as ct
+from libero.gpu.host.build.library_lifetime import load_cdll
 import hashlib
 import inspect
 import json
@@ -245,7 +246,8 @@ class HandwrittenCudaCore(PersistentCudaCore):
         tail_elements=int((external_tail or {}).get('workspace_elements',0))
         if tail_elements>dx_bytes//scalar.itemsize:
             raise ValueError(('external tail workspace exceeds lifetime-reused Dx storage',tail_elements,dx_bytes//scalar.itemsize))
-        self.root=Path(build_root).resolve();self.root.mkdir(parents=True,exist_ok=True)
+        from libero.gpu.host.runtime.core.product_paths import private_product_root
+        self.root=private_product_root(build_root);self.root.mkdir(parents=True,exist_ok=True)
         fields=[];values=[];arrays={};names=set();owners=[]
         # Row topology is regenerated whenever invariant_valid is reset at entry.
         self.constraint_group_heads=wp.zeros((ws.nworld,ws.rows),dtype=wp.int32,device=ws.device)
@@ -690,6 +692,11 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
             if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands_dx_bridge.cu')
             architecture='-arch=sm_%d'%wp.get_device(ws.device).arch
             common=[compiler,*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-Xcompiler','-fPIC','-O3','-std=c++17','--expt-relaxed-constexpr',architecture]
+            if product_authority is not None:
+                # Private signed products must be unloadable after their last
+                # borrower; GNU UNIQUE CCCL variables pin the DSO in glibc.
+                common += ['-Xcompiler=-fno-gnu-unique',
+                           '-Xlinker=--exclude-libs=libcusolverdx.a']
             main_object=self.root/(digest+'_main.o');bridge_object=self.root/(digest+'_bridge.o')
             commands=[common+['-dc','--fmad=true','--prec-div=true','--prec-sqrt=true',str(source_path),'-o',str(main_object)],
                       common+['-dc','-dlto','--fmad=true','-I'+str(dependency/'include'),
@@ -737,7 +744,7 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
                 if 'shared' not in resource_usage:raise RuntimeError('compiled shared-memory usage unavailable')
                 if shared_bytes+resource_usage['shared']>48*1024:
                     raise ValueError(('Newton static+dynamic shared exceeds 48 KiB',shared_bytes,resource_usage))
-            completed=ct.CDLL(str(target))
+            completed=load_cdll(target)
             if not hasattr(completed,'launch_persistent') or (adapter is not None and not hasattr(completed,'launch_entry')):
                 raise RuntimeError('handwritten CUDA launcher symbol ABI missing')
         if product_authority is not None:
@@ -778,7 +785,7 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
                 if not reused_product:target.unlink(missing_ok=True)
                 raise
             record_build('newton-cuda', digest, () if reused_product else commands)
-        self.library=ct.CDLL(str(target));self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
+        self.library=load_cdll(target);self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
         if adapter is not None:
             self.library.launch_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p]
             self.library.launch_entry.restype=ct.c_int

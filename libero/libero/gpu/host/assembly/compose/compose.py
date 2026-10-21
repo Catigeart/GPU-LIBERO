@@ -16,19 +16,48 @@ from pathlib import Path
 import sys
 import textwrap
 import types
+import threading
+import weakref
 
 import warp as wp
 
 _CACHE = {}
+_PYTHON_SOURCES = {}
+_PYTHON_SOURCE_LOCK = threading.RLock()
+
+
+def _release_python_source(filename):
+    with _PYTHON_SOURCE_LOCK:
+        if not any(_PYTHON_SOURCES.get(filename, ())):
+            _PYTHON_SOURCES.pop(filename, None)
+            linecache.cache.pop(filename, None)
 
 
 def _load(name, source, namespace, *, warp_module=True):
     namespace = dict(namespace, scalar=scalar)
     digest = hashlib.sha256((source+'|real='+str(scalar.bits)).encode()).hexdigest()
     module_name = __name__ + "._" + name + "_" + digest[:16]
-    if module_name in sys.modules:
+    if warp_module and module_name in sys.modules:
         return sys.modules[module_name]
     filename = str((GPU_ROOT / 'host/assembly/compose/_generated') / (name + "_" + digest + ".py"))
+    if not warp_module:
+        # Python launchers may capture a runtime owner. A sys.modules entry
+        # would keep that owner, its device roots and private CDLLs forever.
+        # Functions retain their globals independently of the module object.
+        with _PYTHON_SOURCE_LOCK:
+            linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+            module = types.ModuleType(module_name)
+            module.__dict__.update(namespace)
+            module.__name__, module.__file__ = module_name, filename
+            exec(compile(source, filename, 'exec'), module.__dict__)
+            functions = [value for value in module.__dict__.values()
+                         if isinstance(value, types.FunctionType) and value.__code__.co_filename == filename]
+            leases = _PYTHON_SOURCES.setdefault(filename, weakref.WeakSet())
+            for function in functions:
+                leases.add(function)
+                weakref.finalize(function, _release_python_source, filename)
+            module.generated_source = source
+            return module
     # Warp inspects Python functions during compilation. Retain exact source,
     # including for cold-generated functions that do not need a disk cache.
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)

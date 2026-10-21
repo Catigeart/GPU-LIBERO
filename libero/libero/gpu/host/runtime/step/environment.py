@@ -1,4 +1,5 @@
 """Boundary callbacks for the first exact raw-model diagnostic environment."""
+from ..core.model_bytes import source_catalog
 import numpy as np
 import warp as wp
 
@@ -88,6 +89,8 @@ def make_boundary_callbacks(bundle, built):
         from .continuation import continuation_snapshot, restore_continuation
         from .generic_prepare import prepare_generic_physics
         from libero.gpu.host.adapters.environment.raw_factory import assemble_prepared
+        from libero.gpu.host.runtime.core.build_lifetime import cold_build_scope
+        @cold_build_scope(project_root=lambda: getattr(bundle, 'build_project_root', None))
         def build_new(old_components):
             nonlocal runtime,reset_ctrl
             # Host copies transport actual GPU bytes; no physics is evaluated.
@@ -159,7 +162,7 @@ def make_boundary_callbacks(bundle, built):
             planned_substeps_per_action=runtime.substeps,
             no_CPU_hot_backfill=True,source_phase='real resident boundary and stage publications',
             production_numeric_acceptance=False,
-            source_records=bundle.intake['kwargs']['source_records'],
+            source_records=source_catalog(bundle.intake['kwargs']['source_records']),
             state_epoch=runtime.state_epoch.numpy().tolist(),
             independent_state_expected=bundle.expected_state.numpy().tolist(),
             actual_forward_epoch=bundle.dynamics.forward_epoch.numpy().tolist(),

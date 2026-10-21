@@ -345,6 +345,41 @@ drivers and their evidence belong in the external development workspace.
 Native batch execution loads a completed offline build, by default from
 `~/.cache/libero-gpu/project` (or `$LIBERO_GPU_CACHE_DIR/project`). Set `build_root`
 to choose another directory, using the same value for `libero.gpu.build`.
+
+The original `OffScreenRenderEnv` entry uses signed native products. Its offline
+compatibility profile is prepared separately from the default batch catalogue:
+
+```bash
+LIBERO_GPU_PRECISION=fp64 python -m libero.gpu.build --compatibility \
+  --precision fp64 --suite libero_10 --task-ids 4
+```
+
+This prepares the selected tasks without cameras and advances one control step
+to load lazy modules. It shares the project's constraint sources and Warp cache,
+with separate runtime owners for mutable buffers and parameters. Ordinary compatibility
+construction and subsequent step/reset/observation/render calls are load-only
+and report a preparation command when a signed product is missing. Explicit
+offline compilation authority applies only while its scope is active; it does
+not grant the constructed environment permanent permission to compile. An
+existing unsigned batch build is not a signed receipt;
+source or profile changes can require new offline products. Other tasks or
+camera configurations require their corresponding offline preparation.
+Offline preparation requires every signed product to be persisted. A full
+signed cache raises `ENOSPC`; `compatibility/BUILD.json` records `preparing`,
+`failed`, or `complete`, and cannot report a private, unpersisted build as ready.
+
+FP32 training reads fixed offline scenes and CUDA products. Creating, resetting
+and closing an environment does not register scenes, update an LRU or maintain
+disk-cache metadata. Scene preparation takes an offline writer lock; cleanup of
+prepared inputs is a separate maintenance operation outside training.
+Native compatibility environments also keep model intake and replacement in
+memory. Stateless native code loads from fixed signed products; the few loaders
+that still need private files use an environment-owned temporary directory,
+removed after a successful close. Runtime construction does not maintain a
+storage catalog, model-file leases, or LRU budgets. See
+[environment and offline cache lifecycle](libero/libero/gpu/ENVIRONMENT_LIFECYCLE.md)
+for configuration and inspection. Historical caches and the offline compiler
+project are retained separately; environment close does not delete them.
 Prepared native scene models and generated constraint/Newton sources are loaded
 from the instance catalog. Runtime buffers, graphs and owner bindings are created
 for each environment. Missing native or Warp products raise an error before

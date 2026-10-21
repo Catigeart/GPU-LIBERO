@@ -193,6 +193,10 @@ class NativeBatchedPhysics:
         self.bundle.close()
 
 
+from libero.gpu.host.runtime.core.build_lifetime import cold_build_scope
+
+
+@cold_build_scope
 def prepare_native_batch(built, *, states, strict_build_receipts=False, build_root=None, debug=False, **kwargs):
     from libero.gpu.host.build.startup import startup_phase
     from libero.gpu.host.factory import prepare_cuda_physics

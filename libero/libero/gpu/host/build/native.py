@@ -23,6 +23,7 @@ the cuSOLVERDx LTO library; cuBLASDx is header-only.
 import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 import ctypes as ct
+from libero.gpu.host.build.library_lifetime import load_cdll
 from functools import lru_cache
 import hashlib
 import json
@@ -33,11 +34,11 @@ import subprocess
 import tempfile
 import uuid
 from contextvars import ContextVar
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from libero.gpu.host.runtime.core.product_paths import selected_mathdx_root, nvcc_path
 from .build_receipts import (compiler_dependencies,toolchain_record,file_record,
-    build_identity,product_lock,publish_product,materialize_private)
+    build_identity,product_lock,publish_product,materialize_private,canonical,digest)
 
 from .product_cache import (product_cache_scope, current_product_authority,
     compiler_environment_record)
@@ -95,9 +96,10 @@ def _large_parameter_support(architecture, nvcc):
 
 
 def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mathdx=False,
-                    defines=None, bridges=(), include_dirs=(), extra_flags=(), required_symbols=()):
+                    defines=None, bridges=(), include_dirs=(), extra_flags=(), required_symbols=(), shared=False):
     """Return (ctypes library, manifest); retain source and compiler diagnostics."""
-    root = Path(build_root).resolve(); root.mkdir(parents=True, exist_ok=True)
+    from libero.gpu.host.runtime.core.product_paths import private_product_root
+    root = private_product_root(build_root)
     dev = wp.get_device(device)
     if not dev.is_cuda:
         raise ValueError('native CUDA requires a CUDA device')
@@ -115,6 +117,12 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     roots = [str(Path(p).resolve()) for p in include_dirs]
     library = None
     if mathdx:
+        # CCCL/MathDx host inline variables otherwise acquire GNU UNIQUE
+        # binding, which makes glibc ignore dlclose for private runtime DSOs.
+        # The vendor archive already contains such host symbols, so localize
+        # its exports as well; our generated C entry points stay exported.
+        flags += ['-Xcompiler=-fno-gnu-unique',
+                  '-Xlinker=--exclude-libs=libcusolverdx.a']
         dx = selected_mathdx_root(MATHDX_ROOT)
         roots += [str(dx/'include'), str(dx/'external/cutlass/include')]
         library = dx/'lib/libcusolverdx.a'
@@ -126,6 +134,23 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                    else str(p) for p in bridges]
     nvcc = nvcc_path()
     authority=current_product_authority()
+    from .compilation import compilation_allowed
+    if shared and authority is not None and not compilation_allowed():
+        found = authority.find_native(source, bridge_text, flags, dev.arch,
+                                      file_record(library) if library else None, required_symbols)
+        if found is not None:
+            target, units, receipt = found
+            loaded = load_cdll(target)
+            if not all(hasattr(loaded, symbol) for symbol in required_symbols):
+                raise RuntimeError('fixed native launcher symbol ABI missing')
+            commands = [[nvcc, *flags, '-shared', *map(str, units), '-o', str(target)]]
+            return loaded, dict(name=name, sha256=digest(canonical(receipt['identity'])),
+                source=str(units[0]), library=str(target), compile_commands=commands,
+                compile_commands_executed=[], fma=True, fast_math=False, architecture=dev.arch,
+                cache_source=str(target), build_receipt=receipt, private_product=False, shared_product=True,
+                product_cache=dict(hit=True, persisted=True, key=target.parent.name),
+                symbol_abi='per-plan Params; fixed stateless code')
+    root.mkdir(parents=True, exist_ok=True)
     def current_toolchain():
         result=toolchain_record(nvcc,flags)
         if authority is not None:
@@ -142,10 +167,13 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     key,identity=build_identity(source=source,bridges=bridge_text,flags=flags,
         toolchain=toolchain,dependencies=dependencies,archive=file_record(library) if library else None,
         architecture=dev.arch)
+    fixed = authority.find_completed(identity, required_symbols) if shared and authority is not None and not compilation_allowed() else None
     # Each plan retains a distinct physical product. Neither repeated plan name
     # nor cache lookup can replace a path that an earlier CDLL still owns.
     stem = re.sub(r'[^A-Za-z0-9_]', '_', name)+'_'+key+'_'+uuid.uuid4().hex
     src = root/(stem+'.cu'); target = root/(stem+'.so')
+    if fixed is not None:
+        target = authority.root/fixed[2]['key']/'product.so'
     src.write_text(source)
     commands = []
     if mathdx or bridge_text:
@@ -188,14 +216,25 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                 if result.returncode: raise RuntimeError('CUDA compilation failed: '+str(log))
             return target.read_bytes()
         def verify_private_exports(raw):
-            # Always copy bytes to this invocation's unique physical path.
-            # Cache blobs are never loaded and no CDLL/owner is shared.
-            with target.open('wb') as stream: stream.write(raw)
-            completed=ct.CDLL(str(target))
+            if fixed is None:
+                with target.open('wb') as stream: stream.write(raw)
+            elif target.read_bytes() != raw:
+                raise RuntimeError('fixed native product changed during loading')
+            completed=load_cdll(target)
             if not all(hasattr(completed,symbol) for symbol in required_symbols):
                 raise RuntimeError('native compiled launcher symbol ABI missing')
         raw,receipt,product_status=authority.obtain(identity,required_symbols,
             build=build_completed_bytes,validate=validate_current_inputs,exports=verify_private_exports)
+        if shared and compilation_allowed() and product_status['persisted']:
+            inputs = authority.root/product_status['key']/'inputs'
+            inputs.mkdir(exist_ok=True)
+            for index, text in enumerate([source, *bridge_text]):
+                path = inputs/('unit%d.cu' % index)
+                if path.exists():
+                    if path.read_text() != text:
+                        raise RuntimeError('fixed native source differs from signed build inputs')
+                else:
+                    path.write_text(text)
         if product_status['hit']:
             cache_source=str(authority.root/product_status['key']/'product.so')
             log.write_text('Authorized completed product reused; no compiler build commands executed.\n')
@@ -217,18 +256,19 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                 raise RuntimeError('CUDA dependency changed during compilation')
             if toolchain_record(nvcc,flags)!=toolchain or (library and file_record(library)!=identity['archive']):
                 raise RuntimeError('CUDA toolchain/archive changed during compilation')
-            completed=ct.CDLL(str(target))
+            completed=load_cdll(target)
             if not all(hasattr(completed,symbol) for symbol in required_symbols):
                 raise RuntimeError('native compiled launcher symbol ABI missing')
             receipt=publish_product(cache_folder,key,identity,raw)
-    loaded=ct.CDLL(str(target))
+    loaded=load_cdll(target)
     if not all(hasattr(loaded,symbol) for symbol in required_symbols):
         raise RuntimeError('native compiled launcher symbol ABI missing')
     manifest = {'name': name, 'sha256': key, 'source': str(src),
                 'library': str(target), 'compile_commands': commands,
                 'fma': True, 'fast_math': False, 'architecture': dev.arch,
                 'cache_source':cache_source,'build_receipt':receipt,
-                'private_product':True,'symbol_abi':'generated source declarations; NativePlan sets exact ctypes signature'}
+                'private_product':fixed is None,'shared_product':fixed is not None,
+                'symbol_abi':'generated source declarations; NativePlan sets exact ctypes signature'}
     if product_status is not None:
         manifest['product_cache']=product_status
         manifest['compile_commands_executed']=[] if product_status['hit'] else commands
@@ -356,12 +396,12 @@ def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx
                 'binary_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),
                 'compile_commands_executed':[] if reused else commands}
     (root/(stem+'.json')).write_text(json.dumps(manifest, indent=2))
-    return ct.CDLL(str(target)), manifest
+    return load_cdll(target), manifest
 
 
 def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
                     defines=None,bridges=(),include_dirs=(),extra_flags=(),required_symbols=(),
-                    strict_build_receipts=None):
+                    strict_build_receipts=None,shared=False):
     """Receipted build is explicit until actual cold ABBA clears its overhead."""
     defines = dict(defines or {})
     if defines.get('FLASH_REAL_BITS', scalar.bits) != scalar.bits:
@@ -374,9 +414,11 @@ def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
     function=_compile_library_receipted if enabled else _compile_library_legacy
     options=dict(device=device,mathdx=mathdx,defines=defines,bridges=bridges,
                  include_dirs=include_dirs,extra_flags=extra_flags)
-    if enabled:options['required_symbols']=required_symbols
+    if enabled:options.update(required_symbols=required_symbols, shared=shared)
     from libero.gpu.host.runtime.core.product_paths import build_unit_lock
-    with build_unit_lock(build_root):
+    from .compilation import compilation_allowed
+    scope = nullcontext() if enabled and current_product_authority() is not None and not compilation_allowed() else build_unit_lock(build_root)
+    with scope:
         loaded,manifest=function(name,source,build_root,**options)
     if enabled and not all(hasattr(loaded,symbol) for symbol in required_symbols):
         raise RuntimeError('native compiled launcher symbol ABI missing')
@@ -531,7 +573,7 @@ extern "C" int configure_shared(int bytes) {
         if receipt_enabled:
             self.library, self.manifest = compile_library(name,source,build_root,device=self.device,
                     mathdx=mathdx,defines=defines,bridges=bridges,extra_flags=extra_flags,
-                    include_dirs=include_dirs,required_symbols=('launch','configure_shared'))
+                    include_dirs=include_dirs,required_symbols=('launch','configure_shared'), shared=True)
         else:
             self.library, self.manifest = compile_library(name,source,build_root,device=self.device,
                     mathdx=mathdx,defines=defines,bridges=bridges,extra_flags=extra_flags,
@@ -549,7 +591,8 @@ extern "C" int configure_shared(int bytes) {
         self.manifest['tile_abi'] = 'world,tile,tile_count,args' if any(stage[2]=='tile' for stage in stages) else None
         self.manifest['cross_tile_sync'] = 'separate_same_stream_kernel_boundaries' if work_tiles > 1 else None
         self.manifest['parameter_abi']=parameter_abi
-        Path(self.manifest['library']).with_suffix('.json').write_text(json.dumps(self.manifest,indent=2))
+        if not self.manifest.get('shared_product'):
+            Path(self.manifest['library']).with_suffix('.json').write_text(json.dumps(self.manifest,indent=2))
         self.library.launch.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p]
         self.library.launch.restype=ct.c_int
 

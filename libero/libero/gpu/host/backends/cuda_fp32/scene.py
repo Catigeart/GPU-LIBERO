@@ -5,6 +5,7 @@ CPU MuJoCo products, not serialized Warp arrays. Both cold preparation and
 load-only reconstruction can run with Warp imports prohibited.
 """
 import hashlib,json
+from contextlib import contextmanager
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -12,6 +13,21 @@ import mujoco
 from libero.gpu.host.build.project_paths import project_paths
 
 UPSTREAM_COMMIT='c384ac51df67eb92ab7657cc472ff7494dc036bf'
+
+
+@contextmanager
+def _scene_files(root, xml, options, task, scene_parameters, *, prepare):
+    """Runtime reads fixed inputs; only offline preparation takes a writer lock."""
+    from ..mjwarp.scene_cache import locate
+    kwargs = dict(prepare=prepare, scene_parameters=scene_parameters)
+    if not prepare:
+        yield locate(root, xml, options, task, **kwargs)
+        return
+    from libero.gpu.host.runtime.core.product_paths import build_unit_lock
+    folder = locate(root, xml, options, task, **kwargs)[0]
+    with build_unit_lock(folder):
+        # A preceding writer may have completed while this process waited.
+        yield locate(root, xml, options, task, **kwargs)
 
 
 def scene_record(root, bddl, seed):
@@ -91,13 +107,15 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     elif collision != 'default':
         raise ValueError('collision must be default or primitive')
     xml = ET.tostring(tree, encoding='unicode')
-    from ..mjwarp.scene_cache import locate,finish
+    from ..mjwarp.scene_cache import finish
     from .scene_inputs import read as read_scene_inputs,apply as apply_scene_inputs
     scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task)
-    cache_folder,compiled,receipt,cache_binding=locate(project_paths(root).base,xml,options,task,prepare=prepare,scene_parameters=scene_binding)
-    built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
-        static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
-    finish(cache_folder,built,receipt,cache_binding)
+    with _scene_files(project_paths(root).base, xml, options, task, scene_binding,
+                      prepare=prepare) as scene:
+        cache_folder,compiled,receipt,cache_binding = scene
+        built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
+            static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
+        finish(cache_folder,built,receipt,cache_binding)
     host = built.native_model
     for name in ('nq', 'nv', 'nu', 'nbody', 'njnt', 'ngeom', 'nsite'):
         if int(getattr(host, name)) != task['dimensions'][name]:
