@@ -1,6 +1,7 @@
 # Optional postconstraint RNE suffix; bias and native physics remain independent.
 set(mjwarp_postconstraint_sources "${FLASH_GPU}/cuda/dynamics/mjwarp_postconstraint.cu"
   "${FLASH_GPU}/cuda/dynamics/mjwarp_postconstraint.cuh"
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_queries.cuh"
   "${FLASH_GPU}/cuda/dynamics/mjwarp_spatial.cuh" "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_postconstraint_sources})
 set(postconstraint_hashes)

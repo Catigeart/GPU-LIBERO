@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Pinned MJWarp smooth.py::rne_postconstraint, after external-wrench assembly.
 #include "mjwarp_postconstraint.cuh"
+#include "mjwarp_queries.cuh"
 #include "mjwarp_spatial.cuh"
 #ifndef FLASH_MJW_POSTCONSTRAINT_SOURCE_ID
 #error "Build through flash_mjwarp_postconstraint_fp32"
@@ -82,9 +83,10 @@ __global__ void force_backward(PostconstraintInputs a, const int *layer,
 // independent private acceleration prefix. Shared acceleration rows become raw
 // force rows only after each body's sole force consumer has read all six.
 constexpr int PostThreads = 256;
+template <bool Sensors>
 __global__ void world_postconstraint(PostconstraintInputs a,
-                                     const int *intervals,
-                                     int gravity_disabled) {
+                                     const int *intervals, int gravity_disabled,
+                                     ForceSensorInputs sensor) {
   const int w = blockIdx.x, lane = threadIdx.x;
   __shared__ float scratch[6 * 64];
   if (lane < 6)
@@ -176,6 +178,58 @@ __global__ void world_postconstraint(PostconstraintInputs a,
       force += scratch[6 * node + k];
     a.cfrc_int[6 * w * a.bodies + slot] = force;
   }
+  // Sensor owners reduce their own bounded raw subtree directly. The shared
+  // raw forces remain live, so sensors need neither a global wrench reload nor
+  // a new block barrier after composite-wrench publication.
+  if constexpr (Sensors) {
+    if (!sensor.disabled) {
+      const int component = lane & 7;
+      const unsigned group_mask = 0xffu << (lane & 24);
+      for (int s = lane / 8; s < sensor.sensors; s += PostThreads / 8) {
+        const int site = sensor.object[s], body = sensor.site_body[site];
+        float sum = 0.f;
+        if (component < 6)
+          for (int node = body; node < body + intervals[body]; ++node)
+            sum += scratch[6 * node + component];
+        float wrench[6];
+        for (int k = 0; k < 6; ++k)
+          wrench[k] = __shfl_sync(group_mask, sum, k, 8);
+        if (component)
+          continue; // the scalar frame/cutoff consumer uses all six
+        float value[3];
+        if (sensor.type[s] == 4) {
+          for (int k = 0; k < 3; ++k)
+            value[k] = wrench[k + 3];
+        } else {
+          const float *com =
+              sensor.com + 3 * (w * sensor.bodies + sensor.root[body]);
+          const float *position =
+              sensor.site_position + 3 * (w * sensor.sites + site);
+          const float dx = position[0] - com[0], dy = position[1] - com[1],
+                      dz = position[2] - com[2];
+          value[0] = wrench[0] - (dy * wrench[5] - dz * wrench[4]);
+          value[1] = wrench[1] - (dz * wrench[3] - dx * wrench[5]);
+          value[2] = wrench[2] - (dx * wrench[4] - dy * wrench[3]);
+        }
+        const float *rotation =
+            sensor.site_rotation + 9 * (w * sensor.sites + site);
+        const float cutoff = sensor.cutoff[s];
+        for (int k = 0; k < 3; ++k) {
+          float value_out = rotation[k] * value[0] +
+                            rotation[3 + k] * value[1] +
+                            rotation[6 + k] * value[2];
+          if (cutoff > 0) {
+            if (sensor.datatype[s] == 0)
+              value_out = fminf(cutoff, fmaxf(-cutoff, value_out));
+            else if (sensor.datatype[s] == 1)
+              value_out = fminf(cutoff, value_out);
+          }
+          sensor.output[w * sensor.channels + sensor.address[s] + k] =
+              value_out;
+        }
+      }
+    }
+  }
 }
 
 } // namespace
@@ -196,9 +250,30 @@ int flash_mjwarp_postconstraint_fused(
       a->branches < 1 || a->branches > 32 || a->nv < 1 || a->gravity_rows < 1 ||
       (gravity_disabled != 0 && gravity_disabled != 1))
     return int(cudaErrorInvalidValue);
-  flash::mjwarp::world_postconstraint<<<a->worlds, flash::mjwarp::PostThreads,
-                                        0, stream>>>(*a, intervals,
-                                                     gravity_disabled);
+  flash::mjwarp::world_postconstraint<false>
+      <<<a->worlds, flash::mjwarp::PostThreads, 0, stream>>>(
+          *a, intervals, gravity_disabled, {});
+  return int(cudaGetLastError());
+}
+
+std::size_t flash_mjwarp_postconstraint_sensor_bytes() {
+  return sizeof(flash::mjwarp::ForceSensorInputs);
+}
+int flash_mjwarp_postconstraint_sensors(
+    const flash::mjwarp::PostconstraintInputs *a, const int *intervals,
+    int gravity_disabled, const flash::mjwarp::ForceSensorInputs *sensor,
+    cudaStream_t stream) {
+  if (!a || !intervals || !sensor || a->worlds < 1 || a->bodies < 2 ||
+      a->bodies > 64 || a->branches < 1 || a->branches > 32 ||
+      a->gravity_rows < 1 || a->nv < 1 ||
+      (gravity_disabled != 0 && gravity_disabled != 1) ||
+      sensor->worlds != a->worlds || sensor->bodies != a->bodies ||
+      sensor->sensors < 1 || sensor->sensors > 32 ||
+      sensor->sensors * a->bodies > 256 || sensor->wrench != a->cfrc_int)
+    return int(cudaErrorInvalidValue);
+  flash::mjwarp::world_postconstraint<true>
+      <<<a->worlds, flash::mjwarp::PostThreads, 0, stream>>>(
+          *a, intervals, gravity_disabled, *sensor);
   return int(cudaGetLastError());
 }
 int flash_mjwarp_postconstraint_launch(

@@ -75,6 +75,8 @@ def source_files(*, include_hessian=False, include_direction=False, include_cons
     if include_publication:
         for name in ('cuda/dynamics/mjwarp_publication.cu','cuda/dynamics/mjwarp_publication.cuh','cmake/MjwarpPublication.cmake','host/runtime/dynamics/mjwarp_publication.py','host/runtime/dynamics/mjwarp_motion.py'):
             files[name]=digest(GPU_ROOT/name)
+    if include_postconstraint:
+        files['cuda/dynamics/mjwarp_queries.cuh']=digest(GPU_ROOT/'cuda/dynamics/mjwarp_queries.cuh')
     if include_queries:
         for name in ('cuda/dynamics/mjwarp_queries.cu','cuda/dynamics/mjwarp_queries.cuh','cuda/dynamics/mjwarp_spatial.cuh','cmake/MjwarpQueries.cmake','host/runtime/dynamics/mjwarp_queries.py','host/runtime/dynamics/mjwarp_motion.py'):
             files[name]=digest(GPU_ROOT/name)

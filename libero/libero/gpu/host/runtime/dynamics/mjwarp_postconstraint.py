@@ -55,6 +55,33 @@ class PostconstraintRNE:
                                 int(self.gravity_disabled),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused postconstraint failed: CUDA error '+str(error))
 
+    def bind_sensors(self,sensors):
+        from .mjwarp_queries import ForceSensorInputs
+        d=self.data;a=sensors.arguments
+        if (sensors.stream is not self.stream or a.worlds!=d.nworld or a.bodies!=self.model.nbody or
+                a.wrench!=self.arrays['cfrc_int'].ptr or a.output!=d.sensordata.ptr or
+                a.site_position!=d.site_xpos.ptr or a.site_rotation!=d.site_xmat.ptr or
+                a.com!=d.subtree_com.ptr):raise ValueError('Postconstraint sensor bridge differs')
+        arrays=dict(self.arrays)
+        arrays.update({'sensor_'+k:v for k,v in sensors.arrays.items() if k!='wrench'})
+        reject_output_overlap(arrays,('cacc','cfrc_int','sensor_output'))
+        self.sensors=sensors
+        self.sensor_eligible=self.fusion_eligible and 0<a.sensors<=32 and a.sensors*a.bodies<=256
+        size=self.library.flash_mjwarp_postconstraint_sensor_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(ForceSensorInputs):raise ValueError('Postconstraint sensor ABI differs')
+        self.sensor_launch=self.library.flash_mjwarp_postconstraint_sensors
+        self.sensor_launch.argtypes=[ct.POINTER(PostconstraintInputs),ct.c_void_p,ct.c_int,
+                                    ct.POINTER(ForceSensorInputs),ct.c_void_p]
+        self.sensor_launch.restype=ct.c_int
+        return self
+
+    def enqueue_sensors(self):
+        if not self.sensor_eligible:
+            self.enqueue_fused();self.sensors.enqueue();return
+        error=self.sensor_launch(ct.byref(self.arguments),self.interval.ptr,int(self.gravity_disabled),
+                                 ct.byref(self.sensors.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Postconstraint/sensors failed: CUDA error '+str(error))
+
     @property
     def identity(self):
         return dict(source_id=source_id('postconstraint'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),

@@ -398,3 +398,16 @@ layer path for other layouts. Fifteen N=2 regional cases pass independent FP64
 bounds and1/20replays with changed inputs. Two canonical-group barrier-removal
 trials were discarded because their local gains did not generalize to all three
 real layouts. The simple fused organization is retained.
+
+
+`PostconstraintRNE.bind_sensors/enqueue_sensors` extends that suffix to force and
+torque sensors in the same actual CUDA function. Each8-lane group reduces six
+wrench coordinates from the still-live shared raw-force tree, then applies the
+current site transform and cutoff. It adds no shared bytes or block barrier.
+A cold `sensors*bodies<=256` bound limits repeated work without caching sensor
+objects or physical values. Larger domains retain the accepted suffix+sensor
+components. Exact sensor gaps and disabled holds, current geometry/output
+bridges, ABI and source dependencies are validated. Seventeen N=2 local cases
+pass with frozen motion and seeded sensor frames; input/cutoff/object changes
+after capture remain live. Grouped sensor production was mixed but near-neutral
+against the first fusion under contention. No full-task speedup is inferred.
