@@ -277,3 +277,14 @@ The original initialization entry remains available. Inactive Jaref rows keep
 the original split-path clear or single-path hold rule. Iteration count,
 warmstart selection, stopping and the conditional Graph loop are unchanged.
 Qualification covers all 13 shipped NV families plus a larger fallback input.
+
+`Newton.gradient -> DenseConstraint.enqueue_gradient ->
+mjwarp_constraint.cu::constraint_gradient<512>` joins row force/state, J^T force,
+gradient initialization and values. One producer barrier orders the row phase.
+Each warp owns four DOFs and eight interleaved row ranges; its shuffle reduction
+exposes row parallelism inside a world. Up to 1024 active rows, a fixed 4-KiB
+shared row force buffer reuses current producer values, including held values
+for invalid contact addresses. Larger active sets use the published global
+array; the storage bound is fixed. Done-world holds and the reset of
+search_unchanged are preserved. Original phase/gradient entries remain callable;
+Hessian construction, factorization, line search and stopping retain boundaries.

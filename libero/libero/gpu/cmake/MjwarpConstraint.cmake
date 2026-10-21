@@ -2,6 +2,7 @@
 set(mjwarp_constraint_sources
   "${FLASH_GPU}/cuda/newton/mjwarp_constraint.cu"
   "${FLASH_GPU}/cuda/newton/mjwarp_constraint.cuh"
+  "${FLASH_GPU}/cuda/newton/mjwarp_direction.cuh"
   "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_constraint_sources})
 set(constraint_hashes)

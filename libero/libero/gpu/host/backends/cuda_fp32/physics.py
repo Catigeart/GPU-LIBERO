@@ -42,19 +42,20 @@ class Newton:
         self.assembly=hessian.HessianPlan(m,d,products('hessian'),stream).bind(c)
         self.direction=direction.DirectionPlan(m,d,products('direction'),stream).bind(c)
         self.constraint=constraint.ConstraintPlan(m,d,products('constraint'),stream).bind(c)
+        self.constraint.bind_gradient(self.direction)
         self.linesearch=linesearch.LinesearchPlan(m,d,products('linesearch'),stream).bind(c)
         self.state=solver_state.SolverStatePlan(m,d,products('solver_state'),stream).bind(c)
         self.nsolving=cuda.zeros(1,dtype=int);self.state.bind_stopping(self.nsolving)
         self.state.bind_initialization(c.grad,c.ls_exhausted,self.nsolving)
 
     def gradient(self):
-        self.direction.enqueue(stage=1);self.assembly.enqueue();self.direction.enqueue(stage=2)
+        self.constraint.enqueue_gradient();self.assembly.enqueue();self.direction.enqueue(stage=2)
 
     def solve(self):
-        self.state.initialize_fused();self.constraint.enqueue();self.gradient()
+        self.state.initialize_fused();self.gradient()
         if self.model.opt.iterations:
             with cuda.While(self.nsolving):
-                self.linesearch.enqueue();self.constraint.enqueue();self.gradient();self.state.stop()
+                self.linesearch.enqueue();self.gradient();self.state.stop()
 
 
 class Collision:

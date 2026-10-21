@@ -16,7 +16,7 @@ class ConstraintInputs(ct.Structure):
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names = ('cuda/newton/mjwarp_constraint.cu', 'cuda/newton/mjwarp_constraint.cuh',
-             'cmake/MjwarpConstraint.cmake')
+             'cuda/newton/mjwarp_direction.cuh','cmake/MjwarpConstraint.cmake')
     hashes = ':'.join(hashlib.sha256((GPU_ROOT / n).read_bytes()).hexdigest() for n in names)
     return hashlib.sha256(hashes.encode()).hexdigest()
 
@@ -100,3 +100,25 @@ class DenseConstraint:
         error = self.launch(ct.byref(self.arguments),stage,self.stream.cuda_stream)
         if error:
             raise RuntimeError('Handwritten constraint launch failed: CUDA error ' + str(error))
+
+    def bind_gradient(self,direction):
+        from .mjwarp_direction import DirectionInputs
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import reject_output_overlap
+        if (self.plan.model is not direction.plan.model or self.plan.data is not direction.plan.data or
+                self.stream is not direction.stream or self.arrays['done'].ptr!=direction.arrays['done'].ptr or
+                self.arrays['qfrc_constraint'].ptr!=direction.arrays['force'].ptr or
+                direction.arguments.force_stride!=self.arguments.nv):
+            raise ValueError('Constraint/gradient owner or bridge differs')
+        arrays=dict(self.arrays)
+        arrays.update({'gradient_'+k:v for k,v in direction.arrays.items() if k not in ('done','force')})
+        reject_output_overlap(arrays,('force','state','qfrc_constraint','gradient_grad','gradient_grad_dot',
+            'gradient_decrement','gradient_grad_scale','gradient_search_unchanged'))
+        size=self.plan.library.flash_mjwarp_constraint_gradient_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(DirectionInputs):raise ValueError('Constraint/gradient ABI differs')
+        self.direction=direction;self.gradient_launch=self.plan.library.flash_mjwarp_constraint_gradient
+        self.gradient_launch.argtypes=[ct.POINTER(ConstraintInputs),ct.POINTER(DirectionInputs),ct.c_void_p]
+        self.gradient_launch.restype=ct.c_int
+
+    def enqueue_gradient(self):
+        err=self.gradient_launch(ct.byref(self.arguments),ct.byref(self.direction.arguments),self.stream.cuda_stream)
+        if err:raise RuntimeError('Constraint/gradient failed: CUDA error '+str(err))
