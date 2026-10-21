@@ -14,6 +14,7 @@ from .fused_tail import FusedAdvance
 from .fused_position import FusedCenteredMass
 from .fused_kinematic_mass import FusedKinematicMass
 from .fused_actuation_solve import FusedActuationSolve
+from .fused_euler_step import FusedEulerStep
 from .fused_motion import FusedMotion
 from .fused_motion_passive import FusedMotionPassive
 from .bridges import Bridges
@@ -152,6 +153,7 @@ class Physics:
         self.publication=publication.PublicationState(m,d,products('publication'),stream)
         self.advance=FusedAdvance(self.euler,products.folder/'fp32_fused_tail.so',publication=self.publication,
                                   qacc=d.qacc,warmstart=d.qacc_warmstart)
+        self.euler_step=FusedEulerStep(self.euler_solve,self.advance,products.folder/'fp32_fused_euler_step.so') if self.damped else None
 
     def position(self,factorize=True,*,transmit=True):
         self.kinematic_mass.enqueue()
@@ -196,9 +198,8 @@ class Physics:
         else:self.sensors.enqueue()
 
     def integrate(self):
-        if self.damped:
-            self.euler_solve.enqueue_prepared()
-        self.advance.enqueue()
+        if self.damped:self.euler_step.enqueue()
+        else:self.advance.enqueue()
 
     def step2(self):self.solve();self.integrate()
     def forward(self):self.step1(factorize=False);self.solve(public=True)

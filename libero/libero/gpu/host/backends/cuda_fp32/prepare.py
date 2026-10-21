@@ -68,7 +68,7 @@ def main():
         targets = ['flash_cuda_runtime', 'flash_cuda_bridges_fp32', 'flash_fp32_fused_tail',
                    'flash_fp32_fused_observations', 'flash_fp32_fused_position', 'flash_fp32_fused_kinematic_mass',
                    'flash_fp32_fused_motion', 'flash_fp32_fused_motion_passive', 'flash_fp32_fused_control_prepare',
-                   'flash_fp32_fused_controller', 'flash_fp32_fused_actuation_solve'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
+                   'flash_fp32_fused_controller', 'flash_fp32_fused_actuation_solve', 'flash_fp32_fused_euler_step'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
         subprocess.run(['cmake', '--build', str(folder), '--parallel', str(args.jobs), '--target', *targets], check=True)
     report = dict(tasks=rows, cuda_directory=str(folder), warp_dependency=False,
                   physics_integrations=0, scene_backend='CPU MuJoCo 3.16.0')

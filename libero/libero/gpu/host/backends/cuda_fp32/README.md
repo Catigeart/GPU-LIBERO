@@ -511,3 +511,14 @@ clears, and unsupported mass-group layouts retain accepted components.
 Twenty-two N=2 local cases pass independent FP64 block bounds and endpoint
 checks. Final local gains are~9--12% on three frozen actuator layouts with
 matched frozen/seeded matrices; no whole-task throughput was measured.
+
+
+Damped integration optionally uses `FusedEulerStep`, target
+`flash_fp32_fused_euler_step`, with continuous source
+`cuda/fp32/fused_euler_step.cu::euler_step`. Derivative/private factor/solve,
+qvel/qpos advancement, Newton warmstart and time/overflow publication share a
+64-thread world CTA. Shared storage stays372bytes; deferred factor publication
+removes one explicit barrier while keeping SDK inputs immutable. Warning and
+incompatible layout/output domains retain prepared factor+advance. Twenty-five
+N=2 local1/20-step cases pass FP64 block and endpoint bounds. Regional timings
+use continuously advanced warmed state with fixed matrix/RHS, without a task.
