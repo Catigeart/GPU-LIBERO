@@ -332,3 +332,28 @@ quaternion/polynomial math definitions are shared with standalone passive in
 Gravity projection runs before these independent joint/fluid producers; its
 inputs do not depend on their outputs. No new numerical storage or barrier is
 added, and no-fluid/both-disabled paths retain their original behavior.
+
+
+The fluid-enabled velocity stage now loads the independent
+`flash_fp32_fused_motion_passive` target through
+`fused_motion_passive.py::FusedMotionPassive`. Its actual continuous CUDA source
+is `cuda/fp32/fused_motion_passive.cu::motion_passive`: joint spring/damper and
+spatial prefixes -> body bias/fluid wrenches -> composite bias -> DOF bias,
+fluid, adhesion clear and passive composition. It reuses the accepted three
+motion barriers and the same 3072-byte shared arena. For NB<=42, three live
+spatial arrays fit by packed offsets; NB43..64 keeps two original arenas and
+the private global fluid workspace. All current catalogue bodies fit NB<=38.
+Current physical values are never cached. The load-only binding verifies common
+owners, exact bridge pointers, source identity, architecture, and all four ABIs;
+nonadmitted trees retain accepted component kernels. Gravity projection reads
+only position outputs and runs before this region. No-fluid and both-disabled
+paths retain their prior producers and hold contracts.
+
+Regional N=2 qualification covers frozen metadata with independently frozen or
+seeded physical inputs, changed inputs after capture, mixed joints, gravity and
+zero/nonzero wind, the packing boundary and larger-tree fallback. Initial local
+fusion was 2.07--2.40x faster than the two previously fused motion and passive
+regions on three real metadata fixtures with other GPU jobs resident. Shared
+packing was latency-neutral. An idle joint warp and 1024-thread block did not
+consistently improve those fixtures and were discarded; the accepted block is
+512 threads. These local measurements do not imply a complete-task speedup.
