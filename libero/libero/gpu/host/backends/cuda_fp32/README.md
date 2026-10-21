@@ -479,3 +479,15 @@ launch ahead of pooled broadphase producers. Disabled contact/constraint clears
 only the contact count and preserves the pair count and pool. This completion
 boundary remains separate from all world producers. Twenty-one N=2 local
 clear/broadphase cases pass; regional timing does not cover narrowphase/tasks.
+
+
+The position prefix optionally calls `FusedKinematicMass` in
+`cuda/fp32/fused_kinematic_mass.cu::kinematic_mass`, target
+`flash_fp32_fused_kinematic_mass`. Up to16 canonical branches with admitted
+bounded intervals use one512-thread world CTA for kinematics/derived frames,
+centers/inertias and CRB/CSR mass. Current joint-local deltas and weighted
+centers share dead CRB storage within a fixed2560-byte arena. All physical
+inputs remain live. Wider trees retain branch-CTA kinematics plus accepted
+centered/mass; the broad32branch prototype regressed and is excluded.
+Twelve N=2 regional endpoint cases pass. Eligible real-fixture gains are modest
+and contention-dependent; same-code fallback differences are measurement noise.

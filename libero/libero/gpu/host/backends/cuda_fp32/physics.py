@@ -12,6 +12,7 @@ from . import device as cuda, constants as types
 from .data import newton_workspace
 from .fused_tail import FusedAdvance
 from .fused_position import FusedCenteredMass
+from .fused_kinematic_mass import FusedKinematicMass
 from .fused_motion import FusedMotion
 from .fused_motion_passive import FusedMotionPassive
 from .bridges import Bridges
@@ -109,6 +110,7 @@ class Physics:
         self.matrix=mass_matrix.MassMatrix(m,d,products('mass_matrix'),stream)
         self.matrix.prepare_fusion(top)
         self.centered_mass=FusedCenteredMass(self.com_pos,self.matrix,products.folder/'fp32_fused_position.so')
+        self.kinematic_mass=FusedKinematicMass(self.kinematics,self.centered_mass,products.folder/'fp32_fused_kinematic_mass.so')
         self.factor_plan=mass_factor.MassFactorPlan(m,d,products('mass_factor'),stream)
         self.factor=self.factor_plan.bind(d.M,d.qLD,d.qLDiagInv)
         self.public_solve=self.factor_plan.bind(d.M,d.qLD,d.qLDiagInv,d.qacc_smooth,d.qfrc_smooth)
@@ -149,8 +151,7 @@ class Physics:
                                   qacc=d.qacc,warmstart=d.qacc_warmstart)
 
     def position(self,factorize=True,*,transmit=True):
-        self.kinematics.enqueue_frames()
-        self.centered_mass.enqueue()
+        self.kinematic_mass.enqueue()
         if factorize:self.factor.enqueue_fused()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue()
