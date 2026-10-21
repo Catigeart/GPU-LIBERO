@@ -12,6 +12,7 @@ from . import device as cuda, constants as types
 from .data import newton_workspace
 from .fused_tail import FusedAdvance
 from .fused_position import FusedCenteredMass
+from .fused_motion import FusedMotion
 from libero.gpu.host.runtime.dynamics import (
     mjwarp_motion as motion,mjwarp_kinematics as kinematics,mjwarp_com_pos as com_pos,
     mjwarp_camlight as camlight,mjwarp_mass_matrix as mass_matrix,mjwarp_mass_factor as mass_factor,
@@ -110,6 +111,7 @@ class Physics:
         self.gravity=queries.GravityProjection(m,d,products('queries'),stream)
         self.bias=bias.Bias(m,d,products('bias'),stream,top)
         self.bias.prepare_fusion()
+        self.motion_bias=FusedMotion(self.velocity,self.bias,products.folder/'fp32_fused_motion.so')
         self.actuation=actuation.ActuatorForces(m,d,products('actuation'),stream)
         self.smooth=smooth_force.SmoothForce(m,d,products('smooth_force'),stream)
         self.newton=Newton(m,d,stream,products)
@@ -135,7 +137,7 @@ class Physics:
 
     def velocity_stage(self):
         m,d=self.model,self.data
-        self.transmission.enqueue(1);self.velocity.enqueue_fused()
+        self.transmission.enqueue(1);self.motion_bias.enqueue()
         if self.passive.flags['disable_spring'] and self.passive.flags['disable_damper']:
             for name in ('qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive'):getattr(d,name).zero_()
         else:
@@ -143,7 +145,6 @@ class Physics:
             if not m.opt.disableflags&types.DisableBit.GRAVITY:self.gravity.enqueue()
             if self.fluid is not None:self.fluid.enqueue()
             d.qfrc_adhesion.zero_();self.passive.enqueue(1)
-        self.bias.enqueue_fused()
 
     def step1(self,factorize=True):
         self.position(factorize);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()

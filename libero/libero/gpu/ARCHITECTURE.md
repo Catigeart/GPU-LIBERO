@@ -256,7 +256,7 @@ same live/broadcast and static-geom hold contracts. This does not join the
 motion-prefix kernel to the world-wide mass stage or cross a pooled collision
 boundary.
 
-`Physics.velocity_stage -> ComVelocity.enqueue_fused -> velocity_components`
+The standalone `ComVelocity.enqueue_fused -> velocity_components` entry
 uses a readable six-component spatial prefix in
 `cuda/dynamics/mjwarp_velocity.cu`. Eight active lanes carry six components and
 two shuffle participants. Canonical ownership still publishes every body/DOF
@@ -270,7 +270,7 @@ input/output aliases, allowing read-only loads without a physical-value cache.
 The original two component phases remain callable. Qualification covers local
 N=2 endpoints plus an N=128 regional layout comparison, not task trajectories.
 
-`Physics.velocity_stage -> Bias.enqueue_fused -> world_bias` in
+The standalone `Bias.enqueue_fused -> world_bias` entry in
 `cuda/dynamics/mjwarp_bias.cu` joins ordinary bias RNE: gravity/private
 acceleration prefixes, spatial body forces, subtree force gathering and DOF
 projection. Small admitted preorder trees use bounded direct subtree sums.
@@ -288,3 +288,30 @@ storage with no shared allocation. World-force publication and disabled-gravity
 semantics retain the accepted FP32 behavior. Existing component entries remain
 available. N=2 regional endpoints include gravity-off and large/deep fallbacks;
 N=128 local comparisons additionally qualify the branch-warp organization.
+
+The independent default combines these accepted velocity/bias leaves through
+`Physics.velocity_stage -> FusedMotion.enqueue -> motion_bias` in
+`cuda/fp32/fused_motion.cu`, built by the independent `FP32Motion.cmake` recipe.
+Canonical branch warps compute spatial velocity, every public motion derivative
+and bias acceleration together, retaining each DOF's accumulation and the
+BALL/FREE pre-rotation convention. Private noncanonical prefixes recompute
+needed derivatives without reading another warp's output. Bulk body-force jobs
+follow one block barrier. A fixed 3072-byte arena holds acceleration then raw
+force in one half, velocity then composite force in the other. Public fields
+remain current; DOF projection reads the reused shared composite arena.
+
+Cold common-owner/pointer checks and the validated interval domain admit at
+most 64 bodies and 32 branches; other inputs retain the accepted component
+kernels. The selected kernel uses 512 threads, 40 registers, no stack/local
+storage and three block barriers. Reusing per-axis input registers improves
+local work; attempts to remove another block barrier, defer root publication
+or use 256 threads did not establish a better path and were removed.
+
+Bias now precedes passive forces inside the independent velocity stage. The
+actual fluid binding allocates a private body-force workspace, and passive/
+gravity outputs are separate qfrc fields. Fluid still consumes current cvel
+after its producer; these stages do not consume bias outputs or overwrite its
+inputs/outputs. No application
+callback is inserted between these internal operations. Existing phase APIs
+remain callable. Evidence is regional N=2/N=128 endpoints and paired local
+timing under other GPU work, without a new complete-task result.

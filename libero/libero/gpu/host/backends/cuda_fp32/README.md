@@ -72,7 +72,7 @@ GpuBatchEnv -> CudaFP32BatchEnv                       environment.py
     control Graph, 25 ordinary physical substeps
       Physics.step1                                  physics.py
         kinematics/COM/cameras/mass/collision/constraints/transmission
-        velocity/passive/bias
+        velocity/bias -> passive/gravity/fluid
       Controller.enqueue                             controller.py, bridges.py
         gather -> shared CUDA OSC -> scatter
       Physics.step2                                  physics.py
@@ -210,3 +210,20 @@ as acceleration then raw force; public outputs remain current. Trees outside
 the direct interval domain retain staged gathering, including cooperative broad-parent sums and a
 global-storage fallback. Component phases remain callable. Qualification is
 local N=2 endpoints and N=128 layout comparisons, without a full-task claim.
+
+### Fused spatial velocity and bias
+
+The default velocity stage calls `FusedMotion` in `fused_motion.py`, loading the
+independent `flash_fp32_fused_motion` product. Its continuous CUDA function
+`cuda/fp32/fused_motion.cu::motion_bias` computes velocity, derivatives and bias
+acceleration in canonical branch warps, then body forces, subtree forces and
+DOF bias. The 3072-byte shared allocation has two reused lifetimes: acceleration
+becomes raw force; velocity becomes composite force. No physical cache persists
+between calls. Cold interval/owner/pointer admission keeps larger or unsupported
+trees on the accepted component kernels.
+
+The call chain is transmission velocity -> fused velocity/bias -> passive,
+gravity and fluid forces. The fluid workspace is private, and those later stages
+write distinct qfrc outputs, preserving public state. Selected configuration is
+512 threads, 40 registers and three block barriers; original component APIs
+remain available. Tests and timing cover only this region at N=2 and N=128.

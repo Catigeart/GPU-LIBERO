@@ -2,3 +2,4 @@
 include("${CMAKE_CURRENT_LIST_DIR}/FP32Tail.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/FP32Observations.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/FP32Position.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/FP32Motion.cmake")
