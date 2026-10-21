@@ -101,11 +101,13 @@ Shared ctypes pointer bindings select storage metadata via `host/runtime/cuda_ap
 Readable world-local fusion lives in `cuda/fp32/`, independently compiled by
 `cmake/FP32Fusion.cmake`. `fused_tail.cu::advance` combines velocity and position
 advancement in one 64-thread CTA per world; its block barrier replaces the
-original kernel-completion dependency. `fused_tail.py::FusedAdvance` borrows
-the validated Euler pointer binding. Damping preparation and factor/solve still
-precede advancement, while publication and observation sampling retain their
-original boundaries. Local frozen-input qualification does not imply a new
-full-task numerical or performance result.
+original kernel-completion dependency. The same kernel copies Newton `qacc`
+to warmstart and publishes time/overflow state. Warp 1 handles this auxiliary
+work while warp 0 integrates joint poses. `fused_tail.py::FusedAdvance` borrows
+validated Euler and publication bindings. Damping preparation and factor/solve
+still precede advancement; observation sampling follows the completed kernel.
+Local frozen-input qualification does not imply a new full-task numerical or
+performance result.
 
 The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
 compatibility helper in `facade.py` remain shared. Their location does not make

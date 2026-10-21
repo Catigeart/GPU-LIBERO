@@ -115,8 +115,9 @@ class Physics:
             w=SimpleNamespace(matrix=cuda.empty_like(d.M),factor=cuda.empty_like(d.qLD),diagonal=cuda.empty_like(d.qLDiagInv),acceleration=cuda.empty_like(d.qacc),damping=cuda.empty_like(d.qvel))
             self.euler_workspace=w;self.euler_solve=self.factor_plan.bind(w.matrix,w.factor,w.diagonal,w.acceleration,d.efc.Ma)
         self.euler=euler.EulerNumerics(m,d,products('euler'),stream,workspace=self.euler_workspace)
-        self.advance=FusedAdvance(self.euler,products.folder/'fp32_fused_tail.so')
         self.publication=publication.PublicationState(m,d,products('publication'),stream)
+        self.advance=FusedAdvance(self.euler,products.folder/'fp32_fused_tail.so',publication=self.publication,
+                                  qacc=d.qacc,warmstart=d.qacc_warmstart)
 
     def position(self,factorize=True):
         for phase in range(5):self.kinematics.enqueue(phase)
@@ -157,8 +158,7 @@ class Physics:
         if self.damped:
             self.euler.enqueue(0);cuda.copy(self.euler_workspace.matrix,self.data.M)
             self.euler.enqueue(1);self.euler_solve.enqueue()
-        self.advance.enqueue();self.publication.enqueue()
-        cuda.copy(self.data.qacc_warmstart,self.data.qacc)
+        self.advance.enqueue()
 
     def step2(self):self.solve();self.integrate()
     def forward(self):self.step1(factorize=False);self.solve(public=True)

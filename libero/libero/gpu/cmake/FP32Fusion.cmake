@@ -1,7 +1,9 @@
 # Independent, readable FP32 fusion translation units. No generated bodies.
 set(fp32_tail_sources
   "${FLASH_GPU}/cuda/fp32/fused_tail.cu"
+  "${FLASH_GPU}/cuda/fp32/fused_tail.cuh"
   "${FLASH_GPU}/cuda/dynamics/mjwarp_euler.cuh"
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_publication.cuh"
   "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${fp32_tail_sources})
 set(tail_hashes)
