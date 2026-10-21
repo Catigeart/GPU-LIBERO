@@ -38,9 +38,17 @@ __global__ void actuator_velocity(TransmissionInputs a) {
 // A single world owns the append counter and all scalar rows. Length, moment
 // and optional velocity share the producer's private gear/DOF values. No lane
 // reads another lane's newly allocated row.
-template<bool Velocity,int Threads>
-__global__ void world_transmission(TransmissionInputs a) {
+template<bool Velocity,int Threads,bool Step1=false>
+__global__ void world_transmission(TransmissionInputs a,int sensors=0,
+                                   float* sensor_data=nullptr,float* energy=nullptr) {
   const int w=blockIdx.x,lane=threadIdx.x;
+  // The caller's substep-entry clears have world-local ownership. They are
+  // independent of the actuator rows and reuse this launch without a barrier.
+  // Ordinary transmission callers retain their sensor and energy buffers.
+  if constexpr (Step1) {
+    for (int i=lane;i<sensors;i+=Threads) sensor_data[w*sensors+i]=0.0f;
+    if (lane<2) energy[2*w+lane]=0.0f;
+  }
   if (lane==0) a.total[w]=0;
   if constexpr (Threads==32) __syncwarp();
   else __syncthreads();
@@ -67,6 +75,20 @@ extern "C" {
 const char* flash_mjwarp_transmission_source_id() { return FLASH_MJW_TRANSMISSION_SOURCE_ID; }
 std::size_t flash_mjwarp_transmission_arguments_bytes() { return sizeof(flash::mjwarp::TransmissionInputs); }
 int flash_mjwarp_transmission_arch() { return FLASH_MJW_TRANSMISSION_ARCH; }
+int flash_mjwarp_transmission_step1(const flash::mjwarp::TransmissionInputs* a,
+                                   int sensors,float* sensor_data,float* energy,
+                                   cudaStream_t stream) {
+  if (!a || a->worlds<1 || a->actuators<1 || a->nv<1 || a->nq<1 ||
+      a->moments<a->actuators || a->gear_rows<1 || !a->total ||
+      sensors<0 || (sensors && !sensor_data) || !energy)
+    return int(cudaErrorInvalidValue);
+  using namespace flash::mjwarp;
+  if (a->actuators<=32)
+    world_transmission<true,32,true><<<a->worlds,32,0,stream>>>(*a,sensors,sensor_data,energy);
+  else
+    world_transmission<true,128,true><<<a->worlds,128,0,stream>>>(*a,sensors,sensor_data,energy);
+  return int(cudaGetLastError());
+}
 int flash_mjwarp_transmission_fused(const flash::mjwarp::TransmissionInputs* a,
                                    int velocity,cudaStream_t stream) {
   if (!a || a->worlds<1 || a->actuators<1 || a->nv<1 || a->nq<1 ||

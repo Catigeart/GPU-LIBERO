@@ -491,3 +491,11 @@ inputs remain live. Wider trees retain branch-CTA kinematics plus accepted
 centered/mass; the broad32branch prototype regressed and is excluded.
 Twelve N=2 regional endpoint cases pass. Eligible real-fixture gains are modest
 and contention-dependent; same-code fallback differences are measurement noise.
+
+
+`Physics.step1 -> velocity_stage(clear_step1=True)` uses
+`TransmissionNumerics.bind_step1/enqueue_step1`. Actual sensor/energy clears
+share `world_transmission<true,...,true>` with transmission/actuator velocity,
+without another barrier or shared allocation. Standalone transmission retains
+those buffers. Local N=2 qualification includes empty/wide clear buffers and
+current-input replay updates; timing covers only these clears and transmission.

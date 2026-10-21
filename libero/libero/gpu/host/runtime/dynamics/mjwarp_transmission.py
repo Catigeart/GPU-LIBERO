@@ -95,6 +95,30 @@ class TransmissionNumerics:
         error=self.fused_launch(ct.byref(self.arguments),int(velocity),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused transmission failed: CUDA error '+str(error))
 
+    def bind_step1(self):
+        """Bind the caller's independent world-local clears before capture."""
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp=array_api(self.stream)
+        if any(self.selected[k]!='cuda' for k in ('transmission','actuator_velocity')):
+            raise ValueError('Step1 requires CUDA scalar transmission and velocity')
+        n,ns=self.data.nworld,self.model.nsensordata
+        if ns<0 or max(n*ns,2*n)>2**31-256:raise ValueError('Step1 clear dimensions exceed storage')
+        a=self.step1_arrays={}
+        bind_array(a,'sensor_data',self.data.sensordata,wp.float32,(n,ns),self.stream)
+        bind_array(a,'energy',self.data.energy,wp.vec2,(n,),self.stream)
+        reject_output_overlap(dict(self.arrays,**a),
+            ('rownnz','rowadr','column','moment','length','total','velocity','sensor_data','energy'))
+        self.step1_launch=self.library.flash_mjwarp_transmission_step1
+        self.step1_launch.argtypes=[ct.POINTER(TransmissionInputs),ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p]
+        self.step1_launch.restype=ct.c_int
+        self.step1_width=ns
+
+    def enqueue_step1(self):
+        a=self.step1_arrays
+        error=self.step1_launch(ct.byref(self.arguments),self.step1_width,
+            a['sensor_data'].ptr,a['energy'].ptr,self.stream.cuda_stream)
+        if error:raise RuntimeError('Step1 transmission failed: CUDA error '+str(error))
+
     @property
     def identity(self):
         return dict(source_id=source_id('transmission'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),

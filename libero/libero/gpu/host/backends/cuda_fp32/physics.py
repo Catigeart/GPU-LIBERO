@@ -118,6 +118,7 @@ class Physics:
         self.collision=Collision(m,d,stream,products)
         self.constraints=constraints.ConstraintConstruction(m,d,products('constraint_build'),stream,admission=constraints.qualify(m,d,implementation='cuda'))
         self.transmission=transmission.TransmissionNumerics(m,d,products('transmission'),stream,admission=transmission.qualify(m,d,transmission='cuda',actuator_velocity='cuda'))
+        self.transmission.bind_step1()
         self.velocity=velocity.ComVelocity(m,d,products('velocity'),stream,top)
         self.passive=passive.PassiveForces(m,d,products('passive'),stream)
         fa=fluid.qualify(m,d,implementation='cuda')
@@ -157,9 +158,10 @@ class Physics:
         self.constraints.enqueue()
         if transmit:self.transmission.enqueue_scalar()
 
-    def velocity_stage(self):
+    def velocity_stage(self,*,clear_step1=False):
         m,d=self.model,self.data
-        self.transmission.enqueue_scalar(velocity=True)
+        if clear_step1:self.transmission.enqueue_step1()
+        else:self.transmission.enqueue_scalar(velocity=True)
         if self.passive.flags['disable_spring'] and self.passive.flags['disable_damper']:
             self.motion_bias.enqueue()
             for name in ('qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive'):getattr(d,name).zero_()
@@ -174,7 +176,7 @@ class Physics:
                 d.qfrc_adhesion.zero_();self.passive.enqueue(1)
 
     def step1(self,factorize=True):
-        self.position(factorize,transmit=False);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()
+        self.position(factorize,transmit=False);self.velocity_stage(clear_step1=True)
 
     def solve(self,public=False):
         m,d=self.model,self.data
