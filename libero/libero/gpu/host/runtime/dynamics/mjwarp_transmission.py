@@ -85,6 +85,15 @@ class TransmissionNumerics:
             **{k:a[k].ptr if k in a else 0 for k,_ in TransmissionInputs._fields_[6:]})
         self.launch=self.library.flash_mjwarp_transmission_launch
         self.launch.argtypes=[ct.POINTER(TransmissionInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+        self.fused_launch=self.library.flash_mjwarp_transmission_fused
+        self.fused_launch.argtypes=[ct.POINTER(TransmissionInputs),ct.c_int,ct.c_void_p]
+        self.fused_launch.restype=ct.c_int
+
+    def enqueue_scalar(self,*,velocity=False):
+        if self.selected['transmission']!='cuda':raise ValueError('CUDA scalar transmission is not selected')
+        if velocity and self.selected['actuator_velocity']!='cuda':raise ValueError('CUDA velocity is not selected')
+        error=self.fused_launch(ct.byref(self.arguments),int(velocity),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused transmission failed: CUDA error '+str(error))
 
     @property
     def identity(self):

@@ -372,3 +372,16 @@ Eleven N=2 local fixtures, changed inputs after graph capture,1/20 replays and
 an independent FP64 preparation oracle pass; no full-task rollout is involved.
 Eight-lane row copies improved the first fused DOF-thread version by24--26%
 on the three frozen real task layouts, measured with other GPU work resident.
+
+
+`TransmissionNumerics.enqueue_scalar(velocity=...)` joins counter reset and
+scalar-joint transmission in `mjwarp_transmission.cu::world_transmission`.
+The optional full entry consumes private gear/DOF values immediately for
+actuator velocity. Small domains use one warp and one warp synchronization;
+larger domains use128threads and one block barrier. Each world retains its
+atomic append counter and CSR publication. Position-only calls hold velocity.
+Full `step1` defers transmission until `velocity_stage`; constraint construction
+has no actuator/moment dependency. Original phase and generic-CSR velocity
+entries remain available. N=2 regional qualification covers19 cases,1/20
+replays, changed inputs, zero/shared gears and row ownership. Warp aggregation
+added instructions without a stable real-domain gain and was discarded.

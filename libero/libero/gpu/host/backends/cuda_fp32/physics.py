@@ -134,16 +134,17 @@ class Physics:
         self.advance=FusedAdvance(self.euler,products.folder/'fp32_fused_tail.so',publication=self.publication,
                                   qacc=d.qacc,warmstart=d.qacc_warmstart)
 
-    def position(self,factorize=True):
+    def position(self,factorize=True,*,transmit=True):
         self.kinematics.enqueue_frames()
         self.centered_mass.enqueue()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
-        self.constraints.enqueue();self.transmission.enqueue(0)
+        self.constraints.enqueue()
+        if transmit:self.transmission.enqueue_scalar()
 
     def velocity_stage(self):
         m,d=self.model,self.data
-        self.transmission.enqueue(1)
+        self.transmission.enqueue_scalar(velocity=True)
         if self.passive.flags['disable_spring'] and self.passive.flags['disable_damper']:
             self.motion_bias.enqueue()
             for name in ('qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive'):getattr(d,name).zero_()
@@ -158,7 +159,7 @@ class Physics:
                 d.qfrc_adhesion.zero_();self.passive.enqueue(1)
 
     def step1(self,factorize=True):
-        self.position(factorize);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()
+        self.position(factorize,transmit=False);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()
 
     def solve(self,public=False):
         m,d=self.model,self.data

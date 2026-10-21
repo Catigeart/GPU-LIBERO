@@ -34,12 +34,54 @@ __global__ void actuator_velocity(TransmissionInputs a) {
   }
   a.velocity[t]=velocity;
 }
+
+// A single world owns the append counter and all scalar rows. Length, moment
+// and optional velocity share the producer's private gear/DOF values. No lane
+// reads another lane's newly allocated row.
+template<bool Velocity,int Threads>
+__global__ void world_transmission(TransmissionInputs a) {
+  const int w=blockIdx.x,lane=threadIdx.x;
+  if (lane==0) a.total[w]=0;
+  if constexpr (Threads==32) __syncwarp();
+  else __syncthreads();
+  for (int u=lane;u<a.actuators;u+=Threads) {
+    const int t=w*a.actuators+u,joint=a.actuator_joint[2*u],
+              dof=a.joint_dofadr[joint];
+    const float gear=a.gear[((w%a.gear_rows)*a.actuators+u)*6];
+    a.length[t]=a.qpos[w*a.nq+a.joint_qposadr[joint]]*gear;
+    a.rownnz[t]=1;
+    const int row=atomicAdd(a.total+w,1);
+    a.rowadr[t]=row;
+    a.column[w*a.moments+row]=dof;
+    a.moment[w*a.moments+row]=gear;
+    if constexpr (Velocity) {
+      float value=0.0f;
+      value+=gear*a.qvel[w*a.nv+dof];
+      a.velocity[t]=value;
+    }
+  }
+}
 }
 }
 extern "C" {
 const char* flash_mjwarp_transmission_source_id() { return FLASH_MJW_TRANSMISSION_SOURCE_ID; }
 std::size_t flash_mjwarp_transmission_arguments_bytes() { return sizeof(flash::mjwarp::TransmissionInputs); }
 int flash_mjwarp_transmission_arch() { return FLASH_MJW_TRANSMISSION_ARCH; }
+int flash_mjwarp_transmission_fused(const flash::mjwarp::TransmissionInputs* a,
+                                   int velocity,cudaStream_t stream) {
+  if (!a || a->worlds<1 || a->actuators<1 || a->nv<1 || a->nq<1 ||
+      a->moments<a->actuators || a->gear_rows<1 || !a->total ||
+      (velocity!=0 && velocity!=1)) return int(cudaErrorInvalidValue);
+  using namespace flash::mjwarp;
+  if (a->actuators<=32) {
+    if (velocity) world_transmission<true,32><<<a->worlds,32,0,stream>>>(*a);
+    else world_transmission<false,32><<<a->worlds,32,0,stream>>>(*a);
+  } else {
+    if (velocity) world_transmission<true,128><<<a->worlds,128,0,stream>>>(*a);
+    else world_transmission<false,128><<<a->worlds,128,0,stream>>>(*a);
+  }
+  return int(cudaGetLastError());
+}
 int flash_mjwarp_transmission_launch(const flash::mjwarp::TransmissionInputs* a,int phase,cudaStream_t stream) {
   if (!a || a->worlds<1 || a->nv<1 || a->nq<1 || a->actuators<1 || a->moments<1 || a->gear_rows<1)
     return int(cudaErrorInvalidValue);
