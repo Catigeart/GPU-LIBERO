@@ -5,7 +5,6 @@ from contextlib import nullcontext
 import dataclasses
 import json
 import numpy as np
-import warp as wp
 
 LOWDIM_FIELDS = ("cache","observed","sidequat","elapsed","sampled","present","events")
 SCENE_FIELDS = ("elapsed","sampled","generation","scenes","parent_generation","captured")
@@ -30,6 +29,7 @@ def schema(adapter):
                       sort_keys=True)
 
 def _snapshot(adapter, stream=None):
+    wp=adapter.wp
     if adapter.closed or not adapter.valid:raise RuntimeError("invalid observer cannot snapshot")
     streams = [stream,adapter.lowdim.last_stream]
     if adapter.scene_cache is not None:streams.append(adapter.scene_cache.last_stream)
@@ -59,6 +59,7 @@ def snapshot(adapter, stream=None):
         raise
 
 def restore(adapter, packet, stream=None):
+    wp=adapter.wp
     if adapter.closed or not adapter.valid:raise RuntimeError("invalid observer cannot restore")
     # A fresh owner starts with construction defaults; restore user descriptor
     # settings before transporting clocks. Never accept changed IDs or shapes.
@@ -83,7 +84,8 @@ def restore(adapter, packet, stream=None):
         prepared={}
         for name,target in targets.items():
             value=packet["arrays"][name]
-            dtype=np.dtype(np.float64 if target.dtype==scalar.wp_real else np.int32)
+            dtype=np.dtype((np.float32 if scalar.bits==32 else np.float64)
+                           if target.dtype==adapter._scalar else np.int32)
             if not isinstance(value,np.ndarray) or value.shape!=target.shape or value.dtype!=dtype:
                 raise ValueError("continuation dtype/shape mismatch: "+name)
             # Transport bytes, including untouched scratch, without numerical

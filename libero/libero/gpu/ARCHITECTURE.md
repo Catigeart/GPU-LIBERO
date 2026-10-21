@@ -13,6 +13,8 @@ without executing the GPU runtime.
 | --- | --- |
 | `model/` | Native intake, static topology, observation descriptions and collision model extraction. |
 | `host/build/` | Offline builds, source/artifact admission, child environments and AOT ready sessions. |
+| `host/backends/cuda_fp32/` | Default independent FP32 model preprocessing, CUDA resources, Graphs, physics scheduling and public batch lifecycle. No Warp dependency. |
+| `host/backends/mjwarp/` | Explicit upstream reference, shared CPU model helpers and numerical migration selectors. |
 | `host/assembly/` | Cold composition and explicit replacement before live binding. |
 | `host/adapters/` | Environment facade, same-model batching, observations and rendering boundaries. |
 | `host/bindings/` | Handwritten CUDA ABI/layout adaptation and launch plans. |
@@ -29,7 +31,8 @@ profiles and build caches also belong outside the source checkout.
 
 | Entry | Selection / scope | Implementation |
 | --- | --- | --- |
-| `libero.libero.envs.GpuBatchEnv` | Native worlds of one task and one exact static model; equal dimensions do not permit mixing models. | `host/adapters/environment/batch_env.py::GpuBatchEnv` |
+| `libero.libero.envs.GpuBatchEnv` | Worlds of one task and one exact static model; defaults to independent CUDA FP32. Explicit FP64 selects native. Equal dimensions do not permit mixing models. | `host/adapters/environment/batch_env.py::GpuBatchEnv.__new__` → `host/backends/selection.py::resolve_engine` |
+| Independent FP32 owner | Preprocess/upload one CPU model, allocate world-major device state, enforce capacities and own reset/observation/Graph lifetime. | `host/backends/cuda_fp32/environment.py::CudaFP32BatchEnv` |
 | Original environment / vector APIs | Preserve upstream signatures, routing and worker lifecycle. | Parent `envs/env_wrapper.py`, `envs/venv.py` |
 | Batch physical arena | Stack reset states and construct one shared model with world-major dynamic owners. | `host/adapters/environment/batched_physics.py::prepare_native_batch` |
 | CUDA composition | Batch factory selects optimized fast dataflow with cold source/owner/capacity admission. | `host/factory.py::prepare_cuda_physics` → `host/assembly/components.py::prepare_cuda_physics` → `host/assembly/mathdx/factory.py` and pipeline/compose templates |
@@ -38,6 +41,33 @@ profiles and build caches also belong outside the source checkout.
 | Capsule extension | Cold source closure and route extension before binding/launch, with independent source identity. | `host/runtime/collision/capsule_extension.py::prepare_workspace_extension` |
 
 ## Control-step execution
+
+The default FP32 path is:
+
+```text
+GpuBatchEnv.step(actions)
+  -> CudaFP32BatchEnv / shared public batch boundary
+  -> host/backends/cuda_fp32/runtime.py::Runtime.enqueue_action
+     -> action upload and control Graph
+        -> 25 ordinary physical substeps
+           -> physics.py::Physics.step1 (position, collision, velocity, forces)
+           -> controller.py::Controller.enqueue (gather -> shared CUDA OSC -> scatter)
+           -> physics.py::Physics.step2
+              -> actuation / acceleration / physics.py::Newton.solve
+              -> postconstraint / sensors / Euler / warmstart publication
+           -> GPU observation sampling at each physical-substep boundary
+  -> host observation packaging, task predicates and optional rendering
+```
+
+`cuda/runtime/runtime.cu` owns CUDA buffers/streams/Graphs through its C ABI;
+`cuda/runtime/bridges.cu` provides controller transport and observations. Shared
+handwritten physics is in `cuda/{collision,dynamics,newton}/mjwarp*`; those files
+require neither Warp headers nor the Warp compiler. The conditional Newton loop
+runs on the device. See the [FP32 guide](host/backends/cuda_fp32/README.md) and
+[intentional numerical corrections](host/backends/mjwarp/NUMERICAL_DEVIATIONS.md).
+
+The following retained path and optimization details apply to native FP64 and
+the explicit legacy native FP32 comparison engine:
 
 ```text
 GpuBatchEnv.step(actions)
@@ -70,7 +100,7 @@ not part of this project. The outer graph owns the substep sequence.
 | Newton | Each admitted forward, warmstart and final publication; separate compilation unit. | `cuda/step/newton_solver.cu::solve_newton` |
 | Physical reset | Checks, continuation, root restoration and full-forward publication. | `host/runtime/step/recovery_final_event_factory.py`; `recovery_cleanup_environment_r02.py`; `cuda/runtime/recovery.cuh` |
 
-Normal qualified fused execution performs 75 Newton solves, 50 factored mass
+Normal qualified native fused execution performs 75 Newton solves, 50 factored mass
 solves and 3 complete Post evaluations per control step. Recovery and alternative
 observer/debug policies can do additional work.
 

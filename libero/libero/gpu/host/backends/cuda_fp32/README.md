@@ -1,0 +1,127 @@
+# Independent CUDA FP32
+
+This backend owns FP32 CUDA buffers, streams, graphs, model preprocessing and
+LIBERO batch lifecycle. Neither `warp` nor `mujoco_warp` is required to prepare
+its modern CPU models or execute physics. Its mathematical CUDA sources are
+shared with the handwritten MJWarp migration path, rather than duplicated.
+It is the default `GpuBatchEnv` backend when precision is omitted and
+`LIBERO_GPU_PRECISION` is unset. Select `precision="fp64"` explicitly to use
+the native FP64 backend in its separate environment.
+CPU MuJoCo 3.16.0 remains a dependency for model compilation and OpenGL rendering.
+CPU MuJoCo 2.3.7 remains the independent reference for overlapping semantics.
+
+The algorithm reference is MJWarp commit
+`c384ac51df67eb92ab7657cc472ff7494dc036bf`. The deliberate collision corrections
+are documented separately in [NUMERICAL_DEVIATIONS.md](../mjwarp/NUMERICAL_DEVIATIONS.md).
+Removing Warp does not revert those corrections or introduce new solver math.
+See [qualification results and retained exceptions](QUALIFICATION.md) for the
+130-task run, long trajectories, package checks and shared-device timings.
+
+## Installation and explicit preparation
+
+Use an isolated Python environment:
+
+```sh
+python -m pip install '.[cuda-fp32]'
+python -m libero.gpu.host.backends.cuda_fp32.prepare \
+  --build-root /path/to/common-project --tasks all \
+  --mathdx-root /path/to/mathdx --jobs 2
+```
+
+To create a common catalogue from scratch, invoke the following in the separate
+CPU MuJoCo 2.3.7 environment, with this checkout on `PYTHONPATH`. No Warp package
+is needed in that environment either:
+
+```sh
+python -m pip install '.[cpu-catalog]'
+python -m libero.gpu.host.backends.cuda_fp32.catalog \
+  --build-root /path/to/new-common-project --tasks all --seed 0
+```
+
+The common project contains the CPU scene catalogue
+`TASK_INSTANCES.json`, scene XML, fixed fixture parameters and initial states.
+Those are CPU model inputs, not serialized Warp arrays. The existing catalogue
+preparation uses CPU MuJoCo 2.3.7; run it in its separate CPU environment.
+The command above imports the inputs using CPU MuJoCo 3.16.0 and builds only
+the independent runtime/transport and 29 shared handwritten CUDA targets.
+It advances zero physics substeps. Existing compatible CMake products are reused.
+`--skip-build` prepares scenes only. Preparation and execution must be serialized
+on shared GPU machines. Runtime construction defaults to `allow_compile=False`.
+
+```python
+from libero.libero.envs import GpuBatchEnv
+
+env = GpuBatchEnv(bddl_path, 2, precision="fp32", physics_engine="cuda_fp32",
+                  build_root=project_root, allow_compile=False,
+                  use_camera_obs=False, ignore_done=True)
+```
+
+Use `cuda_options={"fast_compile": True, "nconmax": ..., "njmax": ...}` for
+explicit allocation/build choices. The older `mjwarp_options` spelling is
+accepted only for compatible CUDA-only settings. There is no upstream numerical
+fallback. Unsupported domains fail before simulation.
+
+## Structure and call chain
+
+```text
+GpuBatchEnv -> CudaFP32BatchEnv                       environment.py
+  build_scene -> prepare -> upload -> make_data      scene.py, model.py, data.py
+  Runtime.enqueue_action                             runtime.py
+    control Graph, 25 ordinary physical substeps
+      Physics.step1                                  physics.py
+        kinematics/COM/cameras/mass/collision/constraints/transmission
+        velocity/passive/bias
+      Controller.enqueue                             controller.py, bridges.py
+        gather -> shared CUDA OSC -> scatter
+      Physics.step2                                  physics.py
+        actuation -> smooth force -> mass solve
+        Newton.solve -> device conditional WHILE
+        postconstraint/sensors -> Euler -> warmstart publication
+      GPU observable/scene sampling                  observations.py
+  public boundary: predicates, dictionaries, GL      shared adapters
+```
+
+`device.py` defines contiguous allocations and views, not a numerical compiler.
+Logical vector/matrix shapes omit fixed components; byte capacities include
+them. Views retain their allocation owner. Uploads retain private host storage
+until stream completion. Graphs retain launch owners. Allocation is forbidden
+inside capture. Newton owns reusable device workspace; each solve explicitly
+initializes the same state that upstream initializes on allocation. Device
+conditionals use the current solve counter, without host iteration polling.
+
+`cuda/runtime/runtime.cu` implements the small C ABI resource owner;
+`cuda/runtime/bridges.cu` implements controller transport and observable sampling.
+They have independent CMake targets `flash_cuda_runtime` and
+`flash_cuda_bridges_fp32`. Physics remains in `cuda/{dynamics,newton,collision}/mjwarp*`
+and OSC in its existing controller target. The `mjwarp` prefix records algorithm
+provenance; those `.cu/.cuh` files do not depend on the Warp compiler or runtime.
+Shared ctypes pointer bindings select storage metadata via `host/runtime/cuda_api.py`.
+
+The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
+compatibility helper in `facade.py` remain shared. Their location does not make
+them external Warp dependencies. Source/asset/model hashes still admit every
+scene; each CUDA loader verifies the corresponding source identity and ABI.
+
+## Supported scope and validation
+
+The admitted shipped task domain is rigid, dense Newton, elliptic contacts,
+Euler integration, the default Panda OSC, FORCE/TORQUE sensors and FIXED
+cameras/lights. Flex, tendons, equalities, activation/history, sleep, noslip and
+plugins are rejected. This is the LIBERO batch implementation, not a general
+replacement for every MuJoCo feature. FP64/native and the explicit upstream
+MJWarp reference remain separate backends and environments.
+
+Stable independent validation commands in `tools/validate_gpu.py` are:
+
+- `cuda-runtime`: buffer/stream/Graph/conditional-loop ownership and replay.
+- `cuda-model`: all model arrays/scalars/layouts against CPU-exported pinned data.
+- `cuda-functions`: common-input prefix, OSC, Newton and Euler comparisons.
+- `cuda-lifecycle`: partial reset, continuation, observation mutation and callbacks;
+  `--cameras --prepare` additionally checks explicit CPU scene preparation and RGB/depth.
+- `cuda-complete`: source-bound N=2 trajectories, optional single timing pass.
+
+Reference export is explicit and uses the separate reference environment.
+Independent checks prohibit Warp imports; an isolated installation additionally
+establishes that neither package can be found. Existing strict checks, accepted
+FP32 trajectory envelopes and geometry diagnostics retain separate outcomes.
+Shared-device timing is an observation, not an isolated performance guarantee.

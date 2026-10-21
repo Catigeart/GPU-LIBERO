@@ -104,7 +104,9 @@ class GpuBatchEnv:
     ``ready_session`` explicitly reuses one fully qualified, immutable build in
     this process. Create it with host.build.aot.qualify_ready_session(); the
     default independent construction retains full artifact hash validation.
-    ``physics_engine='auto'`` selects native CUDA for FP64 and MJWarp for FP32.
+    Precision defaults to FP32. ``physics_engine='auto'`` selects independent
+    CUDA for FP32 and native CUDA for explicit FP64. The explicit ``mjwarp``
+    engine remains an optional reference.
     Explicit ``physics_engine='native'`` retains the handwritten FP32 backend.
     """
     physics_backend = 'gpu'
@@ -113,6 +115,10 @@ class GpuBatchEnv:
     def __new__(cls, *args, physics_engine='auto', **kwargs):
         from libero.gpu.host.backends.selection import resolve_engine
         physics_engine = resolve_engine(physics_engine, kwargs.get('precision'))
+        if cls is GpuBatchEnv and physics_engine == 'cuda_fp32':
+            scalar.select(kwargs.get('precision') or 'fp32')
+            from libero.gpu.host.backends.cuda_fp32.environment import CudaFP32BatchEnv
+            return object.__new__(CudaFP32BatchEnv)
         if cls is GpuBatchEnv and physics_engine == 'mjwarp':
             scalar.select(kwargs.get('precision') or 'fp32')
             try:
@@ -120,9 +126,9 @@ class GpuBatchEnv:
             except ModuleNotFoundError as error:
                 if error.name not in ('mujoco_warp', 'warp'):
                     raise
-                raise ImportError('FP32 defaults to MJWarp. Use its isolated environment '
-                                  'and requirements-mjwarp.txt; select physics_engine="native" '
-                                  'explicitly for the handwritten FP32 comparison backend.') from error
+                raise ImportError('The explicit MJWarp reference requires its isolated '
+                                  'environment and requirements-mjwarp.txt. Default FP32 '
+                                  'uses physics_engine="cuda_fp32" without Warp or MJWarp.') from error
             return object.__new__(MjWarpBatchEnv)
         return object.__new__(cls)
 

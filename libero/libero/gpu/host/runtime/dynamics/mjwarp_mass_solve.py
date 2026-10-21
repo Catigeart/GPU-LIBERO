@@ -35,7 +35,8 @@ class MassSolvePlan:
 
     def __init__(self,model,data,library,stream):
         import numpy as np
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         reason=unsupported_reason(model,data)
         if reason:raise ValueError(reason)
@@ -93,7 +94,8 @@ class MassSolve:
     """A reusable pointer binding; exact in-place solve is supported as upstream."""
 
     def __init__(self,plan,solution,rhs):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
         m,d,s=plan.model,plan.data,plan.stream
         for name,a in [('rhs',rhs),('solution',solution)]:
             if a.device!=s.device or a.dtype!=wp.float32 or not a.is_contiguous or a.ndim!=2 or (

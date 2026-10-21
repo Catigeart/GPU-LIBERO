@@ -28,7 +28,7 @@ def _set_attributes(requested):
     norm_limit = float.fromhex('0x1.fffffep127') if bits == 32 else 1e300
 
 
-_set_attributes(_normalize(os.environ.get('LIBERO_GPU_PRECISION', 'fp64')))
+_set_attributes(_normalize(os.environ.get('LIBERO_GPU_PRECISION', 'fp32')))
 
 
 def select(value=None):

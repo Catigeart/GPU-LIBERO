@@ -5,6 +5,7 @@ from .mjwarp_motion_reference import U, exact, add, multiply, matvec, spatial, f
 
 def reference(c):
     nb=c['nbody']
+    external_error=c.get('cfrc_ext_error',np.zeros_like(c['cfrc_ext'],dtype=np.float64))
     ca,cae,cf,cfe=(np.zeros((2,nb,6)) for _ in range(4))
     for w in range(2):
         if not c['gravity_disabled']:
@@ -17,7 +18,7 @@ def reference(c):
             ca[w,b],cae[w,b]=acc
             inertia=spatial(c['cinert'][w,b]);v=exact(c['cvel'][w,b])
             force=add(matvec(inertia,acc),force_cross(v,matvec(inertia,v)))
-            cf[w,b],cfe[w,b]=add(force,exact(-c['cfrc_ext'][w,b].astype(np.float64)))
+            cf[w,b],cfe[w,b]=add(force,(-c['cfrc_ext'][w,b].astype(np.float64),external_error[w,b]))
         # Bound any legal sibling atomic order using absolute contributions.
         major=abs(cf[w])+cfe[w];count=np.ones(nb,int)
         for b in reversed(range(1,nb)):

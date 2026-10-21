@@ -12,7 +12,8 @@ class VelocityInputs(ct.Structure):
 
 class ComVelocity:
     def __init__(self, model, data, library, stream, topology):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
         self.model, self.data, self.stream, self.topology = model, data, stream, topology
         self.path, self.library = load_leaf('velocity', VelocityInputs, library, stream)
         self.arrays = a = dict(topology.arrays)

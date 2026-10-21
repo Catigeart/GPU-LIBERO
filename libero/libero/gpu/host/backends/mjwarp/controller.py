@@ -31,7 +31,7 @@ class Controller:
                   position_error=3, orientation_error=3, quat_input=4, quat_result=9,
                   nullspace_torque=7, clipped=7, pm=49, pj=42, pq=7, pv=7, pp=3, pr=9, pe=6)
 
-    def __init__(self, host, model, data, metadata, stream, library):
+    def __init__(self, host, model, data, metadata, stream, library, *, queries=None):
         self.model, self.data, self.stream = model, data, stream
         self.n = data.nworld
         robots = metadata['robot_metadata']
@@ -68,6 +68,7 @@ class Controller:
         self.body = wp.array(np.full(self.n, host.site_bodyid[self.site], np.int32), dtype=int, device=dev)
         self.jp = wp.zeros((self.n, 3, model.nv), dtype=float, device=dev)
         self.jr = wp.zeros_like(self.jp)
+        self.jacobian=queries.jacobian(self.points,self.body,self.jp,self.jr) if queries is not None else None
         rows, cols = model.M_hinit_i.numpy().reshape(-1), model.M_colind.numpy().reshape(-1)
         mass_indices = np.full((model.nv, model.nv), -1, np.int32)
         for k, (i, j) in enumerate(zip(rows, cols)):
@@ -94,7 +95,8 @@ class Controller:
 
     def gather(self):
         wp.launch(kernels.site_points, self.n, [self.site, self.data.site_xpos, self.points], stream=self.stream)
-        mjw.jac(self.model, self.data, self.jp, self.jr, self.points, self.body)
+        if self.jacobian is None:mjw.jac(self.model, self.data, self.jp, self.jr, self.points, self.body)
+        else:self.jacobian.enqueue()
         wp.launch(kernels.gather, (self.n, 49), inputs=[self.site, self.qi, self.vi, self.mi,
             self.data.qpos, self.data.qvel, self.data.qfrc_bias, self.data.M, self.jp, self.jr,
             self.data.site_xpos, self.data.site_xmat] + [self.buffers[k] for k in

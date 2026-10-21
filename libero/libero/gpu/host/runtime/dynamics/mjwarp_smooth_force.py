@@ -20,7 +20,8 @@ class SmoothForce:
     """No numerical caching, allocation, download or block synchronization per call."""
     def __init__(self,model,data,library,stream):
         import numpy as np
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         self.model,self.data,self.stream=model,data,stream
         self.path=Path(library).resolve()

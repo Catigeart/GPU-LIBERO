@@ -12,8 +12,10 @@ class BiasInputs(ct.Structure):
 
 class Bias:
     def __init__(self,model,data,library,stream,topology):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         self.model,self.data,self.stream,self.topology=model,data,stream,topology
         self.path,self.library=load_leaf('bias',BiasInputs,library,stream)
         self.gravity_disabled=bool(model.opt.disableflags & types.DisableBit.GRAVITY)
@@ -39,7 +41,8 @@ class Bias:
             gravity_disabled=self.gravity_disabled,values='borrow-current-input-no-cache',**self.topology.identity)
 
     def enqueue(self):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(self.stream)
         with wp.ScopedStream(self.stream):
             phases=[1,2] if self.gravity_disabled else [0,1,2]
             if self.gravity_disabled:self.arrays['cacc'].zero_()

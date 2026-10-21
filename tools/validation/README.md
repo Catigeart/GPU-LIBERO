@@ -150,7 +150,9 @@ speedups.
 
 ## Protocol
 
-- Default: N=2, no cameras, FP64, 5 warmup control steps and 20 continuous steps.
+- The legacy `run` validator defaults to N=2, no cameras, FP64, 5 warmup
+  control steps and 20 continuous steps. Public `GpuBatchEnv` defaults to
+  independent CUDA FP32; use `cuda-complete` for its qualification protocol.
 - `--precision fp32` selects the separate prebuilt GPU product. Its endpoint
   screen adds a fixed floor of `1024 * float32_epsilon *
   max(1, frozen_CPU_scale, frozen_FP64_scale)` to the existing per-field max/RMS
@@ -670,3 +672,467 @@ qacc/warmstart, output ownership and source/library receipts remain exact.
 Host/capture checks separately preserve callbacks, disabled clearing, upstream
 delay interpolation, whole-caller fallbacks and Graph owners. Stateful and
 rotational-wrap mathematics is retained upstream and is not claimed migrated.
+
+
+## Local Euler preparation and advancement
+
+Build `flash_mjwarp_euler_fp32` offline. `mjwarp-euler` requires
+`--build-root /path/to/project --inputs /path/to/frozen-input-directory
+--output /path/to/results --library /path/to/mjwarp_euler_fp32.so`.
+Inputs are NPZ cases with nq/nv/njnt/nC, joint_type/qposadr/dofadr/dof_joint,
+CSR row/nnz/column, current qpos/qvel, damping/dampingpoly, timestep, matrix,
+and frozen acceleration/derivative arrays. All states/matrices contain two
+worlds; each physical parameter has its independent broadcast row count.
+The directory's complete files are bound by SHA256 in the preparation receipt.
+Use `--cpu-reference` under CPU MuJoCo2.3.7 first, `--prepare` in the isolated
+MJWarp environment next, and neither flag for load-only qualification.
+
+The order is damping derivative, private diagonal update, velocity, position,
+then their leaf composition on a frozen solved-acceleration boundary. It does
+not run collision, Newton or factorization. Original and updated parameters
+replay the same captured Graph. Both pinned upstream and CUDA outputs use
+independent FP64 arithmetic/norm/division/quaternion sensitivity allowances
+with fixed8x safety. Readonly inputs, public mass/qacc/warmstart holds and
+source/library receipts remain exact. Actual CPU quaternion integration is
+an additional oracle; pinned Warp's different all-zero-quaternion fallback is
+qualified against the raw pinned comparator and independent explicit formula.
+There is no performance mode; N=1 is skipped after N=2 passes.
+
+Production-caller checks can separately replay `Euler.integrate` on frozen
+real model inputs: qualify preparation, mass-solve residual, then advancement
+from its actual private acceleration boundary. Full control Graph capture
+checks dispatch/owners without replaying a trajectory. Warmstart publication
+must copy public Newton qacc, which is distinct from the private damping solve.
+
+
+## Local transmission and actuator velocity
+
+Build `flash_mjwarp_transmission_fp32` offline. `mjwarp-transmission` takes
+`--build-root /path/to/project --inputs /path/to/frozen-input-directory
+--output /path/to/results --library /path/to/mjwarp_transmission_fp32.so
+--actuation-library /path/to/mjwarp_actuation_fp32.so`.
+Use `--cpu-reference` in CPU MuJoCo2.3.7, then `--prepare` in the isolated
+MJWarp environment, then neither flag for compilation-forbidden N=2 checks.
+The command has no performance mode. Full collision/Newton/trajectories are
+outside this frozen-function scope; N=1 is skipped after N=2 passes.
+
+Each NPZ supplies the existing actuation fixture fields, nq/qpos/qvel,
+qposadr/dofadr, per-world-or-broadcast gear, and a velocity_only boolean.
+For real cases, matching JSON receipts bind model_path/model_sha256 so the
+CPU oracle calls actual mj_transmission. Generic manufactured cases use a
+small CPU model; velocity-only cases can have arbitrary valid CSR rows.
+All input-directory files are source-bound in the preparation receipt.
+
+The sequence is scalar transmission, generic ordered CSR velocity, composed
+leaves, then composition into stateless actuation. Raw pinned upstream
+transmission/velocity/fwd_actuation provide GPU comparators. Independent
+FP64 products/dot roundoff and the previously qualified actuation bounds
+check each stage at its actual input boundary, with fixed8x safety. Actual
+CPU mj_transmission checks length/moments; mju_mulMatVec checks velocities.
+
+Cases should include representative real layouts, negative/zero/broadcast
+gear, repeated target DOFs, differing actuator/control counts, and multiple
+CTAs sharing a world's row counter. Generic CSR cases include empty/long rows,
+cancellation, padding with unused NaNs/invalid indices and updated valid
+columns/rows. The same Graph replays original and updated current inputs.
+
+CSR row allocation is atomic and raw row offsets are unspecified upstream.
+Checks unpack logical actuator rows, then require exact row count/ownership,
+column identity and copied gear payloads, valid capacity, complete allocation
+and unchanged unused tails. Readonly physical state, qacc/warmstart and public
+holds remain exact. No floating output byte equality is imposed.
+
+
+## Local rigid kinematics
+
+Build `flash_mjwarp_kinematics_fp32` offline. `mjwarp-kinematics` takes
+`--build-root /path/to/project --inputs /path/to/frozen-input-directory
+--output /path/to/results --library /path/to/mjwarp_kinematics_fp32.so`.
+Run `--cpu-reference` with CPU2.3.7, then `--prepare` with isolated MJWarp,
+then neither flag for load-only N=2 checks. There is no performance mode.
+
+NPZ inputs contain dimensions; parent/joint/DOF/branch/depth metadata; root,
+weld, mocap and geom/site attachment indices; independently broadcast local
+transforms and qpos0; qpos/mocap inputs; and frozen public output frames. JSON
+receipts bind each NPZ and supply either a cached CPU model path/hash or a
+small manufactured XML. All input files and numerical/reference helpers are
+bound by the preparation receipt.
+
+The sequence qualifies body matrices, inertial frames, geom frames and site
+frames independently on frozen body poses, then body/anchor/axis propagation,
+then all five stages composed. Original/updated inputs reuse each Graph.
+Cases should cover real topology families, all joint types, off-center and
+multiple joints, deep chains, shared ancestors, branches spanning CTAs, mocap,
+parameter broadcasts and zero/near-halfturn quaternions. Inputs and unselected
+outputs are held exactly, as are world poses and skipped static-geom outputs.
+
+FP64 formulas use L2 error radii internally to retain rotational correlations:
+quaternion multiplication is norm multiplicative; rotation has operator norm
+||q|| squared; normalization removes radial error. Output radii bound each
+component with fixed8x safety. This avoids artificially exponential interval
+bounds on deep trees. Numeric output byte equality is not a gate.
+
+CPU2.3.7's optimized rotVecQuat assumes unit quaternions; MJWarp uses a
+homogeneous polynomial, including FP32 model quaternion norm deviations.
+The CPU oracle therefore supplies the same normalized FP64 local quaternions
+and axes to both formulas and actual mj_kinematics, disabling CPU sameframe
+shortcuts when local transforms change. The raw FP32 GPU/formula check retains
+all original parameters. Degenerate zero-quaternion cases are excluded only
+from the CPU oracle and remain required GPU/formula cases. CPU hardcoded world
+inertial frames and recomputed static geoms are outside the common comparison.
+The new kernel retains pinned local normalization and exact public holds.
+
+## Local subtree CoM / inertia / motion axes
+
+Build `flash_mjwarp_com_pos_fp32` offline. `mjwarp-com-pos` takes
+`--build-root /path/to/project --inputs /path/to/frozen-inputs
+--output /path/to/results --library /path/to/mjwarp_com_pos_fp32.so`.
+Optionally pass `--matrix-library /path/to/mjwarp_mass_matrix_fp32.so` to check
+CoM -> CRB/CSR composition on the three representative real fixtures.
+
+Run `--cpu-reference` in the CPU2.3.7 reference environment; run `--prepare` in
+the pinned isolated MJWarp environment; then run without either flag for
+load-only N=2 checks. Receipts bind inputs, independent formulas, helper source,
+upstream source and CUDA products. Offline preparation captures operators but
+does not replay physics. This qualifier has no performance mode.
+
+Frozen inputs contain current mass/subtree-mass/principal-inertia and world
+frames, immutable topology and root/joint/CSR metadata. Subtree, inertia, axes
+and composition are checked separately; original and updated parameters/frames
+replay the same Graph. Real NV24/43/57 fixtures and manufactured four-joint,
+deep/wide, broadcast, mass-imbalance, zero/tiny mass and nonzero-world families
+exercise dimensions and boundary semantics. Positive-mass common mathematics
+is compared to actual CPU mj_comPos with its dynamically summed FP64 subtree
+mass; zero-mass leaves, tiny masses and world inertia follow raw pinned MJWarp
+instead of importing CPU's different fallback. All fields remain subject to
+the independent raw-input FP64 oracle in GPU checks.
+
+Acceptance uses absolute-contribution bounds for arbitrary atomic sibling
+order, propagated tensor/cross-product sensitivity and fixed8x safety. It does
+not use candidate-measured tolerances or require floating-point byte equality.
+Readonly inputs/unselected outputs are exact holds. No integration, Newton
+solve, N=1 replay or full-task timing is needed for this local migration.
+
+## Local FIXED camera/light frames
+
+Build `flash_mjwarp_camlight_fp32` offline. `mjwarp-camlight` takes
+`--build-root /path/to/project --inputs /path/to/frozen-inputs
+--output /path/to/results --library /path/to/mjwarp_camlight_fp32.so`.
+Run `--cpu-reference` in CPU2.3.7, then `--prepare` in the pinned MJWarp
+environment, then without either flag for compilation-forbidden N=2 checks.
+Receipts bind inputs, CUDA product, helpers, upstream and actual Warp native
+vec3 normalization headers. Preparation captures operators without physics.
+
+The camera kernel, light kernel and their composition are checked separately.
+Original and updated local camera transforms, light positions/directions and
+body frames replay the same Graph. Representative real fixtures cover7/2,
+8/3 and8/2 camera/light counts; manufactured cases cover moving/world mounts,
+independent broadcast periods, non-unit quaternions, zero/tiny directions,
+zero body quaternions, an empty camera/light half and multi-CTA attachment counts.
+Readonly inputs and unselected outputs are exact holds; numerical acceptance
+uses independent FP64 quaternion/frame formulas with propagated FP32 normwise
+error bounds and fixed8x safety. There is no performance mode.
+
+CPU mj_camlight uses d.xmat for local-to-world translation and d.xquat for
+orientation/light direction. The common-domain oracle supplies coherent
+normalized FP64 quaternions and their matrices to the actual CPU implementation
+and the independent formulas. Raw GPU inputs stay unchanged. CPU's zero/tiny
+normalization fallback and Warp's zero result differ; those cases remain
+required raw pinned GPU/formula checks and are excluded only from the CPU
+common-domain comparison. Non-FIXED mode fallback and all selector combinations
+are covered by host tests. Local integration/capture checks require neither
+N=1 nor long dynamics trajectories or image rendering.
+
+## Local inertia-box fluid force and projection
+
+Build `flash_mjwarp_fluid_fp32` offline. `mjwarp-fluid` takes
+`--build-root /path/to/project --inputs /path/to/frozen-inputs
+--output /path/to/results --library /path/to/mjwarp_fluid_fp32.so`.
+Optional `--passive-library /path/to/mjwarp_passive_fp32.so` composes the real
+fixtures into already-qualified CUDA joint passive forces and final sum.
+Run `--cpu-reference` in CPU2.3.7, `--prepare` in isolated pinned MJWarp, then
+without either flag for compilation-forbidden N=2 correctness. Receipts bind
+inputs, independent formulas/helpers, upstream sources and selected products.
+
+Force, projection and composition use independent Graphs over frozen inputs;
+original/updated mass, inertia, wind, density, viscosity, frames and spatial
+vectors reuse them. Real NV24/43/57 fixtures and manufactured mixed joints,
+independent broadcasts, viscosity/density-only, zero coefficients/velocity,
+mass threshold, inertia clamp, nonorthogonal matrices and multi-CTA domains
+exercise actual work. Projection-only inputs deliberately use asymmetric
+force/torque components. Readonly inputs and unselected outputs are exact holds.
+
+The independent FP64 reference propagates componentwise FP32 arithmetic,
+clamp/sqrt/power and spatial sensitivity errors, with fixed8x safety. Real
+1e-15 and its rounded FP32 literal bracket the clamp-floor uncertainty; this
+conversion matters at masses of the same scale. CPU mj_passive with joint and
+gravcomp coefficients zero checks actual fluid math/projection, and mj_applyFT
+checks separately supplied wrenches. CPU2.3.7 lacks body_subtreenum; fixtures
+compute exact descendant counts from parents and CUDA admission proves DFS
+contiguity. No physics integration, Newton solve, performance mode or N=1 is
+needed for these local checks. Source accuracy reference for powf:
+[NVIDIA mathematical functions](https://docs.nvidia.com/cuda/archive/13.3.0/cuda-programming-guide/05-appendices/mathematical-functions.html).
+
+## Local applied/contact external wrenches
+
+Build `flash_mjwarp_external_wrench_fp32` offline. `mjwarp-external-wrench`
+takes `--build-root /path/to/project --inputs /path/to/frozen-inputs
+--output /path/to/results --library /path/to/mjwarp_external_wrench_fp32.so`.
+Run `--cpu-reference` in CPU2.3.7, `--prepare` in isolated pinned MJWarp, then
+without either flag for compilation-forbidden N=2 qualification. Receipts bind
+inputs, tools, helpers, upstream sources and selected product. No N=1, timing,
+solver iteration or physics integration is needed for these local checks.
+
+Applied initialization, contact-only accumulation and their composition use
+separate captured Graphs. Updated forces, frames, friction, adhesion, world ids
+and device active counts reuse them. Both cones, dimensions1/3/4/6, scattered
+elliptic addresses, clipped rows, excluded contacts, world-body signs, zero
+active/capacity and multi-CTA fan-in are covered. Inputs and unselected output
+parts are exact holds. Padded metadata is deliberately invalid and never read.
+
+Independent FP64 decode/rotation/translation propagates componentwise FP32
+arithmetic error; arbitrary atomic orders use absolute contribution sums with
+fixed8x safety. Actual CPU2.3.7 mj_contactForce/mj_rnePostConstraint verify the
+common zero-adhesion formulas. Equivalent MJWarp scattered/clipped rows are
+repacked into contiguous CPU storage, with absent components zero. CPU2.3.7
+has no adhesion: pinned net force subtraction is separately qualified against
+the independent formula rather than changing the older reference. The existing
+postconstraint FP64 reference accepts optional cfrc_ext_error for composition,
+propagating external assembly errors through the RNE tree and sensor formulas.
+
+## Local rigid dense constraint construction
+
+Build `flash_mjwarp_constraint_build_fp32` offline, then use
+`mjwarp-constraint-build --build-root /path/to/project --inputs /path/to/inputs
+--output /path/to/results --library /path/to/mjwarp_constraint_build_fp32.so`.
+Run `--cpu-reference` in CPU2.3.7, `--prepare` in pinned MJWarp, and then neither
+flag for compilation-forbidden N=2 checks. Counters, category boundaries,
+contiguous/disjoint contact ownership, copied bits and unowned bytes are exact.
+Rows are matched by type/id/contact component rather than nondeterministic
+atomic row offsets. Independent FP64 formulas propagate FP32 arithmetic,
+polynomial/powf/regularization and Jacobian/reduction bounds with fixed8x safety.
+CPU actual makeConstraint/referenceConstraint check the common zero-adhesion
+mathematics; its differing elliptic tangential pos/margin storage is recorded.
+Original/updated device counts, coefficients, contact frames/world ids and
+velocities reuse captured Graphs. Empty/disabled paths, capacity truncation,
+all contact dimensions/cones, direct/standard references and NV276 DOF striding
+have dedicated fixtures. There is no local performance mode or dynamics replay.
+
+## Local NXN broadphase
+
+Build `flash_mjwarp_broadphase_fp32` offline, then use `mjwarp-broadphase
+--build-root /path/to/project --inputs /path/to/inputs --output /path/to/results
+--library /path/to/mjwarp_broadphase_fp32.so`. Run `--cpu-reference` in CPU2.3.7,
+`--prepare` in pinned MJWarp, then neither flag for compilation-forbidden N=2
+checks. Independent FP64 plane/sphere/eight-corner AABB/six-face OBB
+inequalities propagate FP32 arithmetic bounds with fixed8x safety. Predicate
+differences are permitted only when those intervals cross the decision boundary.
+Candidate metadata, uniqueness, overflow attempts and existing/unwritten storage
+holds are exact; atomic enumeration order is not compared. CPU's actual exported
+`mj_collideOBB` checks finite non-plane zero-margin predicates. Independent
+broadcast periods, sensor overrides, missing meshes, capacity truncation,
+append/empty inputs and multiple CTAs are covered. This is a local correctness
+protocol without a performance mode or physics integration.
+
+## Local plane contacts and material/publication
+
+Build `flash_mjwarp_plane_fp32` offline. Use `mjwarp-plane --build-root
+/path/to/project --inputs /path/to/inputs --output /path/to/results
+--library /path/to/mjwarp_plane_fp32.so`, with `--cpu-reference` in actual
+CPU2.3.7, `--prepare` in pinned MJWarp, then neither for compilation-forbidden
+N=2 checks. Geometry/material fields use independent FP64 formulas and fixed
+input-scaled FP32 bounds; counts/keys/categories/copied metadata, pooled
+ownership and prefix/tail holds stay exact outside explicitly bounded activation
+boundaries. Mesh support uses independent exhaustive vertices and FP64 incident
+polygon construction; discrete choices are also compared through the pinned
+raw operator. Fixtures cover real mesh/graph/polygon data, all six plane types,
+updated parameters, priorities/direct references, special solmix, sensors,
+adhesion, independent broadcasts, degeneracy and pool overflow/append/empty.
+CPU's real collision driver checks common primitive distance/position equations;
+its different mesh and degenerate-cylinder algorithms are explicitly excluded
+from the common-domain oracle. No local performance or physics integration.
+
+## Local sphere/capsule/box contacts
+
+Build `flash_mjwarp_box_fp32` offline. `mjwarp-box` uses the same
+`--build-root`, `--inputs`, `--output`, `--library`, `--cpu-reference` and
+`--prepare` protocol as the plane tool. It checks original/candidate N=2
+manifolds, signed point-box distance, exact piecewise-quadratic
+segment-to-AABB distance outside the box,15-axis SAT, unit normals and surface
+witness residuals; materials/metadata/count/hold contracts are also checked.
+Geometry tolerances are fixed input-scaled FP32 budgets. Actual CPU2.3.7
+mj_collision checks common outside-box sphere/capsule witnesses and definite
+box-box overlap. CPU's older inside distance is excluded. The inherited
+capsule face-interior crossing miss is reported as a separate geometry
+diagnostic for both baseline and candidate; it is not called a passed physical
+completeness guarantee. Fixtures include all six shipped margin-route models,
+near-parallel/interior/zero-size shapes, sensors, independent broadcasts and
+capacity/append/empty cases. There is no performance or integration mode.
+
+## Local rigid convex support building block
+
+Build `flash_mjwarp_convex_fp32` offline and use `mjwarp-convex-support` with
+the usual required paths, `--cpu-reference`, `--prepare`, then a load-only
+N=2 check. This currently probes `support`, without a production convex
+selector. Independent FP64 closed forms/exhaustive mesh max-dot, indexed
+point/cache relations, closed shape surfaces and fixed propagated FP32
+projection bounds are checked. Nonunique exposed points may choose distinct
+legal vertices within those bounds; no bitwise float ranking is required.
+Actual CPU2.3.7 public plane collision minimum projection verifies the common
+primitive domain; mesh, zero direction, negative margin and singular axial
+cylinder conventions are explicitly excluded from that runtime oracle and
+covered by independent/pinned checks. All arrays are frozen/read-only except
+the declared outputs. Graphs replay original/updated inputs without runtime
+compilation; no full collision, integration or performance is claimed.
+
+## Reachable ordered GJK simplex projection
+
+`mjwarp-convex-simplex` uses the convex target and the same offline preparation,
+required paths, `--cpu-reference` and load-only protocol. Its input simplexes
+come from recorded original GJK executions, preserving vertex ordering. The
+updated case permutes coordinate axes and applies positive uniform scaling; it
+does not arbitrarily reorder vertices. Independent FP64 affine-face QP
+enumeration checks closest distance, barycentric feasibility, weighted point,
+norm and KKT residuals; each candidate's nonzero mask is exact. Degenerate
+active-set choices are not compared bytewise. CPU2.3.7 uses MPR, so this
+mathematical oracle is distinguished from an actual CPU GJK engine call.
+The current CUDA entry is still a function probe without production collision
+integration or performance measurements.
+
+`mjwarp-convex-gjk` qualifies the GJK loop in the same convex library with a
+separate entry ABI. Frozen N=2 requests explicitly supply pair poses, initial
+witnesses, caches, iteration/tolerance/cutoff controls and margins. Both captured
+graphs are replayed after current parameter updates; preparation is explicit and
+checking forbids compilation. The candidate must pass independent FP64 support
+bounds, active-simplex convex-QP and witness feasibility, exact range/hold and
+cutoff-return contracts. Zero-iteration finite witnesses differ from empty
+cutoff returns. Inactive simplex tails and legal active-set choices are not
+compared bytewise. CPU2.3.7 uses MPR rather than this GJK algorithm.
+
+Pinned upstream's expanded triangle determinants can themselves violate
+barycentric feasibility. These failed mathematical checks remain visible as
+baseline defects; they do not relax candidate bounds or silently become passes.
+Candidate mathematics, upstream public/range contracts and distance conformance
+remain separate mandatory decisions. This function probe does not select
+production convex collision or establish full-trajectory/performance parity.
+
+`mjwarp-convex-ccd` extends the convex library with the rigid shape-aware GJK
+phase and EPA. It accepts the same frozen query arrays, plus one global scratch
+slice per request and explicit EPA/face/horizon capacities. The independent CCD
+entry ABI also admits a read-only frozen original GJK simplex, for isolating EPA
+from preceding floating-point active-set choices. Source admission and offline
+preparation remain mandatory. Normal and forced capacity paths are separate
+cases; no production collision selector is implied by this probe.
+
+The qualifier checks signed witness norms, packed face ranges, affine plane and
+witness residuals, independent rounded-box/SAT distances where applicable,
+current-input Graph replay, public counts/overflow, read-only owners and raw
+reference conformance. The pinned coincident-initial-witness immediate return
+is retained and explicitly excluded from a complete penetration-depth promise.
+Actual CPU2.3.7 collision outputs are retained as version/algorithm observations:
+its interior sphere-box clamp, half-depth box face contacts and MPR are not an
+EPA depth oracle. CPU common support projections were independently checked by
+the preceding support qualifier.
+
+General cylinder-cylinder EPA remains unqualified: legal almost perpendicular
+support directions choose different nonunique caps, and the candidate can reach
+face/horizon capacity while the pinned path converges. This pair is absent from
+the shipped130-task prefiltered catalogue. Its failed full-corpus and same-frozen-
+simplex prefix experiments must remain visible; a future production selector
+must fall back for additional unqualified pair families. It must not claim a
+generic six-shape EPA migration from the six-shape support qualification.
+
+`mjwarp-box-manifold` freezes original EPA faces for the convex box-box
+multicontact function. It checks box feature IDs, face/edge matching, clipping,
+farthest-edge pruning and maximum-area four-point selection separately from
+GJK/EPA. The candidate borrows immutable original polytope storage; input and
+unused query outputs retain exact public holds. Explicit offline preparation and
+load-only checking use the existing convex library and independent entry ABI.
+
+Witness norms and the second box's surface use the FP32 residual budget. The
+pinned face-face path treats normals with dot(n1,n2) < -cos(.0889) as aligned,
+then projects along n2. Relative to exact projection along -n1, its first witness
+can move by at most abs(depth)*sqrt(2*(1-cos(.0889))). This geometric approximation
+is reported separately from floating-point error; it does not change candidate
+arithmetic or enlarge the floating-point tolerance. Original strict surface
+failures remain useful algorithm observations, not migration defects. Raw and
+CUDA point sets/counts are compared independently of contact order. This probe
+qualifies only box-box multicontact, which remains enabled when general MULTICCD
+is disabled; it does not qualify generic mesh/cylinder multicontact.
+
+
+`mjwarp-convex-collision` checks the actual production contact ABI on frozen
+N=2 candidate pools. It covers every shipped convex pair family, per-world
+broadcasts and parameter updates, direct reference materials, margins/gaps,
+adhesion, sensor-only/suppressed constraints, append prefixes, pooled contact
+overflow, zero/small CCD capacity and the primitive box-box route. It checks
+independent materials/frames, public range/owner/hold contracts, attempted
+counts/overflow, and unordered per-pair raw contact conformance. Local manifold
+IDs remain complete0..n-1; contact ordering may rotate with a legal EPA feature
+choice. Raw operators are explicitly prepared offline; checking forbids
+compilation and retains the same workspace pointers. This command qualifies the
+pooled convex leaf; complete collision/Graph ownership and full trajectories
+are separate caller/final-suite qualifications.
+
+## Retained complete-path endpoint analysis
+
+`mjwarp-endpoint-report --build-root /path/to/project --input /path/to/complete-results
+--output /path/to/endpoint-report.json` reads completed `mjwarp-complete` reports
+on CPU. It checks task/scene bindings, recorded endpoint hashes and common
+executed physics/reference signatures before using the existing FP32
+`compare_replays` policy. Historical original-repeat arrays did not have a
+pre-execution hash receipt; the reporter matches every stored variation
+observation and records the current file digest without claiming an older hash.
+
+The output preserves three separate results: original strict checks, all
+post-Euler qpos/qvel plus closed-loop OSC output/time, and the task boundary
+(robot9DOF, all public body poses, OSC output/time). Body poses are the public
+pre-final-Euler frames. The task boundary excludes free-object velocities,
+accelerations and internal forces. No alternate tolerance is fitted. If no
+untimed original repeat was needed, the fixed existing FP32 floor applies.
+Closed-loop OSC output is distinguished from identical recorded actuator
+commands, whose equality remains exact in function replays.
+
+This reporting command launches no physics, does not repeat timing, and never
+rewrites the source summaries or readmits a failed strict comparison. Exit zero
+means the evidence was analyzed successfully; numerical conclusions are the
+explicitly scoped fields in the output. Missing/changed outputs, unlike executed
+physics or inconsistent reference-repeat observations stop the report.
+
+`mjwarp-complete --correctness-only` executes the same5 warmup and20 continuous
+control actions without creating timing events or entering the measurement
+helper. It records completed control counts in `execution.json`, empty timing
+fields and no speedup. The mode and action helper are bound into source/protocol
+receipts and propagated to children/resume admission. Explicit offline Graph
+preparation is still separate; execution forbids compilation. The CPU endpoint
+reporter accepts a completed untimed run and rejects partial action sequences.
+
+For frozen CCD inputs, optional `verify_box_overlap` checks zero-margin BOX/BOX
+completeness against independent FP64 SAT on transformed corners, outside the
+existing input CCD tolerance. It checks separated controls as well as genuine
+penetration and binds the SAT helper into the preparation signature. Apply it
+to complete candidate requests, not only already emitted contacts. The pinned
+implementation can itself fail this check; preserve its failures and raw
+conformance separately when evaluating a geometric correction. Such a check
+does not replace public ownership, capacity, witness, residual or trajectory
+checks, and does not enlarge their accepted bounds.
+
+## Maintained convex regression and archived diagnostics
+
+`mjwarp-convex-regression --library CONVEX --build-root BUILD --output OUTPUT`
+checks the retained tuned-direction GJK counterexample and deeper, separated and
+translated controls. Run once with `--prepare` in the MJWarp reference
+environment, then load-only without it. The fixture is
+`tests/data/gjk_tuned_direction.json`; the function probe and production convex
+leaf share their CUDA headers. Original failures remain visible separately from
+the corrected candidate. This local regression does not run a task trajectory
+or performance measurement.
+
+One-off `cuda-attribution*` and `mjwarp-residual-*` capture, policy and causal
+analysis tools were archived outside the source repository in the development
+workspace's `archive/fp32_development_20261021/`. The archive retains the complete
+original validator package, CLI and checkpoint-schema test with a SHA256 move
+manifest. Historical evidence and exact executed tool snapshots remain in their
+original results directories. These experiments are not production validation
+commands. Reusable mathematical qualifiers, independent oracles and the GJK
+regression fixture remain in this repository.

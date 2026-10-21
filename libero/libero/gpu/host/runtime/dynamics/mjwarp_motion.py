@@ -6,23 +6,32 @@ from pathlib import Path
 
 def source_id(component):
     from libero.gpu.host.paths import GPU_ROOT
-    recipe = {'velocity':'Velocity','bias':'Bias','postconstraint':'Postconstraint','passive':'Passive','actuation':'Actuation'}[component]
-    names = (f'cuda/dynamics/mjwarp_{component}.cu', f'cuda/dynamics/mjwarp_{component}.cuh')
-    if component not in ('passive','actuation'):names+=('cuda/dynamics/mjwarp_spatial.cuh',)
+    recipe = {'velocity':'Velocity','bias':'Bias','postconstraint':'Postconstraint','passive':'Passive','actuation':'Actuation','euler':'Euler','transmission':'Transmission','kinematics':'Kinematics','com_pos':'ComPos','camlight':'CamLight','fluid':'Fluid','external_wrench':'ExternalWrench','constraint_build':'ConstraintBuild','broadphase':'Broadphase','plane':'Plane','box':'Box','convex':'Convex','queries':'Queries','publication':'Publication'}[component]
+    folder='collision' if component in ('broadphase','plane','box','convex') else 'dynamics'
+    names = (f'cuda/{folder}/mjwarp_{component}.cu', f'cuda/{folder}/mjwarp_{component}.cuh')
+    if component not in ('passive','actuation','euler','transmission','kinematics','com_pos','camlight','fluid','external_wrench','constraint_build','broadphase','plane','box','convex','publication'):names+=('cuda/dynamics/mjwarp_spatial.cuh',)
+    if component=='convex':names+=('cuda/collision/mjwarp_convex_geometry.cuh','cuda/collision/mjwarp_convex_simplex.cuh','cuda/collision/mjwarp_convex_gjk.cuh','cuda/collision/mjwarp_convex_epa.cuh','cuda/collision/mjwarp_box_manifold.cuh','cuda/collision/mjwarp_convex_collision.cuh')
+    if component in ('plane','box','convex'):names+=('cuda/collision/mjwarp_contact.cuh',)
     names+=(f'cmake/Mjwarp{recipe}.cmake',)
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest() for n in names).encode()).hexdigest()
 
 
-def load_leaf(component, arguments, library, stream):
+def load_leaf(component, arguments, library, stream, *, entry=None):
     from libero.gpu.host.build.compilation import MissingCompiledProduct
     path = Path(library).resolve()
     if not path.is_file():
         raise MissingCompiledProduct(f'Build flash_mjwarp_{component}_fp32 offline')
     lib = ct.CDLL(str(path)); prefix = f'flash_mjwarp_{component}_'
-    identity, size, arch = (getattr(lib, prefix+n) for n in ('source_id', 'arguments_bytes', 'arch'))
-    identity.restype = ct.c_char_p; size.restype = ct.c_size_t
+    identity, arch = (getattr(lib, prefix+n) for n in ('source_id', 'arch'))
+    identity.restype = ct.c_char_p
     if identity().decode() != source_id(component):
         raise MissingCompiledProduct(f'{component} binary is stale; rebuild offline')
+    symbol = 'arguments_bytes' if entry is None else entry+'_arguments_bytes'
+    try:
+        size = getattr(lib, prefix+symbol)
+    except AttributeError:
+        raise MissingCompiledProduct(f'{component} binary lacks {entry} entry; rebuild offline') from None
+    size.restype = ct.c_size_t
     if size() != ct.sizeof(arguments):
         raise ValueError(f'{component} C/Python ABI differs')
     if not stream.device.is_cuda or arch() != stream.device.arch:
@@ -115,8 +124,10 @@ def reject_output_overlap(arrays, outputs):
 
 class MotionTopology:
     def __init__(self, model, data, stream):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         if tuple(int(x) for x in (types.JointType.FREE, types.JointType.BALL, types.JointType.SLIDE, types.JointType.HINGE)) != (0, 1, 2, 3):
             raise ValueError('Pinned JointType representation differs')
         n, nb, nv, nj, branches = data.nworld, model.nbody, model.nv, model.njnt, model.nbranch

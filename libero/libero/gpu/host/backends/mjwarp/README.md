@@ -1,11 +1,34 @@
 # MJWarp physics backend
 
-This FP32 fast path defaults to upstream MJWarp physics with the maintained GPU OSC,
-GPU observation sampler, and original LIBERO task predicates. Automatic routing
-selects this backend for FP32 and native CUDA for FP64. FP64 remains the default
-precision. The handwritten FP32 backend remains available by explicitly setting
-`physics_engine="native"`. Physics and OSC here use FP32. No CPU controller or
-per-substep device download is used.
+This explicit reference backend defaults to upstream MJWarp physics with the
+maintained GPU OSC, GPU observation sampler, and original LIBERO task predicates.
+Select it with `physics_engine="mjwarp"`. Automatic FP32 batch routing now selects
+the [independent CUDA owner](../cuda_fp32/README.md), which requires neither Warp
+package. FP32 is the default precision; explicit FP64 uses native CUDA. The older
+native FP32 comparison path remains available as `physics_engine="native"`.
+Physics and OSC here use FP32. No CPU controller or per-substep device download
+is used.
+
+The explicit `mjwarp_options={"preset": "cuda_libero", "fast_compile": True}`
+selects every migrated numerical leaf required by the130 shipped tasks,
+including controller Jacobian, FORCE/TORQUE sensors, gravity projection,
+stateless publication and reset/public forward. It remains opt-in while the
+full comparison is qualified. Each unsupported domain retains a visible
+fallback; the complete-path qualifier rejects such a fallback for shipped
+inputs. See [the migration map](MIGRATION.md) for sources and scope.
+Intentional changes to the pinned numerical behavior are recorded separately
+in [Numerical deviations](NUMERICAL_DEVIATIONS.md), including their domains,
+independent evidence and remaining trajectory qualification limits.
+
+Prepare source-bound scenes/operators offline, then run the separate load-only
+comparison with `tools/validate_gpu.py mjwarp-complete --build-root ROOT
+--output OUTPUT --tasks all --prepare` followed by the same command without
+`--prepare`. It uses N=2, five warmup steps and20 measured steps once, no
+cameras, with shared imported model and independent original/CUDA state,
+controller and observation owners. Initialization/reset/Graph preparation are
+recorded separately. Per-task reports retain final differences, capacity,
+force-balance diagnostics, actual dispatch and GPU competition. No runtime
+compilation is permitted in the measured run.
 
 An opt-in `mjwarp_options={"newton": "cuda_hessian"}` selects project-owned
 Newton host orchestration and independently compiled CUDA Hessian assembly.
@@ -14,8 +37,8 @@ noslip remain pinned upstream operations. `"newton": "upstream"` is the default.
 The selector visibly falls back to the full upstream solver for sparse,
 pyramidal, discrete, sleeping/compact or unqualified dimensions. Requested and
 selected paths, fallback reason and the selected Hessian binary identity are
-recorded in environment/build metadata. Reset/public refresh uses upstream
-forward on both paths.
+recorded in environment/build metadata. Reset/public refresh defaults to upstream forward; the independent
+`public_forward=cuda` selector uses the migrated stages in original public order.
 
 `"newton": "cuda_direction"` additionally replaces gradient initialization,
 gradient accumulation, Cholesky factorization, direction solve, direction norm
@@ -456,3 +479,417 @@ that shorthand's enum/parameter expansion. The stable local command is
 composition with independent FP64 rounding/atomic-order bounds and CPU2.3.7
 oracles. See [the migration map](MIGRATION.md); local checks do not claim
 whole-task or performance parity.
+
+
+`"euler": "cuda"` independently selects damping-derivative preparation, the
+private integration-matrix diagonal update, semi-implicit velocity advancement,
+and FREE/BALL/SLIDE/HINGE position integration in
+[mjwarp_euler.cu](../../../cuda/dynamics/mjwarp_euler.cu). Build only
+`flash_mjwarp_euler_fp32` offline, then prepare the desired profile with
+`--euler cuda`. Default selection stays upstream; reset/public forward stays
+upstream. Non-Euler, sleeping, stateful-activation and empty domains visibly
+delegate to the existing selected mass-factor integrator before loading this
+optional binary.
+
+[euler.py::Euler.integrate](euler.py) executes derivative, matrix copy, diagonal
+update, existing factor/solve, retained activation, CUDA velocity/position, then
+the literal pinned publication tail in [euler_other.py](euler_other.py). With
+`mass_factor=cuda`, it borrows that driver's existing private matrix, factor,
+diagonal, acceleration and derivative arrays: zero additional workspace. With
+upstream mass factors, it owns one equivalent per-environment workspace and
+uses upstream `factor_solve_i` there. It does not port sparse LDL mathematics.
+EULERDAMP or DAMPER disabled bypasses preparation/factorization and advances
+using public `qacc`, without allocating Euler workspace.
+
+Damping-adjusted acceleration remains private; public mass/factors and Newton
+`qacc` keep their original owners and contents. The upstream tail inserts control
+history before time/overflow handling and copies public `qacc` to warmstart,
+not the private Euler acceleration. Parameters are read from their current device
+arrays on every replay. This path has no numerical cache, topology owner array,
+shared-memory allocation or new physical algorithm.
+
+The stable `tools/validate_gpu.py mjwarp-euler` qualifier covers the four leaves
+and their composition on frozen N=2 inputs, including polynomial damping,
+independent broadcast counts, all joint types, quaternion normalization and
+zero-rotation/zero-quaternion conventions. Independent FP64 roundoff/sensitivity
+bounds and CPU2.3.7 quaternion integration qualify local outputs. Caller checks
+separately exercise existing factor/solve and publication on real inputs. These
+checks do not establish full-task trajectories or performance parity.
+
+
+`"transmission": "cuda"` and `"actuator_velocity": "cuda"` independently
+select [mjwarp_transmission.cu](../../../cuda/dynamics/mjwarp_transmission.cu).
+The independent offline target is `flash_mjwarp_transmission_fp32`; prepare
+profiles with `--transmission cuda` and/or `--actuator-velocity cuda`.
+Both default to upstream, work alone or together with prior selectors, and
+leave reset/public forward on upstream. Non-Euler, sleeping and empty callers
+fall back before optional library loading. The selectors and fallback reasons
+are recorded separately in the environment/runtime transmission identity.
+
+[transmission.py::Transmission](transmission.py) is shared by position and
+velocity dispatch. Position replaces only the final `smooth.transmission`
+boundary, preserving preceding kinematics, mass, collision and constraint order.
+Velocity replaces only `_actuator_velocity`, preserving tendon velocity,
+spatial velocity, passive, bias and tendon-bias order. The two numerical stages
+remain separate; the original position/velocity stage boundaries are retained.
+
+The transmission leaf admits JOINT/JOINTINPARENT actuators attached to scalar
+SLIDE/HINGE joints. It reads current gear and qpos, writes public actuator
+length and CSR metadata/moments, and retains pinned per-world atomic row
+allocation even for zero gear. Duplicate actuator targets and model-driven
+counts are supported. FREE/BALL, tendon, site, slider-crank and body routes
+use the complete upstream transmission. Generic CUDA velocity can remain
+selected with those upstream transmission routes: it reads current CSR rows,
+columns, coefficients and qvel in row order, including empty/long rows.
+
+Only a private integer counter is retained for transmission, four bytes per
+world, zeroed before each enqueue. Velocity alone allocates no counter. There
+is no physical-value cache, shared-memory array, topology owner allocation or
+per-task specialization. Public arrays keep their existing owners. Current
+parameter and valid CSR index changes are observed by existing Graphs.
+
+The stable `tools/validate_gpu.py mjwarp-transmission` qualifier compares the
+two leaves, their composition and composition into the existing CUDA actuation
+against raw pinned upstream operators and independent FP64 arithmetic bounds.
+CPU2.3.7 `mj_transmission`/`mju_mulMatVec` provide additional local oracles.
+The upstream atomic allocator does not guarantee raw row-offset order;
+qualification therefore checks exact row ownership/columns/copied moments,
+capacity and tail holds in their logical actuator rows. Floating arithmetic uses
+roundoff bounds rather than bitwise equality. See [the migration map](MIGRATION.md).
+Local checks and Graph capture do not establish full-task or performance parity.
+
+
+`"kinematics": "cuda"` selects the readable rigid kinematics stages in
+[mjwarp_kinematics.cu](../../../cuda/dynamics/mjwarp_kinematics.cu), independently
+built by `flash_mjwarp_kinematics_fp32`. Prepare the chosen offline profile with
+`--kinematics cuda`. Defaults and reset/public forward stay upstream. Ordinary
+runtime remains compilation-forbidden; non-Euler, sleeping and empty domains
+fall back before optional library loading.
+
+[position.py](position.py) calls [Kinematics.forward](kinematics.py), which runs
+body poses, body matrices, inertial frames, geom frames and site frames, then
+retains original `com_pos`, `camlight`, `flex` and `tendon` ordering (`com_pos`
+has its own independent selector below). Mass,
+collision, constraints and transmission follow at their existing boundaries.
+The selector migrates rigid kinematics, not subtree CoM/inertia/DOF-axis
+construction, camera/light updates or flexible/tendon mathematics.
+
+Every thread traverses one validated complete root-to-leaf path, keeping its
+parent pose privately and retaining per-body joint order. The existing
+first-full-leaf-path owner publishes each body and its joint anchors/axes once;
+branches do not read another thread's evolving parent output. All four joint
+types, off-center joint transforms, model parameter broadcasting and mocap
+inputs retain pinned semantics. Quaternion normalization is local: qpos and
+mocap_quat inputs are not rewritten. World pose is held, and static geoms retain
+the exact `body_weldid/body_rootid/body_mocapid` early-return rule from upstream.
+
+The immutable body-owner array is shared with CUDA velocity/RNE when present;
+otherwise kinematics owns four bytes per body. No numerical workspace, physical
+cache or shared-memory array is allocated. Model dimensions are dynamic, with
+no per-task specialization. Current transforms/qpos/mocap inputs are read on
+replay; static-geom outputs retain their make_data ownership even if local
+parameter values are subsequently changed.
+
+The stable qualifier is `tools/validate_gpu.py mjwarp-kinematics`. Independent
+FP64 frame formulas propagate normwise quaternion-product, normalization and
+rotation sensitivities to componentwise FP32 allowances with fixed8x safety.
+Raw pinned operators qualify actual FP32 inputs, including zero quaternions.
+CPU2.3.7 `mj_kinematics` additionally checks the common mathematical domain on
+normalized FP64 model quaternions/axes: its unit-quaternion rotation shortcut
+is not algebraically identical to the pinned homogeneous polynomial for
+non-unit FP32 parameters. This oracle normalization changes neither GPU inputs
+nor production semantics. The CPU input-normalization side effects and zero
+fallback are not imported into this backend. See [the migration map](MIGRATION.md).
+
+## Optional subtree CoM, centered inertia and motion axes
+
+`"com_pos": "cuda"` independently selects
+[mjwarp_com_pos.cu](../../../cuda/dynamics/mjwarp_com_pos.cu), built offline by
+`flash_mjwarp_com_pos_fp32`. Prepare the selected profile with `--com-pos cuda`.
+It supports either upstream or CUDA rigid kinematics. Default selection and
+reset/public forward remain upstream; non-Euler, sleeping and empty domains
+fall back visibly before optional loading.
+
+`Position.position -> Kinematics.forward(com_pos=...) -> ComPos.enqueue` retains
+kinematics, CoM, camera/light, flex and tendon order before CRB/factor/collision.
+With no selected position leaf, the original whole `fwd_position` delegation is
+retained. The standalone CoM driver also supports the original `smooth.com_pos`
+boundary. Five CUDA kernel types implement weighted-position initialization,
+reverse-depth FP32 atomic accumulation, division by supplied model subtree
+mass, centered spatial inertia and per-joint motion axes. Accumulation includes
+the world node. Inertia and axes use each body's root subtree CoM, and the
+public vec10/spatial-vector layouts remain unchanged. FREE translations are in
+the world frame; FREE/BALL rotational axes are body-matrix columns.
+
+All numerical arrays and immutable tree layers are borrowed. There is no
+additional device allocation, shared-memory requirement, numerical workspace or
+physical cache. Current mass, supplied subtree mass, principal inertia and
+frame arrays are read on every enqueue; broadcast periods are independent.
+Cold admission checks dependencies, root references, disjoint DOF spans,
+layouts, overlaps and source/ABI/architecture. Runtime compilation is forbidden.
+
+CPU2.3.7 computes subtree mass dynamically and substitutes xipos below mjMINVAL;
+pinned MJWarp divides by supplied `body_subtreemass` when nonzero and otherwise
+holds the weighted sum. It also evaluates world inertia instead of explicitly
+zeroing it. These differences are retained. `mjwarp-com-pos` qualifies normal
+mathematics against CPU2.3.7 and raw pinned GPU behavior against independent
+FP64 tensor/spatial formulas with input-derived FP32 error bounds, including
+zero/tiny mass, world contributions, depth, fan-in and broadcast cases. Optional
+mass-chain checks include the existing CRB/CSR assembly. Local qualification
+does not establish complete-trajectory correctness or performance parity.
+
+## Optional FIXED camera/light world frames
+
+`"camlight": "cuda"` selects two readable kernels in
+[mjwarp_camlight.cu](../../../cuda/dynamics/mjwarp_camlight.cu), independently
+built by `flash_mjwarp_camlight_fp32`. Prepare the chosen profile offline with
+`--camlight cuda`. Its default is upstream, independent of `kinematics` and
+`com_pos`; reset/public forward remains upstream. Mode qualification happens
+before optional product loading. A non-FIXED camera or light retains the entire
+original camlight boundary upstream, with a visible fallback reason. Non-Euler,
+sleeping and entirely empty domains also fall back. An empty camera or light
+half alone is a supported no-op.
+
+`Position.position -> Kinematics.forward -> CamLight.enqueue` retains rigid
+kinematics -> CoM -> camera/light -> flex/tendon order. Existing CRB, factor,
+collision and constraints follow. With no selected position leaf, the original
+whole `fwd_position` delegation is preserved. This leaf updates geometric
+frames, independently of image rendering. FIXED includes world-mounted and
+moving-body-mounted attachments; it means a fixed local transform, not a held
+world pose. Each thread owns one attachment in one world. There is no reduction,
+barrier, shared-memory array, numerical workspace or additional device allocation.
+
+The binding borrows every input/output. Current local transforms, light
+directions and body poses are reread on each replay; the four parameter
+broadcast periods are independent. Cold admission checks FIXED modes, body
+indices, layout, device, overlap and source/ABI/architecture. Modes and attachment
+structure are immutable for a binding/profile; structural edits require
+requalification and Graph recapture. Numerical model/frame updates do not.
+
+The pinned quaternion rotation is homogeneous in its wxyz components and does
+not normalize either quaternion. The light direction uses Warp1.18's vec3
+normalize: sqrt(dot), divide when length>0, otherwise zero. CPU2.3.7 assumes unit
+quaternions in parts of its rotation code and substitutes a default axis below
+mjMINVAL. The CUDA path preserves raw pinned behavior, including zero vectors.
+`mjwarp-camlight` qualifies raw FP32 inputs against independent FP64 frame
+formulas and arithmetic/sensitivity bounds, and separately checks actual CPU
+mj_camlight on the common unit-quaternion/nondegenerate domain. No rendering,
+complete-trajectory or performance claim follows from these local checks.
+
+## Optional inertia-box fluid forces
+
+`"fluid": "cuda"` selects the readable two-stage
+[mjwarp_fluid.cu](../../../cuda/dynamics/mjwarp_fluid.cu), independently built
+by `flash_mjwarp_fluid_fp32`. Prepare the profile with `--fluid cuda`. Default
+selection is upstream, independently of the joint `passive` selector. Ellipsoid,
+tendon/flex, sleeping, non-Euler, empty and import-disabled fluid callers visibly
+retain upstream before optional product loading. Structural model flags and
+topology require requalification/recapture after edits.
+
+`Velocity.enqueue -> Passive.enqueue -> other_forces -> Fluid.enqueue` retains
+joint spring/damping -> gravity -> fluid -> adhesion -> final passive sum ->
+callback order. Fluid-only selection uses original upstream joint and sum
+kernels and prevents whole `fwd_velocity`/`passive` delegation from skipping the
+selected leaf. If both spring and damping are disabled, the pinned clear and
+early return still skip fluid/adhesion/callback and hold adhesion/workspace.
+Reset/public forward remains upstream.
+
+Each force thread owns one world/body, translates root-CoM spatial velocity to
+the body inertial origin, rotates into local axes, subtracts wind, derives box
+sizes from current mass/principal inertia and computes viscous/quadratic drag.
+World and below-MJ_MINVAL bodies publish zero. Principal-inertia combinations
+retain the MJ_MINVAL clamp. The second kernel assigns one thread per world/DOF
+and projects the current body wrenches in original DFS subtree order. Wrench
+storage is (force,torque), while cvel/cdof are (angular,linear). There is no
+inter-thread reduction or shared-memory barrier.
+
+One retained device array `(N,nbody,6)` costs `24*N*nbody` bytes, is allocated
+once and reused across all Graph substeps. Model/frame/public arrays are
+borrowed. Current mass, inertia, density, viscosity, wind and frames are read
+after numerical updates without cached physical coefficients. Cold admission
+checks exact DFS/root/subtree metadata, DOF bodies, layout/device/overlap and
+source/ABI/architecture. All dimensions and broadcast periods are dynamic.
+
+`mjwarp-fluid` checks force, projection and their composition separately; an
+optional passive product also checks composition into the existing joint/sum
+leaves. Actual CPU2.3.7 mj_passive with other coefficients zero isolates fluid;
+mj_applyFT separately checks projection. FP64 reference algebra propagates
+FP32 matrix/cross-product, clamp, sqrt and powf allowances with fixed8x safety.
+The FP32 conversion of the 1e-15 clamp literal is included analytically, since
+near-threshold masses can amplify it. Local correctness/capture does not claim
+complete trajectories or performance parity.
+
+## Optional applied/contact external wrenches
+
+`"external_wrench": "cuda"` selects the readable two-stage
+[mjwarp_external_wrench.cu](../../../cuda/dynamics/mjwarp_external_wrench.cu),
+built offline by `flash_mjwarp_external_wrench_fp32`. Prepare the profile with
+`--external-wrench cuda`. It is independent of `postconstraint`, which selects
+the RNE suffix. Both default to upstream. The original whole upstream boundary
+is retained when neither leaf selects CUDA; either mixed combination executes
+one external prefix and one RNE suffix. Reset/public forward remains upstream.
+
+The applied kernel owns one world/body and initializes `cfrc_ext`, clearing the
+world body. Applied storage is (force,torque); RNE storage is (torque,force), in
+world axes about each body's root subtree CoM. The contact kernel owns one
+entry of the flat multi-world list, decodes solver forces, subtracts adhesive
+pull only for included contacts, rotates by the full contact frame, translates
+torque to each body's root CoM and atomically subtracts/adds the two wrenches.
+Both PYRAMIDAL and ELLIPTIC cones and dimensions1/3/4/6 are supported. Elliptic
+component addresses may be scattered; pinned row-capacity clipping is retained.
+A negative first address contributes no force or adhesion. The first contact
+body takes the negative wrench; body0 receives no contact contribution.
+
+All arrays are borrowed from the existing Model/Data, including the current
+solver force and device contact count. There is no new numerical workspace,
+physical cache, device allocation, block barrier or shared-memory requirement.
+The two kernels retain stream ordering. FP32 component atomics retain the pinned
+accumulation semantics. Model cone, topology, array shapes and storage are
+structural: edits require requalification/rebinding and Graph recapture. Changes
+to force, contact count, addresses, world ids and physical frames are read from
+the same arrays on replay. Active contact metadata follows the pinned producer
+contract: valid geom/world/dimension, nonnegative included component addresses,
+and in-range first row for a frictionless pyramidal contact. Padded entries are
+never read past the current count or allocated contact capacity.
+
+Cold admission rejects equality, tendon, flex, sleep, non-Euler and unsupported
+cone/dimension domains before optional product loading, retaining the complete
+upstream external prefix with a visible reason. Parent/root/geom mappings,
+array dtype/layout/device/overlap, index size and source/ABI/architecture are
+checked once. This domain includes all130 shipped scene configurations; it is
+not a claim of130-task numerical or trajectory testing.
+
+`mjwarp-external-wrench` checks applied, contact-only and composed paths against
+independent FP64 spatial algebra with componentwise FP32 error propagation and
+an absolute-contribution bound for arbitrary atomic ordering, using fixed8x
+safety. CPU2.3.7 actual mj_contactForce/mj_rnePostConstraint qualify the common
+zero-adhesion mathematics. Its contiguous force rows are repacked from equivalent
+MJWarp component addresses; clipped rows become zero. Adhesion is a pinned
+MJWarp extension and is qualified directly against the independent formula.
+Local correctness and Graph capture do not establish trajectory or performance
+parity.
+
+## Optional dense rigid constraint construction
+
+`"constraint_build": "cuda"` independently selects
+[mjwarp_constraint_build.cu](../../../cuda/dynamics/mjwarp_constraint_build.cu),
+built offline by `flash_mjwarp_constraint_build_fp32`. Prepare with
+`--constraint-build cuda`. This is row/Jacobian/impedance/reference construction,
+separate from Newton's `constraint` update on already-built rows. Default is
+upstream. `Position.position` keeps collision -> selected construction ->
+transmission order; construction-only selection prevents whole upstream
+position delegation from bypassing the selected leaf. Reset/public forward
+currently remains upstream.
+
+Six readable CUDA stages reset counts, generate DOF-friction rows, generate
+scalar-joint limit rows, allocate contact row blocks, calculate dense contact
+Jacobians/Jqvel, and publish contact reference/regularization data. PYRAMIDAL
+and ELLIPTIC cones, dimensions1/3/4/6, frictional/direct/standard solref, refsafe,
+separate tangential damping, adhesion, independent broadcasts and disable flags
+retain pinned behavior. A CTA owns one contact row, lanes own DOFs, and eight
+shared floats bound reduction storage to32 bytes independently of NV/worlds.
+All numerical/topological arrays are borrowed: no additional device workspace,
+per-call allocation or physical cache. Current device counts and model/contact
+numerical arrays are reread. Structure/flags/storage require rebind/recapture.
+
+Counters include attempted rows beyond capacity; only allocated rows are
+written. Active contact blocks are contiguous and disjoint, with clipped
+components addressed by-1. Inactive contact addresses and unrelated row tails
+hold their inputs. Dense scalar rows write only NV columns, retaining padded
+columns; contact rows publish zero padding through NV_pad. Contact-enabled
+construction clears the complete Jqvel array; disabled constraints reset only
+counters. Sparse-only row metadata remains untouched. Atomic row order may vary;
+row identity/ownership/category order remains exact.
+
+Cold admission visibly retains the whole upstream builder for equality,
+tendon/flex, limited BALL, moving surfaces, sparse, non-Euler/sleeping and empty
+unsupported domains before loading. Exact parent/root/geom/ancestor/DOF/joint
+metadata, layouts, overlap, integer index bounds and source/ABI/architecture are
+checked. The shipped130 models have no equality/tendon/BALL limits and use
+dense-auto NV21..57, nine friction-loss DOFs, scalar limits and elliptic cones.
+Their geom condim includes3/4. The CUDA implementation is dynamically sized;
+qualification also includes NV276/padded288 DOF striding beyond one CTA.
+
+`mjwarp-constraint-build` compares pinned numerical kernels and CUDA with an
+independent FP64 row/Jacobian/impedance/reference oracle and propagated FP32
+roundoff/sensitivity bounds with fixed8x safety. Integer counters, category and
+contact-block ownership, copied values and unwritten bytes are exact contracts.
+Actual CPU2.3.7 mj_makeConstraint/mj_referenceConstraint qualify equivalent
+zero-adhesion raw inputs with corresponding flags and impratio. CPU2.3.7 stores
+zero elliptic tangential pos/margin; pinned MJWarp stores include-margin there.
+The pinned storage contract is retained and separately qualified on the GPU.
+No performance or complete-trajectory claim follows from local qualification.
+
+`"broadphase": "cuda"` independently selects maintained NXN candidate generation
+and plane/sphere/corner-AABB/six-axis OBB bounding filters in
+[readable CUDA](../../../cuda/collision/mjwarp_broadphase.cu). All130 shipped
+tasks choose NXN under the pinned importer threshold (at most270 geoms and
+36,315 unfiltered pairs, below250,000). SAP, sleeping and flex callers visibly
+retain complete upstream collision. The selected caller retains one candidate
+context across Graph substeps, resets counters in the original order and calls
+the original narrowphase/contact filter. Numerical workspace/shared memory are
+zero; borrowed model bounds are reread on every invocation. Pooled allocation
+retains attempted counts beyond capacity. Build `flash_mjwarp_broadphase_fp32`
+and prepare with `--broadphase cuda`; `mjwarp-broadphase` qualifies the local
+mathematics and pooled ownership. Narrowphase is not migrated by this option.
+
+`"plane_collision": "cuda"` independently replaces all six plane contact
+families in [mjwarp_plane.cu](../../../cuda/collision/mjwarp_plane.cu). Its
+[shared contact code](../../../cuda/collision/mjwarp_contact.cuh) implements
+current material mixing, explicit pairs, margins/gaps, adhesion, collision
+sensors and pooled contact publication. Both candidate contexts and numeric
+arrays remain owned/borrowed by the environment. No numerical workspace or
+shared memory is allocated. The caller retains convex CCD and non-plane
+primitive families, preserving the box-box margin/NATIVECCD route. It can be
+combined with `broadphase=cuda` or original broadphase. Flex/sleep/unsupported
+callers visibly retain whole original collision. Build
+`flash_mjwarp_plane_fp32`, prepare with `--plane-collision cuda`, then use
+`mjwarp-plane` for frozen local qualification. This option is not a complete
+narrowphase migration.
+
+`"box_collision": "cuda"` independently replaces sphere-box, capsule-box and
+primitive box-box geometry in [mjwarp_box.cu](../../../cuda/collision/mjwarp_box.cu).
+Box-box is processed only when the original margin/NATIVECCD table routes it
+to PRIMITIVE; ordinary convex box-box stays in CCD. Sphere/capsule/box families
+are removed from the original primitive residue when selected. Build
+`flash_mjwarp_box_fp32`, prepare with `--box-collision cuda`, then qualify with
+`mjwarp-box`. It shares the existing borrowed contact binding/material code,
+adds no numerical workspace/shared memory, and skips its launch when no
+handled family is present. The original capsule-box face-crossing limitation
+is preserved and documented in [the migration map](MIGRATION.md).
+
+
+`"convex_collision": "cuda"` selects the seven rigid convex pair families used
+by all130 tasks. Build `flash_mjwarp_convex_fp32`, prepare with
+`--convex-collision cuda`, and qualify the pooled entry using
+`mjwarp-convex-collision`. The readable implementation is in
+[mjwarp_convex_collision.cuh](../../../cuda/collision/mjwarp_convex_collision.cuh),
+with separate geometry, simplex, GJK, EPA and box-manifold headers. One retained
+global EPA workspace is reused across serial type kernels and Graph substeps;
+there is no shared-memory requirement. Original per-type capacity and overflow,
+current materials/margins, collision sensors and local manifold metadata are
+preserved. `broadphase`, `plane_collision`, `box_collision` and `convex_collision`
+can be selected independently. Extra unqualified pairs, including
+cylinder-cylinder, and general mesh/cylinder MULTICCD visibly retain upstream
+convex collision. See [the migration map](MIGRATION.md) for the exact limits.
+
+`queries=cuda` selects the independently compiled `flash_mjwarp_queries_fp32`
+for controller point Jacobians, rigid gravity compensation and FORCE/TORQUE
+sensors. All inputs remain borrowed and current. Sensor history/delay and
+other sensor families retain the complete original sensor boundary. Callbacks
+retain stage order; disabled energy is cleared without evaluating energy math.
+The local `mjwarp-queries` qualifier checks frozen N=2 original/updated inputs
+against actual CPU2.3.7 public queries and independent FP64 operation bounds.
+This function qualification does not establish complete trajectory parity.
+
+
+Before modern scene preparation, export the original prepared fixed poses in
+the CPU2.3.7 environment with `python tools/validate_gpu.py mjwarp-scene-inputs
+--build-root ROOT --tasks all`. These small portable inputs preserve original
+fixture placement and joint indexing; the modern engine never reads an old MJB.
+Runtime missing/stale input fails with offline-preparation guidance.
+
+For one environment/model/Graph lifetime per task, `mjwarp-complete
+--prepare-and-run --resume` completes explicit offline preparation first,
+then freezes compilation for the unchanged single measurement. CPU pose-oracle
+checks precede the run. Function replays and snapshots happen outside timing.

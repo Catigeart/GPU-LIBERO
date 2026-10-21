@@ -34,7 +34,8 @@ class LinesearchPlan:
     """Admit source, ABI, device and domain before any graph capture."""
 
     def __init__(self, model, data, library, stream):
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         if (model.is_sparse or model.opt.cone != types.ConeType.ELLIPTIC or
                 model.opt.solver != types.SolverType.NEWTON or
@@ -65,8 +66,10 @@ class DenseLinesearch:
     """Borrow pointers and retain their owners; no capture-time transfer/allocation."""
 
     def __init__(self, plan, context):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(plan.model)
         if getattr(context,'compact_d_full',None) is not None:
             raise ValueError('compact solver contexts are outside the linesearch domain')
         self.plan = plan

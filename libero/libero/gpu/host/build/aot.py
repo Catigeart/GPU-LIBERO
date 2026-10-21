@@ -404,14 +404,14 @@ def migrate_newton_path_alias(root, *, target, identity, source, bridge_source,
 
 
 def _source_identity_files(*, include_excluded=False):
-    """Native inputs; optional MJWarp owns separate source/binary receipts.
+    """Native inputs; optional FP32 engines own separate source/binary receipts.
 
     Session guards also watch excluded hosts and optional engine sources.
     """
     excluded = {'host/build/aot.py', 'host/build/task_catalog.py', 'host/build/compilation.py',
                 'build.py', 'host/adapters/environment/batch_env.py',
                 'host/runtime/core/product_paths.py', 'cuda/control/mjwarp_controller.cu',
-                'data/mjwarp_source_pin.json', 'host/backends/selection.py',
+                'data/mjwarp_source_pin.json', 'data/cpu_scene_input_source_pin.json', 'host/backends/selection.py',
                 # Opt-in FP32 leaf owns its CUDA fingerprint/local replay
                 # receipt. It is not linked into either native scalar engine.
                 'cuda/newton/mjwarp_hessian.cu', 'cuda/newton/mjwarp_hessian.cuh',
@@ -441,7 +441,28 @@ def _source_identity_files(*, include_excluded=False):
                 'cuda/dynamics/mjwarp_passive.cu', 'cuda/dynamics/mjwarp_passive.cuh',
                 'host/runtime/dynamics/mjwarp_passive.py',
                 'cuda/dynamics/mjwarp_actuation.cu', 'cuda/dynamics/mjwarp_actuation.cuh',
-                'host/runtime/dynamics/mjwarp_actuation.py'}
+                'host/runtime/dynamics/mjwarp_actuation.py',
+                'cuda/dynamics/mjwarp_euler.cu', 'cuda/dynamics/mjwarp_euler.cuh',
+                'host/runtime/dynamics/mjwarp_euler.py',
+                'cuda/dynamics/mjwarp_transmission.cu', 'cuda/dynamics/mjwarp_transmission.cuh',
+                'host/runtime/dynamics/mjwarp_transmission.py',
+                'cuda/dynamics/mjwarp_kinematics.cu', 'cuda/dynamics/mjwarp_kinematics.cuh',
+                'host/runtime/dynamics/mjwarp_kinematics.py',
+                'cuda/dynamics/mjwarp_com_pos.cu', 'cuda/dynamics/mjwarp_com_pos.cuh',
+                'host/runtime/dynamics/mjwarp_com_pos.py',
+                'cuda/dynamics/mjwarp_camlight.cu', 'cuda/dynamics/mjwarp_camlight.cuh',
+                'host/runtime/dynamics/mjwarp_camlight.py',
+                'cuda/dynamics/mjwarp_fluid.cu', 'cuda/dynamics/mjwarp_fluid.cuh',
+                'host/runtime/dynamics/mjwarp_fluid.py',
+                'cuda/dynamics/mjwarp_external_wrench.cu', 'cuda/dynamics/mjwarp_external_wrench.cuh',
+                'host/runtime/dynamics/mjwarp_external_wrench.py',
+                'cuda/dynamics/mjwarp_constraint_build.cu', 'cuda/dynamics/mjwarp_constraint_build.cuh',
+                'host/runtime/dynamics/mjwarp_constraint_build.py',
+                'cuda/collision/mjwarp_broadphase.cu', 'cuda/collision/mjwarp_broadphase.cuh',
+                'host/runtime/collision/mjwarp_broadphase.py',
+                'cuda/collision/mjwarp_plane.cu','cuda/collision/mjwarp_plane.cuh','cuda/collision/mjwarp_contact.cuh','host/runtime/collision/mjwarp_plane.py',
+                'cuda/collision/mjwarp_box.cu','cuda/collision/mjwarp_box.cuh','host/runtime/collision/mjwarp_box.py',
+                'cuda/collision/mjwarp_convex.cu','cuda/collision/mjwarp_convex.cuh','cuda/collision/mjwarp_convex_geometry.cuh','host/runtime/collision/mjwarp_convex.py','cuda/collision/mjwarp_convex_simplex.cuh','cuda/collision/mjwarp_convex_gjk.cuh','cuda/collision/mjwarp_convex_epa.cuh','cuda/collision/mjwarp_box_manifold.cuh','cuda/collision/mjwarp_convex_collision.cuh','host/runtime/collision/mjwarp_convex_collision.py','cuda/dynamics/mjwarp_queries.cu','cuda/dynamics/mjwarp_queries.cuh','host/runtime/dynamics/mjwarp_queries.py','cuda/dynamics/mjwarp_publication.cu','cuda/dynamics/mjwarp_publication.cuh','host/runtime/dynamics/mjwarp_publication.py'}
     files = {}
     for base in (GPU_ROOT, REPO_ROOT / 'scripts'):
         for path in sorted(base.rglob('*')):
@@ -449,7 +470,8 @@ def _source_identity_files(*, include_excluded=False):
                 if '__pycache__' not in path.parts and not (
                         not include_excluded and base == GPU_ROOT and
                         (path.relative_to(base).as_posix() in excluded or
-                         path.relative_to(base).as_posix().startswith('host/backends/mjwarp/'))):
+                         path.relative_to(base).as_posix().startswith((
+                             'host/backends/mjwarp/','host/backends/cuda_fp32/','cuda/runtime/')))):
                     files[str(path.relative_to(REPO_ROOT))] = path
     return files
 

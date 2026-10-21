@@ -29,11 +29,12 @@ def velocity_product(root,*,component='velocity',fast_compile=False):
 
 
 class Velocity:
-    def __init__(self,model,data,stream,*,com_vel='upstream',bias='upstream',velocity_library=None,bias_library=None,passive_driver=None):
+    def __init__(self,model,data,stream,*,com_vel='upstream',bias='upstream',velocity_library=None,bias_library=None,passive_driver=None,transmission=None):
         if com_vel not in ('upstream','cuda') or bias not in ('upstream','cuda'):
             raise ValueError('com_vel and bias must be upstream or cuda')
         self.model,self.data=model,data
         self.passive_driver=passive_driver
+        self.transmission=transmission
         self.requested=dict(com_vel=com_vel,bias=bias)
         self.fallback=caller_unsupported_reason(model,data) if 'cuda' in self.requested.values() else None
         self.selected={k:'upstream' if self.fallback else v for k,v in self.requested.items()}
@@ -50,10 +51,14 @@ class Velocity:
 
     def enqueue(self):
         m,d=self.model,self.data
-        if self.com_vel is None and self.bias is None and (self.passive_driver is None or self.passive_driver.selected=='upstream'):
+        velocity_cuda=self.transmission is not None and self.transmission.selected['actuator_velocity']=='cuda'
+        passive_cuda=self.passive_driver is not None and getattr(self.passive_driver,'uses_cuda',self.passive_driver.selected=='cuda')
+        if self.com_vel is None and self.bias is None and not passive_cuda and not velocity_cuda:
             forward.fwd_velocity(m,d);return
-        wp.launch(forward._actuator_velocity,dim=(d.nworld,m.nactuator),
-            inputs=[d.qvel,d.moment_rownnz,d.moment_rowadr,d.moment_colind,d.actuator_moment],outputs=[d.actuator_velocity])
+        if velocity_cuda:self.transmission.enqueue_velocity()
+        else:
+            wp.launch(forward._actuator_velocity,dim=(d.nworld,m.nactuator),
+                inputs=[d.qvel,d.moment_rownnz,d.moment_rowadr,d.moment_colind,d.actuator_moment],outputs=[d.actuator_velocity])
         wp.launch(forward._tendon_velocity,dim=(d.nworld,m.ntendon),
             inputs=[m.ten_J_rownnz,m.ten_J_rowadr,m.ten_J_colind,d.qvel,d.ten_J],outputs=[d.ten_velocity])
         if self.com_vel is None:smooth.com_vel(m,d)

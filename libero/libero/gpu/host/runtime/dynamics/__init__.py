@@ -8,13 +8,22 @@ accepted D09 smooth kernel is retained unchanged; the nonzero-xfrc acceleration
 path is the new three-RN -> seeded D02 -> N06 factor/solve combinator.
 """
 
-from .rules import FIXED_DIMS, STAGE_MAP, FixedModelRules, load_rules
-from .witness import StageWitness, STAGE_ORDER, FIELD_GROUPS
-from .control_clock import ControlClock
-from .acceleration import SmoothXfrcSolveWorkspace, RnNodes
-from .transmission import TransmissionWorkspace
-from .actuation_split import ActuationForceWorkspace
-from .stages import DynamicsStages
+from importlib import import_module
+
+_EXPORTS = {
+    **{name:'rules' for name in ('FIXED_DIMS','STAGE_MAP','FixedModelRules','load_rules')},
+    **{name:'witness' for name in ('StageWitness','STAGE_ORDER','FIELD_GROUPS')},
+    'ControlClock':'control_clock','SmoothXfrcSolveWorkspace':'acceleration',
+    'RnNodes':'acceleration','TransmissionWorkspace':'transmission',
+    'ActuationForceWorkspace':'actuation_split','DynamicsStages':'stages',
+}
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:raise AttributeError(name)
+    value=getattr(import_module('.'+_EXPORTS[name],__name__),name)
+    globals()[name]=value
+    return value
 
 __all__ = [
     'FIXED_DIMS', 'STAGE_MAP', 'FixedModelRules', 'load_rules',

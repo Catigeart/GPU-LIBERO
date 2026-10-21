@@ -12,8 +12,10 @@ class PostconstraintInputs(ct.Structure):
 
 class PostconstraintRNE:
     def __init__(self,model,data,library,stream,topology):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         if topology.model is not model or topology.data is not data or topology.stream is not stream:
             raise ValueError('Postconstraint topology owner differs')
         self.model,self.data,self.stream,self.topology=model,data,stream,topology
@@ -43,7 +45,8 @@ class PostconstraintRNE:
             gravity_disabled=self.gravity_disabled,values='borrow-current-input-no-cache',**self.topology.identity)
 
     def enqueue(self):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(self.stream)
         with wp.ScopedStream(self.stream):
             if self.gravity_disabled:self.arrays['cacc'].zero_()
             commands=[(p,None,0) for p in ([1,2] if self.gravity_disabled else [0,1,2])]

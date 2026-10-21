@@ -1,0 +1,15 @@
+# Independent handwritten CUDA FP32; neither Warp package is required.
+# Install Flash-LIBERO[cuda-fp32] in an isolated Python environment.
+mujoco==3.16.0
+numpy>=1.24,<2
+scipy
+robosuite==1.4.0
+bddl==1.0.1
+easydict
+h5py
+PyYAML>=6
+opencv-python
+gym==0.25.2
+cloudpickle
+future
+matplotlib

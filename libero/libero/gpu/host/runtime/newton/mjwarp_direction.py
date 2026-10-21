@@ -62,7 +62,8 @@ class DenseDirection:
     """Metadata/pointers only: no allocation, readback or compilation in capture."""
 
     def __init__(self, plan, context):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
         self.plan = plan
         m, d, s = plan.model, plan.data, plan.stream
         n, nv, pad = int(d.nworld), int(m.nv), int(m.nv_pad)

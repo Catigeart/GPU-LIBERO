@@ -8,7 +8,21 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    # Load standalone commands without importing unrelated reference qualifiers.
+    standalone={'cuda-runtime':'cuda_runtime','cuda-model':'cuda_model',
+                'cuda-complete':'cuda_complete','cuda-functions':'cuda_functions',
+                'cuda-lifecycle':'cuda_lifecycle',
+                'mjwarp-convex-regression':'mjwarp_convex_regression'}
+    if len(sys.argv)>1 and sys.argv[1] in standalone:
+        from importlib import import_module
+        module=import_module('validation.'+standalone[sys.argv[1]])
+        parser=argparse.ArgumentParser(description=module.__doc__)
+        module.add_arguments(parser)
+        return module.main(parser.parse_args(sys.argv[2:]))
+    parser = argparse.ArgumentParser(description=__doc__, epilog=
+        'Standalone commands: cuda-runtime, cuda-model, cuda-functions, '
+        'cuda-lifecycle, cuda-complete, mjwarp-convex-regression. '
+        'Use COMMAND --help for their arguments.')
     commands = parser.add_subparsers(dest='command', required=True)
     from validation.mjwarp_reference import add_arguments
     add_arguments(commands.add_parser('mjwarp-reference', help='check FP32 adapter against raw upstream MJWarp'))
@@ -42,6 +56,52 @@ def main():
     add_passive_arguments(commands.add_parser('mjwarp-passive', help='qualify joint spring/damping, passive-force sum, and composition'))
     from validation.mjwarp_actuation import add_arguments as add_actuation_arguments
     add_actuation_arguments(commands.add_parser('mjwarp-actuation', help='qualify stateless actuator force, projection, joint limits, and composition'))
+    from validation.mjwarp_euler import add_arguments as add_euler_arguments
+    add_euler_arguments(commands.add_parser('mjwarp-euler', help='qualify Euler damping preparation and state advancement on frozen N=2 inputs'))
+    from validation.mjwarp_transmission import add_arguments as add_transmission_arguments
+    add_transmission_arguments(commands.add_parser('mjwarp-transmission', help='qualify scalar transmission, generic CSR velocity and the actuation chain'))
+    from validation.mjwarp_convex_collision import add_arguments as add_convex_collision_arguments
+    add_convex_collision_arguments(commands.add_parser('mjwarp-convex-collision', help='qualify pooled production convex CCD on frozen N=2 contacts'))
+    from validation.mjwarp_box_manifold import add_arguments as add_manifold_arguments
+    add_manifold_arguments(commands.add_parser('mjwarp-box-manifold', help='qualify box-only multicontact on frozen original EPA faces'))
+    from validation.mjwarp_convex_ccd import add_arguments as add_convex_ccd_arguments
+    add_convex_ccd_arguments(commands.add_parser('mjwarp-convex-ccd', help='qualify rigid shape handling and EPA on frozen N=2 requests'))
+    from validation.mjwarp_convex_gjk import add_arguments as add_convex_gjk_arguments
+    add_convex_gjk_arguments(commands.add_parser('mjwarp-convex-gjk', help='qualify frozen GJK loop, support cache and cutoff contracts'))
+    from validation.mjwarp_convex_simplex import add_arguments as add_convex_simplex_arguments
+    add_convex_simplex_arguments(commands.add_parser('mjwarp-convex-simplex', help='qualify reachable ordered GJK simplex projection against independent convex QP'))
+    from validation.mjwarp_convex_support import add_arguments as add_convex_support_arguments
+    add_convex_support_arguments(commands.add_parser('mjwarp-convex-support', help='qualify rigid support building blocks without claiming production convex replacement'))
+    from validation.mjwarp_box import add_arguments as add_box_arguments
+    add_box_arguments(commands.add_parser('mjwarp-box', help='qualify capsule/box manifolds and independent geometric residuals on N=2 inputs'))
+    from validation.mjwarp_plane import add_arguments as add_plane_arguments
+    add_plane_arguments(commands.add_parser('mjwarp-plane', help='qualify plane manifolds and contact material/publication on frozen N=2 inputs'))
+    from validation.mjwarp_broadphase import add_arguments as add_broadphase_arguments
+    add_broadphase_arguments(commands.add_parser('mjwarp-broadphase', help='qualify NXN candidates and bounding predicates on frozen N=2 inputs'))
+    from validation.mjwarp_constraint_build import add_arguments as add_constraint_build_arguments
+    add_constraint_build_arguments(commands.add_parser('mjwarp-constraint-build', help='qualify dense rigid constraint row construction on frozen N=2 inputs'))
+    from validation.mjwarp_external_wrench import add_arguments as add_external_wrench_arguments
+    add_external_wrench_arguments(commands.add_parser('mjwarp-external-wrench', help='qualify applied/contact postconstraint wrenches on frozen N=2 inputs'))
+    from validation.mjwarp_fluid import add_arguments as add_fluid_arguments
+    add_fluid_arguments(commands.add_parser('mjwarp-fluid', help='qualify inertia-box wrench, projection and passive composition on frozen N=2 inputs'))
+    from validation.mjwarp_scene_inputs import add_arguments as add_scene_input_arguments
+    add_scene_input_arguments(commands.add_parser('mjwarp-scene-inputs',help='export original CPU2.3.7 fixed fixture parameters and pose oracles offline'))
+    from validation.mjwarp_complete import add_arguments as add_complete_arguments
+    add_complete_arguments(commands.add_parser('mjwarp-complete',help='prepare/audit and compare complete CUDA with original MJWarp across shipped tasks'))
+    from validation.mjwarp_endpoint_report import add_arguments as add_endpoint_report_arguments
+    add_endpoint_report_arguments(commands.add_parser('mjwarp-endpoint-report', help='analyze retained endpoints on CPU, keeping strict and scoped conclusions separate'))
+    from validation.mjwarp_public_forward import add_arguments as add_public_forward_arguments
+    add_public_forward_arguments(commands.add_parser('mjwarp-public-forward',help='qualify complete public refresh and no-upstream numerical Graph ownership'))
+    from validation.mjwarp_publication import add_arguments as add_publication_arguments
+    add_publication_arguments(commands.add_parser('mjwarp-publication',help='qualify time, overflow and public warmstart publication on N=2 inputs'))
+    from validation.mjwarp_queries import add_arguments as add_queries_arguments
+    add_queries_arguments(commands.add_parser('mjwarp-queries', help='qualify rigid Jacobians, force/torque sensors and gravity on frozen N=2 inputs'))
+    from validation.mjwarp_camlight import add_arguments as add_camlight_arguments
+    add_camlight_arguments(commands.add_parser('mjwarp-camlight', help='qualify FIXED camera/light world frames on frozen N=2 inputs'))
+    from validation.mjwarp_com_pos import add_arguments as add_com_pos_arguments
+    add_com_pos_arguments(commands.add_parser('mjwarp-com-pos', help='qualify subtree CoM, spatial inertia and motion axes on frozen N=2 inputs'))
+    from validation.mjwarp_kinematics import add_arguments as add_kinematics_arguments
+    add_kinematics_arguments(commands.add_parser('mjwarp-kinematics', help='qualify rigid body, inertial, geom and site kinematics on frozen N=2 inputs'))
     run = commands.add_parser('run', help='record or check trajectories; GPU execution is load-only')
     run.add_argument('--backend', choices=('cpu', 'gpu'), required=True)
     run.add_argument('--tasks', nargs='+', default=['libero_10'], help='suite names, suite:ID or all')
@@ -99,6 +159,9 @@ def main():
     paired.add_argument('--output', type=Path, required=True)
     paired.add_argument('--substeps', type=int, help='explicit substeps for legacy receipts without this metadata')
     args = parser.parse_args()
+    if args.command == 'mjwarp-endpoint-report':
+        from validation.mjwarp_endpoint_report import main as report_endpoints
+        return report_endpoints(args)
     if args.command == 'mjwarp-reference':
         from validation.mjwarp_reference import main as check_upstream
         return check_upstream(args=args)
@@ -147,6 +210,72 @@ def main():
     if args.command == 'mjwarp-actuation':
         from validation.mjwarp_actuation import main as replay_actuation
         return replay_actuation(args=args)
+    if args.command == 'mjwarp-euler':
+        from validation.mjwarp_euler import main as replay_euler
+        return replay_euler(args=args)
+    if args.command == 'mjwarp-transmission':
+        from validation.mjwarp_transmission import main as replay_transmission
+        return replay_transmission(args=args)
+    if args.command == 'mjwarp-convex-collision':
+        from validation.mjwarp_convex_collision import main as replay_convex_collision
+        return replay_convex_collision(args=args)
+    if args.command == 'mjwarp-box-manifold':
+        from validation.mjwarp_box_manifold import main as replay_box_manifold
+        return replay_box_manifold(args=args)
+    if args.command == 'mjwarp-convex-ccd':
+        from validation.mjwarp_convex_ccd import main as replay_convex_ccd
+        return replay_convex_ccd(args=args)
+    if args.command == 'mjwarp-convex-gjk':
+        from validation.mjwarp_convex_gjk import main as replay_convex_gjk
+        return replay_convex_gjk(args=args)
+    if args.command == 'mjwarp-convex-simplex':
+        from validation.mjwarp_convex_simplex import main as replay_convex_simplex
+        return replay_convex_simplex(args=args)
+    if args.command == 'mjwarp-convex-support':
+        from validation.mjwarp_convex_support import main as replay_convex_support
+        return replay_convex_support(args=args)
+    if args.command == 'mjwarp-box':
+        from validation.mjwarp_box import main as replay_box
+        return replay_box(args=args)
+    if args.command == 'mjwarp-plane':
+        from validation.mjwarp_plane import main as replay_plane
+        return replay_plane(args=args)
+    if args.command == 'mjwarp-broadphase':
+        from validation.mjwarp_broadphase import main as replay_broadphase
+        return replay_broadphase(args=args)
+    if args.command == 'mjwarp-constraint-build':
+        from validation.mjwarp_constraint_build import main as replay_constraint_build
+        return replay_constraint_build(args=args)
+    if args.command == 'mjwarp-external-wrench':
+        from validation.mjwarp_external_wrench import main as replay_external_wrench
+        return replay_external_wrench(args=args)
+    if args.command == 'mjwarp-fluid':
+        from validation.mjwarp_fluid import main as replay_fluid
+        return replay_fluid(args=args)
+    if args.command == 'mjwarp-scene-inputs':
+        from validation.mjwarp_scene_inputs import main as export_scene_inputs
+        return export_scene_inputs(args=args)
+    if args.command == 'mjwarp-complete':
+        from validation.mjwarp_complete import main as replay_complete
+        return replay_complete(args=args)
+    if args.command == 'mjwarp-public-forward':
+        from validation.mjwarp_public_forward import main as replay_public_forward
+        return replay_public_forward(args=args)
+    if args.command == 'mjwarp-publication':
+        from validation.mjwarp_publication import main as replay_publication
+        return replay_publication(args=args)
+    if args.command == 'mjwarp-queries':
+        from validation.mjwarp_queries import main as replay_queries
+        return replay_queries(args=args)
+    if args.command == 'mjwarp-camlight':
+        from validation.mjwarp_camlight import main as replay_camlight
+        return replay_camlight(args=args)
+    if args.command == 'mjwarp-com-pos':
+        from validation.mjwarp_com_pos import main as replay_com_pos
+        return replay_com_pos(args=args)
+    if args.command == 'mjwarp-kinematics':
+        from validation.mjwarp_kinematics import main as replay_kinematics
+        return replay_kinematics(args=args)
     if args.command == 'compare':
         from validation.common import save_json
         from validation.offline import compare_saved

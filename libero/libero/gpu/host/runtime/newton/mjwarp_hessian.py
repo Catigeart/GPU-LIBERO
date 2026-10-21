@@ -34,8 +34,10 @@ class HessianPlan:
     """Static preparation outside capture; owns the library and CSR lookup."""
 
     def __init__(self, model, data, library, stream):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
 
         if (model.is_sparse or model.opt.cone != types.ConeType.ELLIPTIC or
@@ -92,8 +94,10 @@ class DenseHessian:
     """
 
     def __init__(self, model, data, context, library, stream, *, plan=None):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         self.plan = plan if plan is not None else HessianPlan(model, data, library, stream)
         if self.plan.model is not model or self.plan.data is not data or self.plan.stream is not stream:
             raise ValueError('Hessian plan belongs to another model, data or stream')

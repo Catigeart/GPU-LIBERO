@@ -1,0 +1,98 @@
+"""Borrowed rigid kinematics arrays; shared cold branch owner, no physical cache."""
+import ctypes as ct
+import hashlib
+from .mjwarp_motion import source_id,load_leaf,bind_array,reject_output_overlap,MotionTopology
+
+
+def caller_unsupported_reason(model,data):
+    from libero.gpu.host.runtime.cuda_api import type_api
+    types = type_api(model)
+    if model.opt.integrator!=types.IntegratorType.EULER:return 'kinematics caller requires Euler'
+    if model.opt.enableflags & types.EnableBit.SLEEP:return 'active-body compaction'
+    if min(data.nworld,model.nv,model.nq,model.njnt,model.nbranch)<1 or model.nbody<2:return 'empty rigid kinematics domain'
+    return None
+
+
+def validate_indices(nq,nm,qadr,kinds,jnum,jadr,mocap,root,weld,geom_body,site_body):
+    import numpy as np
+    nb,nj=len(jnum),len(kinds)
+    if any(len(a)!=nb for a in (jadr,mocap,root,weld)) or len(qadr)!=nj:raise ValueError('Kinematics index dimensions differ')
+    if np.any(kinds<0) or np.any(kinds>3):raise ValueError('Kinematics joint type differs')
+    if np.any(mocap< -1) or np.any(mocap>=nm):raise ValueError('Kinematics mocap index exceeds storage')
+    for values in (root,weld,geom_body,site_body):
+        if np.any(values<0) or np.any(values>=nb):raise ValueError('Kinematics body index exceeds storage')
+    cover=np.zeros(nq,int)
+    for j,k in enumerate(kinds):
+        at=int(qadr[j]);width=(7,4,1,1)[k]
+        if at<0 or at+width>nq:raise ValueError('Kinematics qpos span exceeds storage')
+        cover[at:at+width]+=1
+    if not np.all(cover==1):raise ValueError('Kinematics qpos spans overlap or omit coordinates')
+    for b,count in enumerate(jnum):
+        first=int(jadr[b])
+        if count and (first<0 or first+count>nj):raise ValueError('Kinematics body joint span exceeds storage')
+        if count and np.any(kinds[first:first+count]==0) and (count!=1 or kinds[first]!=0):
+            raise ValueError('Kinematics FREE joint must be sole body joint')
+
+
+class KinematicsInputs(ct.Structure):
+    _fields_=[(k,ct.c_int) for k in ('worlds','bodies','joints','nq','branches','geoms','sites','mocaps',
+        'qpos0_rows','body_pos_rows','body_quat_rows','jnt_pos_rows','jnt_axis_rows','ipos_rows','iquat_rows','gpos_rows','gquat_rows','spos_rows','squat_rows')]
+    _fields_ += [(k,ct.c_void_p) for k in ('parent','mocap','jnum','jadr','kind','qadr','branch_body','branch_start','owner','root','weld','geom_body','site_body',
+        'qpos0','body_pos','body_quat','jnt_pos','jnt_axis','ipos','iquat','gpos','gquat','spos','squat','qpos','mocap_pos','mocap_quat',
+        'xpos','xquat','anchor','axis','xmat','xipos','ximat','geom_xpos','geom_xmat','site_xpos','site_xmat')]
+
+
+class KinematicFrames:
+    def __init__(self,model,data,library,stream,*,topology=None):
+        import numpy as np
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        reason=caller_unsupported_reason(model,data)
+        if reason:raise ValueError('Unsupported CUDA kinematics: '+reason)
+        n,nb,nj,nq,ng,ns,nm=data.nworld,model.nbody,model.njnt,model.nq,model.ngeom,model.nsite,model.nmocap
+        if min(ng,ns,nm)<0 or max(n*nb*9,n*nj*3,n*nq,n*ng*9,n*ns*9,n*nm*4,n*model.nbranch)>2**31-256:
+            raise ValueError('Kinematics dimensions exceed index storage')
+        self.model,self.data,self.stream=model,data,stream
+        self.path,self.library=load_leaf('kinematics',KinematicsInputs,library,stream)
+        self.owns_topology=topology is None
+        self.topology=MotionTopology(model,data,stream) if topology is None else topology
+        if self.topology.model is not model or self.topology.data is not data or self.topology.stream is not stream:
+            raise ValueError('Kinematics topology owner differs')
+        a=self.arrays={};t=self.topology.arrays
+        for key,source in (('parent','body_parent'),('jnum','body_jntnum'),('jadr','body_jntadr'),('kind','jnt_type'),
+                ('branch_body','branch_bodies'),('branch_start','branch_start'),('owner','body_owner')):a[key]=t[source]
+        values={}
+        for key,field,width in (('mocap','body_mocapid',nb),('qadr','jnt_qposadr',nj),('root','body_rootid',nb),
+                ('weld','body_weldid',nb),('geom_body','geom_bodyid',ng),('site_body','site_bodyid',ns)):
+            values[key]=bind_array(a,key,getattr(model,field),wp.int32,(width,),stream).numpy()
+        for key in ('kind','jnum','jadr'):values[key]=a[key].numpy()
+        validate_indices(nq,nm,*(values[k] for k in ('qadr','kind','jnum','jadr','mocap','root','weld','geom_body','site_body')))
+        if np.any((values['mocap']>=0)&((a['parent'].numpy()!=0)|(values['jnum']!=0))):raise ValueError('Kinematics mocap body must be fixed under world')
+        rows={}
+        for key,field,width,dtype,components in (('qpos0','qpos0',nq,wp.float32,1),('body_pos','body_pos',nb,wp.vec3,3),
+                ('body_quat','body_quat',nb,wp.quat,4),('jnt_pos','jnt_pos',nj,wp.vec3,3),('jnt_axis','jnt_axis',nj,wp.vec3,3),
+                ('ipos','body_ipos',nb,wp.vec3,3),('iquat','body_iquat',nb,wp.quat,4),('gpos','geom_pos',ng,wp.vec3,3),
+                ('gquat','geom_quat',ng,wp.quat,4),('spos','site_pos',ns,wp.vec3,3),('squat','site_quat',ns,wp.quat,4)):
+            value=getattr(model,field)
+            if value.ndim!=2 or value.shape[0]<1 or value.shape[0]*width*components>2**31-256:raise ValueError('Kinematics broadcast storage differs: '+key)
+            bind_array(a,key,value,dtype,(value.shape[0],width),stream);rows[key+'_rows']=value.shape[0]
+        for key,field,width,dtype in (('qpos','qpos',nq,wp.float32),('mocap_pos','mocap_pos',nm,wp.vec3),('mocap_quat','mocap_quat',nm,wp.quat),
+                ('xpos','xpos',nb,wp.vec3),('xquat','xquat',nb,wp.quat),('anchor','xanchor',nj,wp.vec3),('axis','xaxis',nj,wp.vec3),
+                ('xmat','xmat',nb,wp.mat33),('xipos','xipos',nb,wp.vec3),('ximat','ximat',nb,wp.mat33),
+                ('geom_xpos','geom_xpos',ng,wp.vec3),('geom_xmat','geom_xmat',ng,wp.mat33),('site_xpos','site_xpos',ns,wp.vec3),('site_xmat','site_xmat',ns,wp.mat33)):
+            bind_array(a,key,getattr(data,field),dtype,(n,width),stream)
+        reject_output_overlap(a,('xpos','xquat','anchor','axis','xmat','xipos','ximat','geom_xpos','geom_xmat','site_xpos','site_xmat'))
+        self.arguments=KinematicsInputs(worlds=n,bodies=nb,joints=nj,nq=nq,branches=model.nbranch,geoms=ng,sites=ns,mocaps=nm,**rows,
+            **{k:a[k].ptr for k,_ in KinematicsInputs._fields_[19:]})
+        self.launch=self.library.flash_mjwarp_kinematics_launch
+        self.launch.argtypes=[ct.POINTER(KinematicsInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+
+    @property
+    def identity(self):
+        return dict(source_id=source_id('kinematics'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
+            numerical_workspace_bytes=0,additional_topology_bytes=self.topology.identity['topology_bytes'] if self.owns_topology else 0,
+            topology='owned' if self.owns_topology else 'shared',owner_policy='first-full-leaf-path',prefix='private registers',values='borrow-current-input-no-cache')
+
+    def enqueue(self,phase):
+        error=self.launch(ct.byref(self.arguments),phase,self.stream.cuda_stream)
+        if error:raise RuntimeError('Kinematics launch failed: CUDA error '+str(error))

@@ -1,10 +1,12 @@
 # Floating-point products
 
-FP64 remains the default precision and uses native CUDA with CPU MuJoCo 2.3.7
-as its semantic reference. Automatic FP32 selection uses the
-[upstream MJWarp backend](host/backends/mjwarp/README.md), with one official
+FP32 is the default precision. Explicit FP64 uses native CUDA with CPU MuJoCo
+2.3.7 as its semantic reference. Automatic FP32 selection uses the
+[independent CUDA backend](host/backends/cuda_fp32/README.md), with one
 `step1 -> GPU OSC -> step2` sequence per physical substep. Its physics oracle
-is the pinned upstream engine; cross-engine CPU differences are reported
+is the pinned MJWarp algorithm and the separate explicit upstream reference;
+neither Warp package is required for independent preparation or execution.
+Cross-engine CPU differences are reported
 separately. The two paths differ in engine and execution schedule as well as
 precision.
 
@@ -12,7 +14,7 @@ The remainder of this document describes the handwritten native scalar
 products, including the retained **explicit** `physics_engine="native"` FP32
 comparison backend. These products share the maintained CUDA/Warp algorithms,
 controller schedule and warmstart semantics. Native preparation/build commands
-below prepare those products, not the MJWarp backend.
+below prepare those products, not the independent MJWarp-derived backend.
 
 ## Select and build
 
@@ -33,9 +35,10 @@ with GpuBatchEnv(task_bddl, num_envs=2, precision="fp32",
     observation = env.reset()
 ```
 
-`LIBERO_GPU_PRECISION=fp32` selects the same process policy. The default is
-`fp64`. An explicit constructor selection must agree with any existing typed
-imports. To use the default FP32 fast path, follow the isolated MJWarp
+`LIBERO_GPU_PRECISION=fp32` selects the default process policy;
+`LIBERO_GPU_PRECISION=fp64` opts into FP64 before import. An explicit
+constructor selection must agree with any existing typed
+imports. To use the default FP32 fast path, follow the isolated CUDA FP32
 environment and offline preparation instructions linked above.
 
 Prepare each precision offline for the intended world capacity:

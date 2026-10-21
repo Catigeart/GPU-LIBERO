@@ -20,7 +20,7 @@ def test_mjwarp_routes_before_native_construction(monkeypatch):
     result = GpuBatchEnv.__new__(GpuBatchEnv, 'unused.bddl', physics_engine='mjwarp')
     assert isinstance(result, Alternate)
     assert selected == ['fp32']
-    assert type(GpuBatchEnv.__new__(GpuBatchEnv, 'unused.bddl')) is GpuBatchEnv
+    assert type(GpuBatchEnv.__new__(GpuBatchEnv, 'unused.bddl', precision='fp64')) is GpuBatchEnv
 
 
 def test_precision_defaults_and_explicit_native_override(monkeypatch):
@@ -29,11 +29,11 @@ def test_precision_defaults_and_explicit_native_override(monkeypatch):
     import pytest
     monkeypatch.setattr(scalar, 'bits', 64)
     assert resolve_engine() == 'native'
-    assert resolve_engine('auto', 'fp32') == 'mjwarp'
+    assert resolve_engine('auto', 'fp32') == 'cuda_fp32'
     assert resolve_engine('auto', 'float64') == 'native'
     assert resolve_engine('native', 'fp32') == 'native'
     monkeypatch.setattr(scalar, 'bits', 32)
-    assert resolve_engine() == 'mjwarp'
+    assert resolve_engine() == 'cuda_fp32'
     with pytest.raises(ValueError, match='requires FP32'):
         resolve_engine('mjwarp', 'fp64')
     with pytest.raises(ValueError):
@@ -42,13 +42,15 @@ def test_precision_defaults_and_explicit_native_override(monkeypatch):
         resolve_engine('auto', 'fp16')
 
 
-def test_auto_fp32_uses_mjwarp_and_explicit_native_stays_native(monkeypatch):
+def test_auto_fp32_uses_independent_cuda_and_explicit_native_stays_native(monkeypatch):
     import libero.gpu.precision as scalar
     class Alternate:
         pass
     monkeypatch.setattr(scalar, 'select', lambda value: value)
-    monkeypatch.setitem(sys.modules, 'libero.gpu.host.backends.mjwarp.environment',
-                        SimpleNamespace(MjWarpBatchEnv=Alternate))
+    monkeypatch.setattr(scalar, 'bits', 32)
+    monkeypatch.setitem(sys.modules, 'libero.gpu.host.backends.cuda_fp32.environment',
+                        SimpleNamespace(CudaFP32BatchEnv=Alternate))
+    assert isinstance(GpuBatchEnv.__new__(GpuBatchEnv, 'unused'), Alternate)
     assert isinstance(GpuBatchEnv.__new__(GpuBatchEnv, 'unused', precision='fp32'), Alternate)
     assert type(GpuBatchEnv.__new__(GpuBatchEnv, 'unused', precision='fp32',
                                   physics_engine='native')) is GpuBatchEnv
@@ -82,6 +84,8 @@ def test_optional_engine_has_separate_source_admission():
     native = _source_identity_files()
     guarded = _source_identity_files(include_excluded=True)
     optional = {name for name in guarded if '/host/backends/mjwarp/' in name or
+                '/host/backends/cuda_fp32/' in name or '/cuda/runtime/' in name or
+                name.endswith('/cpu_scene_input_source_pin.json') or
                 name.endswith('/mjwarp_source_pin.json') or name.endswith('/mjwarp_controller.cu')}
     assert optional
     assert optional.isdisjoint(native)

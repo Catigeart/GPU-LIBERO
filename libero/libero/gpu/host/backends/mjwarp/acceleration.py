@@ -58,12 +58,15 @@ class Acceleration:
             if self.force is not None:result['forces'].update(self.force.identity)
         return result
 
-    def enqueue(self):
+    def enqueue(self,*,factorize=False,factor=None):
         m,d=self.model,self.data
-        if self.selected=='upstream':forward.fwd_acceleration(m,d);return
+        if self.selected=='upstream':
+            if factorize:forward.fwd_acceleration(m,d,factorize=True)
+            else:forward.fwd_acceleration(m,d)
+            return
         if self.force is not None:
             self.force.enqueue()
-            self.binding.enqueue()
+            self._solve(factorize,factor)
             return
         # Exact pinned dense/full-DOF/non-discrete scheduling. No duplicate
         # upstream solve_m is hidden behind a call to fwd_acceleration.
@@ -71,4 +74,10 @@ class Acceleration:
             inputs=[m.body_treeid,m.dof_bodyid,d.qfrc_applied,d.tree_awake,d.qfrc_bias,d.qfrc_passive,d.qfrc_actuator],
             outputs=[d.qfrc_smooth])
         forward.xfrc_accumulate(m,d,d.qfrc_smooth)
-        self.binding.enqueue()
+        self._solve(factorize,factor)
+
+    def _solve(self,factorize,factor):
+        m,d=self.model,self.data
+        if not factorize:self.binding.enqueue()
+        elif factor is not None and factor.public_binding is not None:factor.public_binding.enqueue()
+        else:forward.smooth.factor_solve_i(m,d,d.M,d.qLD,d.qLDiagInv,d.qacc_smooth,d.qfrc_smooth)

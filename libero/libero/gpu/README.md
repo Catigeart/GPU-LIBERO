@@ -2,8 +2,10 @@
 
 The source tree keeps the GPU implementation under `libero/libero/gpu/`. Both source checkouts and installed packages expose it through the canonical `libero.gpu` namespace.
 
-Automatic batch routing uses native CUDA for FP64 (the default precision) and
-the [upstream MJWarp fast path](host/backends/mjwarp/README.md) for FP32.
+Automatic batch routing defaults to the
+[independent CUDA FP32 backend](host/backends/cuda_fp32/README.md), without Warp
+or MJWarp dependencies. Explicit FP64 selects native CUDA; the
+[upstream MJWarp reference](host/backends/mjwarp/README.md) remains opt-in.
 `physics_engine="native"` explicitly selects the retained handwritten FP32
 comparison backend. MJWarp uses its isolated environment and offline profiles;
 native physics remains based on the CPU MuJoCo 2.3.7 semantics.
@@ -39,8 +41,9 @@ gpu/
 
 ## Entry Points
 
-FP64 is the default scalar configuration. Optional FP32 native batches use the
-same maintained numerical sources and separate typed products; see
+FP32 is the default scalar configuration. Explicit FP64 and retained native
+FP32 comparison batches use the maintained native numerical sources and
+separate typed products; see
 [Floating-point products](PRECISION.md). The lightweight policy is
 `precision.py`, and the CUDA scalar/bit/intrinsic definitions are in
 `cuda/common/precision.cuh`.
@@ -62,16 +65,22 @@ This entry supports `nworld` and `dataflow_profile="fast"` or `"compatible"`. Th
 Sequential batch environments may share an explicitly qualified build session:
 
 ```python
+from libero.gpu import precision
+precision.select("fp64")
+
 from libero.libero.envs import GpuBatchEnv
 from libero.gpu.host.build.aot import qualify_ready_session
 
 with qualify_ready_session(build_root, num_envs=8, seed=0) as ready:
     for task_file in task_files:
         with GpuBatchEnv(task_file, num_envs=8, seed=0, build_root=build_root,
-                         ready_session=ready, allow_compile=False) as env:
+                         precision="fp64", ready_session=ready,
+                         allow_compile=False) as env:
             ...
 ```
 
+This session API applies to the native products. Select FP64 before importing
+typed modules; the independent FP32 backend uses its own offline preparation.
 Qualification uses CPU filesystem checks to validate the complete current
 manifest, all task bindings and all artifact SHA256 values once. Keep the source
 and build tree immutable throughout the session. Subsequent constructors check

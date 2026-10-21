@@ -32,7 +32,8 @@ class MassFactorPlan:
     """Validate static CSR/block maps once, before capture; cache no matrix values."""
     def __init__(self,model,data,library,stream):
         import numpy as np
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         reason=unsupported_reason(model,data)
         if reason:raise ValueError(reason)
@@ -109,7 +110,8 @@ class MassFactorPlan:
 
 class MassFactor:
     def __init__(self,plan,matrix,factor,diagonal,solution,rhs):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
         m,d,s=plan.model,plan.data,plan.stream
         if (solution is None)!=(rhs is None):raise ValueError('Factor solve needs both vectors')
         n=d.nworld;solve=rhs is not None

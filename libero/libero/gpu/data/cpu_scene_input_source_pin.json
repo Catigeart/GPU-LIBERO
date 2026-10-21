@@ -1,0 +1,6 @@
+{
+  "source": "tools/validation/mjwarp_scene_inputs.py",
+  "sha256": "def5962dfa57f217b274f938510c04972b26382f38b2ba87d806f54663d6dba3",
+  "schema": "original-cpu237-scene-inputs-v1",
+  "note": "Pinned CPU model-input exporter; no Warp-generated arrays"
+}

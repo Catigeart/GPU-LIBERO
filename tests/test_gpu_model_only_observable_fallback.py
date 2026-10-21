@@ -239,6 +239,8 @@ class ModelOnlyFallback(unittest.TestCase):
         self.assertLess(source.index('_bind_static_robot_references('), source.index('adapter = self.components.controller'))
         self.assertEqual((GPU/'host/adapters/environment/task_driver.py').read_text().count('robot._ref_joint_pos_indexes ='),1)
         batch = ast.unparse(function_node(GPU/'host/adapters/environment/batch_env.py', '_assemble'))
+        self.assertIn('self._bind_shells()',batch)
+        batch = ast.unparse(function_node(GPU/'host/adapters/environment/batch_env.py', '_bind_shells'))
         self.assertIn('_bind_static_robot_references(robot, facade,',batch)
         self.assertLess(batch.index('_bind_static_robot_references('),batch.index('self.observer.bind_host_environment('))
         helper = ast.unparse(function_node(GPU/'host/adapters/environment/task_driver.py', '_bind_static_robot_references'))

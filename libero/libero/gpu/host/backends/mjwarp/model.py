@@ -75,7 +75,7 @@ def capacity_budget(host, *, nconmax=None, njmax=None):
     return dict(nconmax=contacts, njmax=rows)
 
 
-def build_scene(root, bddl, seed, options, *, collision='default'):
+def build_scene(root, bddl, seed, options, *, collision='default',prepare=False):
     require_upstream()
     from libero.gpu.model import build_task_model
     from libero.gpu import precision
@@ -106,7 +106,13 @@ def build_scene(root, bddl, seed, options, *, collision='default'):
     elif collision != 'default':
         raise ValueError('collision must be default or primitive')
     xml = ET.tostring(tree, encoding='unicode')
-    built = build_task_model(bddl, xml_string_override=xml, **options)
+    from .scene_cache import locate,finish
+    from .scene_inputs import read as read_scene_inputs,apply as apply_scene_inputs
+    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task)
+    cache_folder,compiled,receipt,cache_binding=locate(project_paths(root).base,xml,options,task,prepare=prepare,scene_parameters=scene_binding)
+    built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
+        static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
+    finish(cache_folder,built,receipt,cache_binding)
     host = built.native_model
     for name in ('nq', 'nv', 'nu', 'nbody', 'njnt', 'ngeom', 'nsite'):
         if int(getattr(host, name)) != task['dimensions'][name]:
@@ -118,6 +124,7 @@ def build_scene(root, bddl, seed, options, *, collision='default'):
     bank = np.load(directory / 'initial_states.npy', allow_pickle=False)
     identity = dict(task=task['key'], scene_sha256=task['files']['scene.xml'],
                     init_sha256=task['files']['initial_states.npy'],
+                    fixed_scene_inputs_sha256=scene_binding['data_sha256'],
                     imported_xml_sha256=hashlib.sha256(xml.encode()).hexdigest(),
                     imported_model_sha256=built.metadata['model_sha256'],
                     mujoco=mujoco.__version__, mjwarp_commit=UPSTREAM_COMMIT,

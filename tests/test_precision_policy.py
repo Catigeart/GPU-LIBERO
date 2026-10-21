@@ -11,6 +11,33 @@ import unittest
 
 
 class PrecisionPolicyTests(unittest.TestCase):
+    def test_default_and_explicit_backend_selection(self):
+        source = '''
+import sys
+from libero.gpu import precision as scalar
+from libero.gpu.host.backends.selection import resolve_engine
+assert scalar.bits == int(sys.argv[1])
+assert resolve_engine() == sys.argv[2]
+scalar.select(sys.argv[3])
+assert scalar.bits == int(sys.argv[3][2:])
+assert resolve_engine() == sys.argv[4]
+assert 'warp' not in sys.modules and 'mujoco_warp' not in sys.modules
+'''
+        for configured, bits, engine, explicit, selected in (
+                (None, 32, 'cuda_fp32', 'fp32', 'cuda_fp32'),
+                (None, 32, 'cuda_fp32', 'fp64', 'native'),
+                ('fp64', 64, 'native', 'fp64', 'native'),
+                ('float64', 64, 'native', 'fp32', 'cuda_fp32')):
+            with self.subTest(configured=configured, explicit=explicit):
+                environment = dict(os.environ)
+                environment.pop('LIBERO_GPU_PRECISION', None)
+                if configured is not None:
+                    environment['LIBERO_GPU_PRECISION'] = configured
+                result = subprocess.run([sys.executable, '-c', source, str(bits), engine,
+                                         explicit, selected], capture_output=True, text=True,
+                                        env=environment, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_specialization_index_excludes_obsolete_templates(self):
         source = Path(__file__).resolve().parents[1] / 'libero/libero/gpu/host/runtime/core/specialization_cache.py'
         index = runpy.run_path(str(source))['index_packages']

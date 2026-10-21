@@ -50,7 +50,9 @@ class BatchEnvTests(unittest.TestCase):
         self.assertIs(clone.callback.__self__, clone)
 
     def environment(self):
-        env = module.GpuBatchEnv.__new__(module.GpuBatchEnv)
+        # Inject native orchestration directly; public backend routing is tested
+        # separately and must not load a physical engine in this fixture.
+        env = object.__new__(module.GpuBatchEnv)
         env.num_envs = env.env_num = 4
         env.debug = True
         env.action_dim = 7

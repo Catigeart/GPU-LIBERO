@@ -7,7 +7,7 @@ prune build
 prune dist
 recursive-include licenses *.txt
 recursive-include tests *.py *.md *.cu *.cuh *.h *.cpp *.json *.xml *.csv
-include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt requirements-mjwarp.txt
+include CONTRIBUTING.md AGENTS.md .gitignore .gitattributes requirements.txt requirements-mjwarp.txt requirements-cuda-fp32.txt
 recursive-include tools *.py *.json *.txt *.md
 recursive-include media *.svg *.csv *.json
 recursive-include .github *.yml

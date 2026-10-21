@@ -35,7 +35,7 @@ def test_passive_order_and_callback(monkeypatch,selected):
     m,d=model_data();calls=[];m.callback.passive=lambda *a:calls.append('callback')
     binding=NS(flags=dict(disable_spring=False,disable_damper=False),enqueue=lambda phase:calls.append(('cuda',phase)),identity={})
     monkeypatch.setattr(p,'PassiveForces',lambda *a:binding)
-    monkeypatch.setattr(p,'other_forces',lambda *a:calls.append('other'))
+    monkeypatch.setattr(p,'other_forces',lambda *a,**kw:calls.append('other'))
     monkeypatch.setattr(p.passive,'passive',lambda *a:calls.append('whole-upstream'))
     p.Passive(m,d,None,implementation=selected).enqueue()
     assert calls==([('cuda',0),'other',('cuda',1),'callback'] if selected=='cuda' else ['whole-upstream'])
@@ -48,7 +48,7 @@ def test_both_disabled_keeps_pinned_clear_and_early_return(monkeypatch):
         setattr(d,key,NS(zero_=lambda key=key:calls.append(key)))
     d.qfrc_adhesion=NS(zero_=lambda:pytest.fail('adhesion must be held'))
     monkeypatch.setattr(p,'PassiveForces',lambda *a:NS(flags=dict(disable_spring=True,disable_damper=True)))
-    monkeypatch.setattr(p,'other_forces',lambda *a:pytest.fail('other after early return'))
+    monkeypatch.setattr(p,'other_forces',lambda *a,**kw:pytest.fail('other after early return'))
     p.Passive(m,d,None,implementation='cuda').enqueue()
     assert calls==['qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive']
 
@@ -80,6 +80,12 @@ def test_retained_rigid_force_schedule_is_upstream_ast():
     expected=ast.Module(body=copy.deepcopy(tree[start:start+3]+tree[fluid:end]),type_ignores=[])
     actual=ast.Module(body=ast.parse(inspect.getsource(other_forces)).body[0].body,type_ignores=[])
     class Names(ast.NodeTransformer):
+        def visit_If(self,n):
+            # Erase only the explicit optional selector, retaining the original
+            # upstream branch for the AST schedule proof.
+            if ast.unparse(n.test)=="gravity_enabled and gravity is not None":return self.visit(n.orelse[0])
+            if ast.unparse(n.test)=="fluid is None or fluid.selected != 'cuda'":return self.visit(n.body[0])
+            return self.generic_visit(n)
         def visit_Attribute(self,n):
             if isinstance(n.value,ast.Name) and n.value.id=='passive':return ast.Name(id=n.attr,ctx=n.ctx)
             if isinstance(n.value,ast.Name) and n.value.id=='types' and n.attr=='DisableBit':return ast.Name(id='DisableBit',ctx=n.ctx)

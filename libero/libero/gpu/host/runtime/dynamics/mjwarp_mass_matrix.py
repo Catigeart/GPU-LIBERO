@@ -60,8 +60,10 @@ def validate_topology(parent, dof_body, dof_parent, row, nnz, column, layers):
 class MassMatrix:
     """Copies and layer launches follow upstream; no numerical cache/workspace."""
     def __init__(self, model, data, library, stream):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         self.model, self.data, self.stream = model, data, stream
         self.path = Path(library).resolve()
@@ -126,7 +128,8 @@ class MassMatrix:
                     layers=[a.size for a in self.layers], values='borrow-current-input-no-cache', workspace_bytes=0)
 
     def enqueue(self):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(self.stream)
         with wp.ScopedStream(self.stream):
             wp.copy(self.arrays['crb'], self.arrays['cinert'])
             for layer in reversed(self.layers):

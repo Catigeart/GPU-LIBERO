@@ -72,12 +72,19 @@ setup(
         "templates": ["scene_template.xml"],
     },
     install_requires=[
-        "numpy>=1.24,<2", "scipy", "PyYAML>=6", "warp-lang>=1.17,<2",
-        "mujoco==2.3.7", "robosuite==1.4.0", "bddl==1.0.1",
+        "numpy>=1.24,<2", "scipy", "PyYAML>=6",
+        "robosuite==1.4.0", "bddl==1.0.1",
         "easydict", "h5py", "opencv-python", "gym==0.25.2", "cloudpickle",
         "torch", "hydra-core>=1.3,<2", "wandb", "transformers", "robomimic==0.2.0",
         "einops", "thop", "future", "matplotlib",
     ],
+    extras_require={
+        "native": ["mujoco==2.3.7", "warp-lang>=1.17,<2"],
+        "cpu-catalog": ["mujoco==2.3.7"],
+        "cuda-fp32": ["mujoco==3.16.0"],
+        "mjwarp-reference": ["mujoco==3.16.0", "warp-lang==1.18.0",
+            "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp.git@c384ac51df67eb92ab7657cc472ff7494dc036bf"],
+    },
     cmdclass={"editable_wheel": SourceEditableWheel},
     entry_points={"console_scripts": [
         "lifelong.main=libero.lifelong.main:main",

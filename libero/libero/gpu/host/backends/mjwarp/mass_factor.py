@@ -33,7 +33,7 @@ class MassFactors:
         self.requested=implementation
         self.fallback=caller_unsupported_reason(model,data) if implementation=='cuda' else None
         self.selected='upstream' if self.fallback else implementation
-        self.plan=self.position_binding=self.euler_binding=self.euler_workspace=None
+        self.plan=self.position_binding=self.public_binding=self.euler_binding=self.euler_workspace=None
         self.damped=not bool(model.opt.disableflags & (types.DisableBit.EULERDAMP|types.DisableBit.DAMPER))
         if self.selected=='cuda':
             self.plan=MassFactorPlan(model,data,library,stream)
@@ -56,6 +56,11 @@ class MassFactors:
             result['euler_workspace_bytes']=(sum(a.capacity for a in vars(self.euler_workspace).values())
                 if self.euler_workspace is not None else 0)
         return result
+
+    def prepare_public(self):
+        if self.plan is not None and self.public_binding is None:
+            d=self.data
+            self.public_binding=self.plan.bind(d.M,d.qLD,d.qLDiagInv,d.qacc_smooth,d.qfrc_smooth)
 
     def position(self):
         # Compatibility entry; the runtime uses the common position schedule.

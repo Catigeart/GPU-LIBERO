@@ -63,6 +63,27 @@ The BoxBox tests compile the maintained contact function for host execution and 
 
 Historical algorithm experiments, evidence capture, and private data fixtures remain in the development workspace and are not part of this source release.
 
+## FP32 regression scope
+
+`test_precision_policy.py` checks the FP32 process default, explicit FP64 and
+environment overrides, scalar ABI layouts and process precision freezing.
+`test_mjwarp_frontend.py` checks default independent-CUDA routing and explicit
+native/reference selection without allocating a GPU world.
+
+The `test_mjwarp_*.py` files retain host contracts and independent mathematical
+oracles for the shared handwritten CUDA leaves. Some require the isolated
+MJWarp reference environment and skip when its optional dependencies are
+absent; these do not become independent FP32 runtime dependencies. Run these
+pytest-style tests with `python -m pytest tests/test_mjwarp_*.py`.
+
+`data/gjk_tuned_direction.json` is a minimal real geometric counterexample,
+not a trajectory snapshot. `test_mjwarp_convex_gjk.py` independently proves the
+old separating-plane claim invalid. The maintained `mjwarp-convex-regression`
+command additionally exercises the compiled production headers on this input
+and deeper, separated and translated controls; see the validation protocol.
+One-off multi-owner attribution and policy-counterfactual tools live in the
+external development archive, with their original dependency closure.
+
 ## Maintained validation entry
 
 `python tools/validate_gpu.py` provides explicit `run`, `compare` and `summarize`

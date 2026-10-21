@@ -31,8 +31,10 @@ class PassiveInputs(ct.Structure):
 
 class PassiveForces:
     def __init__(self,model,data,library,stream):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         n,nv,nq,nj=data.nworld,model.nv,model.nq,model.njnt
         if min(n,nv,nq,nj)<1 or max(n*nq,n*nv,n*nj)>2**31-256:
             raise ValueError('Passive dimensions exceed index storage')

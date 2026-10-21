@@ -2,11 +2,7 @@
 import libero.gpu.precision as scalar
 from contextlib import nullcontext
 import numpy as np
-import warp as wp
 from .schema import plan_from_metadata, pack_observations
-from .device import DeviceObservations, DeviceSampledScenes
-from .packing import DeviceFieldPacker
-from .scene_kinematics import DeviceSceneTransforms
 from .boundary import DerivedRenderBridge, RENDER_FIELDS
 
 
@@ -38,6 +34,17 @@ class GpuObservationAdapter:
     requested to align geometry with post-integrator qpos/qvel.
     """
     def __init__(self,native_model,metadata,nworld=1,device="cuda:0",scene_option=None):
+        from libero.gpu.host.runtime.cuda_api import array_api
+        self.wp=array_api(device)
+        if getattr(device,'_cuda_native',False):
+            from libero.gpu.host.backends.cuda_fp32.observations import DeviceObservations,DeviceSampledScenes,DeviceFieldPacker,DeviceSceneTransforms
+            self._scalar=self.wp.float32
+        else:
+            from .device import DeviceObservations,DeviceSampledScenes
+            from .packing import DeviceFieldPacker
+            from .scene_kinematics import DeviceSceneTransforms
+            self._scalar=scalar.wp_real
+        self._scene_transform_type=DeviceSceneTransforms
         self.model=native_model;self.metadata=metadata;self.nworld=nworld;self.device=device
         self.closed=False;self.valid=True;self.visual_generation=0
         self.host_environments={};self.host_observables={};self._last_sample=None
@@ -59,7 +66,7 @@ class GpuObservationAdapter:
         self.visual_sources={}
         for name in ("site_rgba","geom_rgba"):
             value=np.asarray(getattr(native_model,name),dtype=np.float64).reshape(-1)
-            self.visual_sources[name]=wp.array(np.tile(value,nworld),dtype=scalar.wp_real,device=device)
+            self.visual_sources[name]=self.wp.array(np.tile(value,nworld),dtype=self._scalar,device=device)
         if self.plan.image_specs:
             self.scene_transforms=DeviceSceneTransforms(native_model,nworld,device)
             shapes={"xpos":(int(native_model.nbody),3),"xmat":(int(native_model.nbody),9),
@@ -168,7 +175,7 @@ class GpuObservationAdapter:
         if not self.graph_eligible:raise RuntimeError('observation graph is no longer eligible')
         dt=self.metadata['model_timestep'] if timestep is None else timestep
         if not np.isfinite(dt) or dt<=0:raise ValueError('sampling timestep must be positive finite')
-        self.lowdim.last_stream=stream or wp.get_stream(self.device)
+        self.lowdim.last_stream=stream or self.wp.get_stream(self.device)
         if self.scene_cache is not None:self.scene_cache.last_stream=self.lowdim.last_stream
         self._record_sample_event(dt,False,substeps)
 
@@ -178,7 +185,7 @@ class GpuObservationAdapter:
         seen=set()
         for value in streams:
             if value is not None and id(value) not in seen:
-                wp.synchronize_stream(value);seen.add(id(value))
+                self.wp.synchronize_stream(value);seen.add(id(value))
 
 
     @staticmethod
@@ -206,7 +213,7 @@ class GpuObservationAdapter:
                 expected={"body_xmat":self.model.nbody*9,"geom_xpos":self.model.ngeom*3,"geom_xmat":self.model.ngeom*9,
                           "site_xmat":self.model.nsite*9,"subtree_com":self.model.nbody*3}[name]*self.nworld
                 field=fields[name]
-                if field.dtype!=scalar.wp_real or field.ndim!=1 or field.size!=expected or field.device!=self.raw_packer.buffer.device:
+                if field.dtype!=self._scalar or field.ndim!=1 or field.size!=expected or field.device!=self.raw_packer.buffer.device:
                     raise ValueError(f"invalid camera scene field: {name}")
         self.valid=False
         try:
@@ -234,8 +241,8 @@ class GpuObservationAdapter:
         if stream is not None and getattr(stream,'is_capturing',False):return
         self._record_sample_event(timestep,force)
         if self._pending_renderers:
-            if stream is not None:wp.synchronize_stream(stream)
-            elif self.raw_packer.buffer.device.is_cuda:wp.synchronize_stream(wp.get_stream(self.device))
+            if stream is not None:self.wp.synchronize_stream(stream)
+            elif self.raw_packer.buffer.device.is_cuda:self.wp.synchronize_stream(self.wp.get_stream(self.device))
             for world in tuple(self._pending_renderers):
                 env=self.host_environments[world]
                 # The original optional renderer consumes current GPU facade
@@ -243,8 +250,8 @@ class GpuObservationAdapter:
                 self.initialize_renderer(world)
                 self._pending_renderers.discard(world)
         if self.host_observables:
-            if stream is not None:wp.synchronize_stream(stream)
-            elif self.raw_packer.buffer.device.is_cuda:wp.synchronize_stream(wp.get_stream(self.device))
+            if stream is not None:self.wp.synchronize_stream(stream)
+            elif self.raw_packer.buffer.device.is_cuda:self.wp.synchronize_stream(self.wp.get_stream(self.device))
             selected=np.ones(self.nworld,dtype=np.int32) if world_mask is None else world_mask.numpy()
             for world,compat in self.host_observables.items():
                 if selected[world]:compat.update(float(timestep),force=bool(force))
@@ -273,13 +280,13 @@ class GpuObservationAdapter:
         if self.host_observables:
             return [self.observations(w, image_convention) for w in worlds]
         if self.lowdim.last_stream is not None:
-            wp.synchronize_stream(self.lowdim.last_stream)
+            self.wp.synchronize_stream(self.lowdim.last_stream)
         values = self.lowdim.observed.numpy().reshape(self.nworld, -1)
         scene = self.scene_cache
         snapshot = None
         if scene is not None:
             if scene.last_stream is not None:
-                wp.synchronize_stream(scene.last_stream)
+                self.wp.synchronize_stream(scene.last_stream)
             snapshot = (scene.generation.numpy().reshape(self.nworld, scene.ncamera),
                         scene.scenes.numpy().reshape(self.nworld, scene.ncamera, scene.stride),
                         scene.parent_generation.numpy().reshape(self.nworld, scene.ncamera))
@@ -315,17 +322,17 @@ class GpuObservationAdapter:
         for name,shape in shapes.items():
             if name not in fields:raise KeyError("missing published render field: "+name)
             value=fields[name]
-            if (value.dtype!=scalar.wp_real or value.ndim!=1 or value.size!=self.nworld*int(np.prod(shape))
+            if (value.dtype!=self._scalar or value.ndim!=1 or value.size!=self.nworld*int(np.prod(shape))
                     or value.device!=self.raw_packer.buffer.device):
                 raise ValueError("invalid published render device field: "+name)
-        if self.scene_transforms is None:self.scene_transforms=DeviceSceneTransforms(self.model,self.nworld,self.device)
+        if self.scene_transforms is None:self.scene_transforms=self._scene_transform_type(self.model,self.nworld,self.device)
         fields.update(self.scene_transforms.update(fields["body_xpos"],fields["body_xmat"],stream=stream))
         shapes.update({"cam_xpos":(int(self.model.ncam),3),"cam_xmat":(int(self.model.ncam),9),
                        "light_xpos":(int(self.model.nlight),3),"light_xdir":(int(self.model.nlight),3)})
         fields.update(self.visual_sources)
         shapes.update({name:tuple(getattr(self.model,name).shape) for name in self.visual_sources})
-        if stream is not None:wp.synchronize_stream(stream)
-        elif self.raw_packer.buffer.device.is_cuda:wp.synchronize_stream(wp.get_stream(self.device))
+        if stream is not None:self.wp.synchronize_stream(stream)
+        elif self.raw_packer.buffer.device.is_cuda:self.wp.synchronize_stream(self.wp.get_stream(self.device))
         snapshot={name:fields[name].numpy().reshape((self.nworld,)+shape)[world].copy()
                   for name,shape in shapes.items()}
         return self.render(snapshot,width,height,camera_name,depth,segmentation)
@@ -369,9 +376,9 @@ class GpuObservationAdapter:
             prepared[name]=value.astype(np.float64).reshape(-1).copy()
         self.valid=False
         for name,value in prepared.items():
-            with (wp.ScopedStream(stream) if stream is not None else nullcontext()):
-                data=wp.array(value,dtype=scalar.wp_real,device=self.device)
-            wp.copy(self.visual_sources[name],data,dest_offset=world*data.size,count=data.size,stream=stream)
+            with (self.wp.ScopedStream(stream) if stream is not None else nullcontext()):
+                data=self.wp.array(value,dtype=self._scalar,device=self.device)
+            self.wp.copy(self.visual_sources[name],data,dest_offset=world*data.size,count=data.size,stream=stream)
         self.valid=True
         self.visual_generation+=1
     def snapshot_continuation(self,stream=None):
@@ -486,17 +493,17 @@ class GpuObservationAdapter:
         for name,size in (("body_xpos",self.model.nbody*3),("body_xmat",self.model.nbody*9)):
             if name not in fields:raise KeyError("missing published scene field: "+name)
             value=fields[name]
-            if value.dtype!=scalar.wp_real or value.ndim!=1 or value.size!=self.nworld*size or value.device!=self.raw_packer.buffer.device:
+            if value.dtype!=self._scalar or value.ndim!=1 or value.size!=self.nworld*size or value.device!=self.raw_packer.buffer.device:
                 raise ValueError("invalid published scene field: "+name)
-        if self.scene_transforms is None:self.scene_transforms=DeviceSceneTransforms(self.model,self.nworld,self.device)
+        if self.scene_transforms is None:self.scene_transforms=self._scene_transform_type(self.model,self.nworld,self.device)
         trans=self.scene_transforms
         subtree=fields.get("subtree_com")
-        if trans.host_camlight and (subtree is None or subtree.dtype!=scalar.wp_real or subtree.ndim!=1
+        if trans.host_camlight and (subtree is None or subtree.dtype!=self._scalar or subtree.ndim!=1
                 or subtree.size!=self.nworld*self.model.nbody*3 or subtree.device!=self.raw_packer.buffer.device):
             raise ValueError("tracking cameras/lights require published subtree_com")
         outputs=trans.update(fields["body_xpos"],fields["body_xmat"],stream=stream)
-        if stream is not None:wp.synchronize_stream(stream)
-        elif self.raw_packer.buffer.device.is_cuda:wp.synchronize_stream(wp.get_stream(self.device))
+        if stream is not None:self.wp.synchronize_stream(stream)
+        elif self.raw_packer.buffer.device.is_cuda:self.wp.synchronize_stream(self.wp.get_stream(self.device))
         if not trans.host_camlight:
             return {name:outputs[name].numpy().reshape((self.nworld,)+shapes[name])[world].copy() for name in names}
         import mujoco
@@ -521,7 +528,7 @@ class GpuObservationAdapter:
                 # Capture existing clocks and held values before constructing the
                 # custom extension objects, so a modifier does not reset unrelated
                 # original observables or change an in-flight sampling period.
-                if self.lowdim.last_stream is not None:wp.synchronize_stream(self.lowdim.last_stream)
+                if self.lowdim.last_stream is not None:self.wp.synchronize_stream(self.lowdim.last_stream)
                 values=self.lowdim.observed.numpy().reshape(self.nworld,-1)[world]
                 cached=self.lowdim.cache.numpy().reshape(self.nworld,-1)[world]
                 elapsed=self.lowdim.elapsed.numpy().reshape(self.nworld,-1)[world]
@@ -613,10 +620,10 @@ class GpuObservationAdapter:
         images=tuple(dict(s,**change) if s["name"]==name else s for s in self.plan.image_specs)
         new_plan=replace(self.plan,specs=specs,image_specs=images)
         self._synchronize_sampling(stream)
-        write_stream=stream or self.lowdim.last_stream or wp.get_stream(self.device)
+        write_stream=stream or self.lowdim.last_stream or self.wp.get_stream(self.device)
         self.valid=False
         try:
-            with wp.ScopedStream(write_stream):
+            with self.wp.ScopedStream(write_stream):
                 self.lowdim.meta[9].assign(np.asarray([int(s.enabled) for s in specs],dtype=np.int32))
                 self.lowdim.meta[10].assign(np.asarray([s.period for s in specs],dtype=np.float64))
                 if self.scene_cache is not None:

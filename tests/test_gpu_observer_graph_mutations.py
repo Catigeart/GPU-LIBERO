@@ -97,6 +97,8 @@ class Mutations(unittest.TestCase):
 
     def adapter(self,worlds=2,images=False):
         ob=self.cls.__new__(self.cls)
+        ob.wp=self.wp
+        ob._scalar=np.float64
         spec=SCHEMA['ObservableSpec']
         image=({'name':'camera_image','shape':(1,1,3),'period':.05,'enabled':True,'active':True},) if images else ()
         ob.plan=SCHEMA['ObservationPlan']((spec('first','proprio','qpos',1,indices=(0,)),

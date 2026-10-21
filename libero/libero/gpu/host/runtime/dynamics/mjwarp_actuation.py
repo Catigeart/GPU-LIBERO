@@ -7,7 +7,8 @@ from .mjwarp_motion import source_id,load_leaf,bind_array,reject_output_overlap
 def qualify(model,data):
     """Cold enum/index admission only; never cache numerical parameter values."""
     import numpy as np
-    from mujoco_warp._src import types
+    from libero.gpu.host.runtime.cuda_api import type_api
+    types = type_api(model)
     reason=None;values={}
     if model.opt.integrator!=types.IntegratorType.EULER:reason='actuation caller requires Euler'
     elif model.opt.enableflags & types.EnableBit.SLEEP:reason='active-body compaction'
@@ -50,8 +51,10 @@ class ActuationInputs(ct.Structure):
 class ActuatorForces:
     def __init__(self,model,data,library,stream,*,admission=None,control=None):
         import numpy as np
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         admission=qualify(model,data) if admission is None else admission
         if admission['model']!=id(model) or admission['data']!=id(data):raise ValueError('Actuation admission owner differs')
         if admission['reason']:raise ValueError('Unsupported CUDA actuation: '+admission['reason'])

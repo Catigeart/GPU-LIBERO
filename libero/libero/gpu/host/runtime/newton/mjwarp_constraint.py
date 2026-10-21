@@ -25,7 +25,8 @@ class ConstraintPlan:
     """Admit the product before capture, then bind existing per-solve arrays."""
 
     def __init__(self, model, data, library, stream):
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         if (model.is_sparse or model.opt.cone != types.ConeType.ELLIPTIC or
                 model.opt.solver != types.SolverType.NEWTON or
@@ -56,8 +57,10 @@ class DenseConstraint:
     """Metadata/pointers only; no capture-time allocation or data transfer."""
 
     def __init__(self, plan, context):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(plan.model)
         self.plan = plan
         m, d, s = plan.model, plan.data, plan.stream
         n, nv, pad, rows, cap = int(d.nworld), int(m.nv), int(m.nv_pad), int(d.njmax), int(d.naconmax)

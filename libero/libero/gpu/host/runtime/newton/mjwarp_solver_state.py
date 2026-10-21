@@ -28,7 +28,8 @@ class SolverStatePlan:
     """Qualify the binary outside capture; numerical arrays stay device resident."""
 
     def __init__(self,model,data,library,stream):
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(model)
         from libero.gpu.host.build.compilation import MissingCompiledProduct
         if (model.is_sparse or model.opt.cone!=types.ConeType.ELLIPTIC or
                 model.opt.solver!=types.SolverType.NEWTON or
@@ -59,8 +60,10 @@ class DenseSolverState:
     """Host pointer descriptions only, retaining per-solve and shared data owners."""
 
     def __init__(self,plan,context):
-        import warp as wp
-        from mujoco_warp._src import types
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(plan.stream)
+        from libero.gpu.host.runtime.cuda_api import type_api
+        types = type_api(plan.model)
         if getattr(context,'compact_d_full',None) is not None:
             raise ValueError('compact contexts are outside the solver state domain')
         self.plan=plan
@@ -102,7 +105,8 @@ class DenseSolverState:
         self.stop_launch.argtypes=[ct.POINTER(StopInputs),ct.c_void_p];self.stop_launch.restype=ct.c_int
 
     def bind_stopping(self,nsolving):
-        import warp as wp
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp = array_api(self.stream)
         if nsolving.device!=self.stream.device or not nsolving.is_contiguous or (
                 nsolving.dtype!=wp.int32 or tuple(nsolving.shape)!=(1,)):
             raise ValueError('Solver state conditional counter layout differs')

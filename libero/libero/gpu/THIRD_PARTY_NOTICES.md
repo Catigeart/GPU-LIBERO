@@ -145,3 +145,139 @@ clamping follows Warp1.18 native fmin/fmax semantics; no generated Warp CUDA is
 included and the installed packages are unmodified. Installed CPU MuJoCo2.3.7
 `mj_transmission`, `mj_fwdActuation` and `mju_mulMatTVec` supply independent
 frozen-input validation oracles.
+
+
+`cuda/dynamics/mjwarp_euler.cu` adapts pinned MJWarp `forward.py`'s
+`_compute_damping_deriv`, `_euler_damp_qfrc`, `_next_velocity`, `_next_position`
+and `math.py::quat_integrate`/`mul_quat` (Copyright 2025 The Newton Developers,
+Apache-2.0). Vector/quaternion normalization retains Warp1.18 native vec/quat
+semantics (NVIDIA CORPORATION & AFFILIATES, Apache-2.0). The activation prefix
+and history/time/overflow/warmstart publication tail of `_advance` are retained
+in `host/backends/mjwarp/euler_other.py`, dispatching unmodified installed kernels.
+`euler.py` reuses the previously admitted factor/solve or upstream equivalent.
+No generated Warp CUDA is included and installed packages are unmodified.
+CPU MuJoCo2.3.7 `mju_quatIntegrate` is an independent local validation oracle.
+
+
+`cuda/dynamics/mjwarp_transmission.cu` adapts pinned MJWarp
+`smooth.py::_transmission`'s SLIDE/HINGE JOINT/JOINTINPARENT branch and
+`forward.py::_actuator_velocity` (Copyright 2025 The Newton Developers,
+Apache-2.0). The host wrapper retains the original stage boundaries and
+per-world atomic CSR allocation, with one persistent zeroed integer counter
+instead of a per-call allocation. No generated Warp CUDA or native header is
+included; installed packages remain unmodified. CPU MuJoCo2.3.7
+`mj_transmission` and `mju_mulMatVec` supply independent local oracles.
+
+
+`cuda/dynamics/mjwarp_kinematics.cu` adapts pinned MJWarp
+`smooth.py::_kinematics_branch`, `_compute_body_matrices`,
+`_compute_body_inertial_frames`, `_geom_local_to_global`, `_site_local_to_global`
+and `math.py` quaternion/vector/frame functions (Copyright 2025 The Newton
+Developers, Apache-2.0). Normalization retains Warp1.18 native quat semantics
+(NVIDIA CORPORATION & AFFILIATES, Apache-2.0). Branch-private parent poses and
+existing unique owner publication avoid cross-thread parent dependencies.
+The host retains com_pos/camera/flex/tendon scheduling; installed packages are
+unmodified and no generated Warp source/native header is included. CPU
+MuJoCo2.3.7 mj_kinematics provides a common unit-quaternion-domain oracle.
+
+`cuda/dynamics/mjwarp_com_pos.cu` adapts the pinned MJWarp
+`smooth.py::_subtree_com_init`, `_subtree_com_acc`, `_subtree_div`, `_cinert`
+and `_cdof` algorithms. Copyright 2025 The Newton Developers, Apache-2.0.
+The independent validation uses CPU MuJoCo2.3.7 `mj_comPos`, `mju_inertCom` and
+`mju_dofCom` as mathematical references; CPU's zero-mass/world conventions do
+not replace pinned MJWarp behavior. The upstream source pin and Apache license
+above apply.
+
+`cuda/dynamics/mjwarp_camlight.cu` adapts the FIXED branches of pinned MJWarp
+`smooth.py::_cam_local_to_global` and `_light_local_to_global`, including its
+quaternion formulas and Warp1.18 vec3 normalization semantics. Copyright 2025
+The Newton Developers, Apache-2.0. CPU MuJoCo2.3.7 `mj_camlight` and
+`mj_local2Global` are independent common-domain mathematical references.
+The upstream source pin and Apache license above apply.
+
+`cuda/dynamics/mjwarp_fluid.cu` adapts pinned MJWarp
+`passive.py::_fluid_force` (inertia-box branch) and `support.py::_apply_ft(False)`.
+Copyright 2025 The Newton Developers, Apache-2.0. CPU MuJoCo2.3.7
+`mj_inertiaBoxFluidModel`, `mj_objectVelocity` and `mj_applyFT` supply independent
+mathematical references. Ellipsoid fluid remains upstream. The source pin and
+Apache license above apply.
+
+`cuda/dynamics/mjwarp_external_wrench.cu` adapts pinned MJWarp
+`smooth.py::_cfrc_ext`, `_cfrc_ext_contact` and
+`support.py::contact_force_fn`, `_decode_pyramid`, `transform_force`.
+Copyright 2025 The Newton Developers, Apache-2.0. FP32 component atomic
+accumulation and net adhesive force follow the pinned implementation.
+CPU MuJoCo2.3.7 mj_contactForce/mj_rnePostConstraint supply independent
+common-domain references. Installed dependencies remain unmodified. The source
+pin and Apache license above apply.
+
+`cuda/dynamics/mjwarp_constraint_build.cu` adapts pinned MJWarp constraint.py
+rigid dense counter, DOF-friction, scalar-limit, contact row allocation,
+Jacobian and impedance/reference algorithms plus support.py Jacobian helpers.
+Copyright 2025 The Newton Developers, Apache-2.0. CPU MuJoCo2.3.7
+mj_makeConstraint/mj_referenceConstraint provide independent common-domain
+mathematical references; pinned version differences are retained. Installed
+upstream files remain unchanged. The source pin and Apache license above apply.
+
+`cuda/collision/mjwarp_broadphase.cu` adapts pinned MJWarp collision_driver.py
+NXN pair traversal, plane/sphere/AABB/six-axis OBB filters and pooled pair append.
+Copyright2025 The Newton Developers, Apache-2.0. CPU MuJoCo2.3.7 collision-driver
+sphere/plane logic and actual exported mj_collideOBB provide independent
+common-domain references. The original six-axis predicate and eight-corner
+operation form are retained. Imported prefiltered tables remain model
+infrastructure; installed upstream files are unchanged. The source pin and
+Apache license above apply.
+
+`cuda/collision/mjwarp_plane.cu` adapts pinned MJWarp collision_primitive.py
+and collision_primitive_core.py plane-sphere/capsule/ellipsoid/cylinder/box/mesh
+geometry and polygon-support algorithms. `mjwarp_contact.cuh` adapts
+collision_core.py contact parameter mixing and pooled publication, and math.py
+frame helpers. Copyright2025 The Newton Developers, Apache-2.0. Independent
+common-domain geometry checks call actual CPU MuJoCo2.3.7 mj_collision. Pinned
+mesh manifolds, degenerate-cylinder fallback and direct-reference priority
+differences are preserved rather than replaced by older semantics. Installed
+upstream files remain unmodified; the source pin and Apache license above apply.
+
+`cuda/collision/mjwarp_box.cu` adapts pinned MJWarp
+collision_primitive_core.py::sphere_box, capsule_box, box_box and clipping.
+Copyright2025 The Newton Developers, Apache-2.0. Capsule/box algorithms derive
+from MuJoCo engine_collision_box.c, Copyright2016 Svetoslav Kolev, Apache-2.0.
+The preserved operation order, modern inside-box signed distance and box face
+preference follow the pinned GPU version. CPU2.3.7 source/runtime checks provide
+an independent common-domain reference, with known inherited face-crossing
+limitations explicitly recorded. Shared contact helpers retain the notices
+above; installed upstream packages remain unchanged.
+
+`cuda/collision/mjwarp_convex_geometry.cuh` adapts pinned MJWarp
+collision_gjk.py::support and uses the shared frame/vector operations noted
+above. Copyright2025 The Newton Developers, Apache-2.0. CPU2.3.7
+engine_collision_convex.c support logic and actual public plane collision
+minimum-projection checks supply independent common-domain references. Pinned
+sphere/non-sphere margin, cylinder-cap-at-zero and mesh cache conventions are
+preserved. The same support helpers are used by the maintained production
+convex collision caller and independent function probes. Installed upstream
+files are unchanged.
+
+`cuda/collision/mjwarp_convex_simplex.cuh` adapts pinned
+collision_gjk.py::_S1D, _S2D, _S3D, _subdistance, projections and linear
+combination. Copyright2025 The Newton Developers, Apache-2.0. Triangle
+determinants are algebraically translated before products to reduce FP32
+cancellation, retaining signed-volume face selection and GJK vertex ordering.
+CPU2.3.7 uses MPR rather than this newer GJK subalgorithm; independent FP64
+convex-QP/KKT checks supply mathematical validation without claiming a matching
+CPU engine function. The source pin/license above apply.
+
+## Independent FP32 ownership and preprocessing
+
+`host/backends/cuda_fp32/model.py`, `data.py`, `layout_specs.py`, `constants.py`
+and `physics.py` adapt the pinned MJWarp `io.py`, `types.py`, `solver.py` and
+rigid forward schedule. Copyright 2025 The Newton Developers, Apache-2.0;
+that license and attribution remain applicable after removing the framework.
+The enum/layout declarations are maintained source, not runtime-generated Warp
+code. `device.py` and `cuda/runtime/runtime.cu` implement independent CUDA
+resource ownership; `observations.py` and `cuda/runtime/bridges.cu` preserve
+LIBERO/robosuite observation, controller transport and sampling semantics.
+The existing mathematical CUDA leaves and their individual notices above are
+shared, rather than replaced by a second implementation. Neither external Warp
+package is required by the independent backend. CPU MuJoCo model compilation
+and OpenGL rendering remain external dependencies.
