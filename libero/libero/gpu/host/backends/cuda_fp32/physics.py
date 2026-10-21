@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from . import device as cuda, constants as types
 from .data import newton_workspace
 from .fused_tail import FusedAdvance
+from .fused_position import FusedCenteredMass
 from libero.gpu.host.runtime.dynamics import (
     mjwarp_motion as motion,mjwarp_kinematics as kinematics,mjwarp_com_pos as com_pos,
     mjwarp_camlight as camlight,mjwarp_mass_matrix as mass_matrix,mjwarp_mass_factor as mass_factor,
@@ -92,6 +93,7 @@ class Physics:
         self.camlight=camlight.CamLightFrames(m,d,products('camlight'),stream,admission=camlight.qualify(m,d,implementation='cuda'))
         self.matrix=mass_matrix.MassMatrix(m,d,products('mass_matrix'),stream)
         self.matrix.prepare_fusion(top)
+        self.centered_mass=FusedCenteredMass(self.com_pos,self.matrix,products.folder/'fp32_fused_position.so')
         self.factor_plan=mass_factor.MassFactorPlan(m,d,products('mass_factor'),stream)
         self.factor=self.factor_plan.bind(d.M,d.qLD,d.qLDiagInv)
         self.public_solve=self.factor_plan.bind(d.M,d.qLD,d.qLDiagInv,d.qacc_smooth,d.qfrc_smooth)
@@ -124,7 +126,7 @@ class Physics:
 
     def position(self,factorize=True):
         self.kinematics.enqueue_fused()
-        self.com_pos.enqueue_fused();self.camlight.enqueue();self.matrix.enqueue_fused()
+        self.centered_mass.enqueue();self.camlight.enqueue()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue();self.transmission.enqueue(0)

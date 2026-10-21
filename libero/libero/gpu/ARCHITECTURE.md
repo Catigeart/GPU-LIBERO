@@ -215,3 +215,20 @@ have an explicit initialization barrier. The source retains the original
 component leaves. Flat-entry product staging was correct, but matched-width
 controls did not establish a general gain; its extra metadata and barriers were
 removed from the maintained path.
+
+The independent default now joins those two accepted stages through
+`Physics.position -> FusedCenteredMass.enqueue -> centered_mass<128>` in
+`cuda/fp32/fused_position.cu`. Its continuous CUDA body constructs weighted
+centers, centered tensors and motion axes, composite tensors, and CSR mass rows.
+A cold topology proof admits direct interval sums only for preorder trees with
+at most 64 bodies and at most 1024 total descendant visits. All 130 shipped task
+trees satisfy this domain (maximum 38 bodies and 211 visits). This trades a small,
+bounded amount of redundant arithmetic for fewer dependent tree barriers.
+Non-preorder, deeper or larger trees retain staged child gathering. The same
+fixed 2560-byte shared buffer holds weighted centers and composite tensors in
+disjoint lifetimes; larger trees use global storage. Only immutable subtree
+lengths are retained on device; every invocation reads current physical inputs.
+Camera/light frames depend on body poses only in the admitted FIXED domain and
+follow the combined mass stage. The separately callable centered/mass kernels
+remain available for component users and comparison. This qualification covers
+local endpoints and regional timing, without a new full-task throughput claim.

@@ -1,3 +1,4 @@
 # Each region keeps its own source admission and incremental compilation unit.
 include("${CMAKE_CURRENT_LIST_DIR}/FP32Tail.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/FP32Observations.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/FP32Position.cmake")

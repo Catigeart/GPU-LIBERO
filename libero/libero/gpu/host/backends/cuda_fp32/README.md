@@ -161,3 +161,15 @@ parameters without shared numerical storage or a world-wide barrier. The cold
 CSR groups immutable attachment indices by canonical branch owner. Component
 leaves remain callable; intermediate trial fusions are retained in Git history,
 not the runtime. Evidence is region-only N=2 endpoints and local graph timings.
+
+### Fused centered frames and mass
+
+`Physics.position` calls `FusedCenteredMass` from `fused_position.py`. The
+independent `flash_fp32_fused_position` target compiles
+`cuda/fp32/fused_position.cu::centered_mass`: centers -> inertia/motion axes ->
+composite inertia -> CSR mass assembly. Validated small preorder trees use
+bounded direct subtree sums to remove depth barriers; other domains keep staged
+child gathering. Shared storage is capped at 2560 bytes and reused by lifetime,
+with a global-storage fallback for larger trees. Immutable intervals share the
+existing topology owner; no physical values persist as a cache. The original
+CoM/mass component entries remain callable.

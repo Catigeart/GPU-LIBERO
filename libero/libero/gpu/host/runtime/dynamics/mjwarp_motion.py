@@ -129,6 +129,7 @@ class ResidentTree:
         from libero.gpu.host.runtime.cuda_api import array_api
         wp=array_api(stream)
         self.model,self.data,self.stream=model,data,stream
+        self.host_parent=parent
         self.levels=len(layers);self.max_width=max(len(a) for a in layers)
         values=dict(bodies=np.concatenate(layers),starts=np.r_[0,np.cumsum([len(a) for a in layers])],
             child_start=np.r_[0,np.cumsum(np.bincount(parent[1:],minlength=len(parent)))],
@@ -137,7 +138,25 @@ class ResidentTree:
 
     @property
     def nbytes(self):
-        return sum(getattr(self,k).capacity for k in ('bodies','starts','child_start','child_id'))
+        return (sum(getattr(self,k).capacity for k in ('bodies','starts','child_start','child_id'))
+                + (self.interval_size.capacity if getattr(self,'interval_size',None) is not None else 0))
+
+    def prepare_intervals(self):
+        """Bound direct subtree work; non-preorder or large trees stay staged."""
+        if hasattr(self,'interval_size'):return self.interval_size
+        import numpy as np
+        from libero.gpu.host.runtime.cuda_api import array_api
+        parent=self.host_parent;nb=len(parent);size=np.ones(nb,np.int64)
+        for b in range(nb-1,0,-1):size[parent[b]]+=size[b]
+        # Nested child intervals plus the exact descendant counts prove that
+        # each subtree occupies [body, body+size), rather than assuming preorder.
+        preorder=np.all(np.arange(1,nb)+size[1:]<=parent[1:]+size[parent[1:]])
+        self.interval_work=int(size.sum())
+        self.interval_size=None
+        if nb<=64 and self.interval_work<=1024 and preorder:
+            wp=array_api(self.stream)
+            self.interval_size=wp.array(size.astype(np.int32),dtype=wp.int32,device=self.stream.device)
+        return self.interval_size
 
 
 class MotionTopology:
