@@ -26,7 +26,8 @@ class Bridges:
         from libero.gpu.host.paths import GPU_ROOT
         self.path=Path(path);self.stream=stream;self.library=ct.CDLL(str(self.path))
         self.library.flash_bridge_source_id.restype=ct.c_char_p
-        expected=hashlib.sha256((GPU_ROOT/'cuda/runtime/bridges.cu').read_bytes()).hexdigest()
+        expected=hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/k).read_bytes()).hexdigest() for k in
+            ('cuda/runtime/bridges.cu','cuda/runtime/bridge_types.cuh','cmake/CudaBridges.cmake')).encode()).hexdigest()
         if self.library.flash_bridge_source_id().decode()!=expected:raise RuntimeError('Stale CUDA bridge product; rebuild offline')
         p=ct.c_void_p;i=ct.c_int
         signatures=dict(points=[i,i,i,p,p,p],gather=[ct.POINTER(Gather),p],scatter=[i,i,p,p,p,i,p],

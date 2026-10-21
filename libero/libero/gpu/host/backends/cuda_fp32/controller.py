@@ -6,6 +6,7 @@ import subprocess
 import numpy as np
 from . import device as cuda
 from .bridges import Bridges,Gather
+from .fused_control_prepare import FusedControlPrepare
 from libero.gpu.host.runtime.dynamics.mjwarp_queries import Jacobian
 
 from libero.gpu.host.build.compilation import MissingCompiledProduct
@@ -97,22 +98,21 @@ class Controller:
         self.bridge=Bridges(Path(library).parent/'cuda_bridges_fp32.so',stream)
         self.jacobian=Jacobian(model,data,self.points,self.body,self.jp,self.jr,Path(library).parent/'mjwarp_queries_fp32.so',stream)
         self.policy_values=[cuda.full(self.n,value,dtype=int,device=dev) for value in (0,1)]
+        self.preparation=FusedControlPrepare(self,Path(library).parent/'fp32_fused_control_prepare.so')
 
-    def gather(self):
-        self.bridge.call('points',self.n,self.model.nsite,self.site,self.data.site_xpos.ptr,self.points.ptr)
-        self.jacobian.enqueue()
-        args=Gather(worlds=self.n,site=self.site,nv=self.model.nv,nq=self.model.nq,nmass=self.model.nC,nsites=self.model.nsite,
+    def _gather_arguments(self):
+        return Gather(worlds=self.n,site=self.site,nv=self.model.nv,nq=self.model.nq,nmass=self.model.nC,nsites=self.model.nsite,
             qi=self.qi.ptr,vi=self.vi.ptr,mi=self.mi.ptr,qpos=self.data.qpos.ptr,qvel=self.data.qvel.ptr,
             bias=self.data.qfrc_bias.ptr,mass=self.data.M.ptr,jp=self.jp.ptr,jr=self.jr.ptr,
             position=self.data.site_xpos.ptr,rotation=self.data.site_xmat.ptr,
             **{k:self.buffers[v].ptr for k,v in [('out_mass','pm'),('out_jac','pj'),('out_q','pq'),('out_v','pv'),
                 ('out_bias','bias'),('out_pos','pp'),('out_rot','pr'),('out_vel','pe')]})
-        self.bridge.call('gather',ct.byref(args))
+
+    def gather(self,policy_source=None):
+        self.preparation.enqueue(policy_source)
 
     def enqueue(self,policy_step):
-        # Integer D2D copy is captured and refreshed at each replay.
-        cuda.copy(self.buffers['policy'],self.policy_values[int(policy_step)])
-        self.gather()
+        self.gather(self.policy_values[int(policy_step)])
         error=self.publish(self.args.ptr,self.n,self.ids.ptr,self.data.ctrl.ptr,self.model.nu,self.stream.cuda_stream)
         if error:raise RuntimeError('CUDA OSC launch failed: '+str(error))
 

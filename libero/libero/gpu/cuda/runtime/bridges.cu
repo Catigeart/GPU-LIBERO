@@ -1,17 +1,13 @@
 // Copyright 2026 Flash-LIBERO contributors
 // Readable CUDA implementations of the maintained control/observable bridges.
 // These are transport/sampling operations, not new physics stages.
+#include "bridge_types.cuh"
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cmath>
 
 namespace flash::bridge {
-struct Gather {
-  int worlds,site,nv,nq,nmass,nsites;
-  const int *qi,*vi,*mi;
-  const float *qpos,*qvel,*bias,*mass,*jp,*jr,*position,*rotation;
-  float *out_mass,*out_jac,*out_q,*out_v,*out_bias,*out_pos,*out_rot,*out_vel;
-};
+
 struct Observe {
   int worlds,ns,width,stride;
   const int *op,*offset,*size,*index_offset,*indices,*dep0,*dep1,*dep2,*presence,*enabled;

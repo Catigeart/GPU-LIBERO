@@ -74,7 +74,7 @@ GpuBatchEnv -> CudaFP32BatchEnv                       environment.py
         kinematics/COM/cameras/mass/collision/constraints/transmission
         velocity/bias -> passive/gravity/fluid
       Controller.enqueue                             controller.py, bridges.py
-        gather -> shared CUDA OSC -> scatter
+        fused point/Jacobian/gather -> CUDA OSC + actuator publication
       Physics.step2                                  physics.py
         actuation -> smooth force -> mass solve
         Newton.solve -> device conditional WHILE
@@ -234,3 +234,15 @@ the controller buffer through current actuator IDs after the maintained solver
 returns. Its existing publication barrier suffices; inactive/error holds remain
 unchanged. No OSC mathematics or common argument ABI changes. The original
 controller launch and bridge scatter remain callable for component users.
+
+Controller input preparation has its own small compilation unit and source
+identity: `cuda/fp32/fused_control_prepare.cu::control_prepare`, target
+`flash_fp32_fused_control_prepare`. `Controller.gather` now dispatches one
+256-thread CTA per world: live policy/point publication -> full Jacobian ->
+selected OSC fields and full-DOF EE velocity. One block barrier orders query
+production before gathering; six warp reductions replace scalar full-NV dots.
+All public query outputs remain current, live GPU gather indices are read on
+each replay, and bootstrap holds policy when no source is supplied. No shared
+numerical allocation or NV size cap is added. The independent point, query and
+gather component APIs remain available. Qualification uses frozen query
+geometry plus seeded transport inputs, not complete task trajectories.
