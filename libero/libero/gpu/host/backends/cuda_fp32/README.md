@@ -227,3 +227,10 @@ gravity and fluid forces. The fluid workspace is private, and those later stages
 write distinct qfrc outputs, preserving public state. Selected configuration is
 512 threads, 40 registers and three block barriers; original component APIs
 remain available. Tests and timing cover only this region at N=2 and N=128.
+
+OSC output publication now shares its existing kernel:
+`Controller.enqueue -> mjwarp_controller.cu::control<true>`. Nine lanes scatter
+the controller buffer through current actuator IDs after the maintained solver
+returns. Its existing publication barrier suffices; inactive/error holds remain
+unchanged. No OSC mathematics or common argument ABI changes. The original
+controller launch and bridge scatter remain callable for component users.

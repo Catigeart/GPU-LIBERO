@@ -315,3 +315,14 @@ inputs/outputs. No application
 callback is inserted between these internal operations. Existing phase APIs
 remain callable. Evidence is regional N=2/N=128 endpoints and paired local
 timing under other GPU work, without a new complete-task result.
+
+`Controller.enqueue -> flash_mjwarp_controller_publish -> control<true>` in
+`cuda/control/mjwarp_controller.cu` appends the actual nine-actuator scatter to
+its existing OSC kernel. The maintained separately compiled OSC mathematics is
+unchanged. Normal torque publication already ends at its existing block
+barrier; inactive/error exits retain ctrl without a new write, so the scatter
+needs no additional barrier. Live actuator IDs, permutation, controller ctrl
+buffers and final Data.ctrl retain their contracts. Original launch/scatter
+entries remain available. Local OSC-plus-publication timing is neutral under
+shared GPU load; an address-prefetch trial did not establish a useful gain and
+was removed. No complete-task result is implied.

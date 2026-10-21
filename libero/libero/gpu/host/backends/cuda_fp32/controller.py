@@ -91,6 +91,9 @@ class Controller:
         self.launch = self.library.flash_mjwarp_controller_launch
         self.launch.argtypes = [ct.c_void_p, ct.c_int, ct.c_void_p]
         self.launch.restype = ct.c_int
+        self.publish=self.library.flash_mjwarp_controller_publish
+        self.publish.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p]
+        self.publish.restype=ct.c_int
         self.bridge=Bridges(Path(library).parent/'cuda_bridges_fp32.so',stream)
         self.jacobian=Jacobian(model,data,self.points,self.body,self.jp,self.jr,Path(library).parent/'mjwarp_queries_fp32.so',stream)
         self.policy_values=[cuda.full(self.n,value,dtype=int,device=dev) for value in (0,1)]
@@ -110,9 +113,8 @@ class Controller:
         # Integer D2D copy is captured and refreshed at each replay.
         cuda.copy(self.buffers['policy'],self.policy_values[int(policy_step)])
         self.gather()
-        error=self.launch(self.args.ptr,self.n,self.stream.cuda_stream)
+        error=self.publish(self.args.ptr,self.n,self.ids.ptr,self.data.ctrl.ptr,self.model.nu,self.stream.cuda_stream)
         if error:raise RuntimeError('CUDA OSC launch failed: '+str(error))
-        self.bridge.call('scatter',self.n,9,self.ids.ptr,self.buffers['ctrl'].ptr,self.data.ctrl.ptr,self.model.nu)
 
     def bootstrap(self,mask):
         self.gather()
