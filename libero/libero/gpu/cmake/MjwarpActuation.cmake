@@ -1,6 +1,6 @@
 # Independent optional stateless actuation, CSR projection and joint limits.
 set(mjwarp_actuation_sources "${FLASH_GPU}/cuda/dynamics/mjwarp_actuation.cu"
-  "${FLASH_GPU}/cuda/dynamics/mjwarp_actuation.cuh" "${CMAKE_CURRENT_LIST_FILE}")
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_actuation.cuh" "${FLASH_GPU}/cuda/dynamics/mjwarp_smooth_force.cuh" "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_actuation_sources})
 set(actuation_hashes)
 foreach(source IN LISTS mjwarp_actuation_sources)

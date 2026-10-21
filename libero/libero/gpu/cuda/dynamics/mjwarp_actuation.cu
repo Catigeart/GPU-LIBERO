@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Pinned forward.py stateless fixed/affine scalar-joint actuation path.
 #include "mjwarp_actuation.cuh"
+#include "mjwarp_smooth_force.cuh"
 #include <cmath>
 #ifndef FLASH_MJW_ACTUATION_SOURCE_ID
 #error "Build through flash_mjwarp_actuation_fp32"
@@ -56,9 +57,19 @@ __global__ void gravcomp_limits(ActuationInputs a) {
 }
 // One CTA owns a whole world. Force production and zeroing are independent;
 // the two barriers replace the original completion boundaries around CSR adds.
-template<int Threads>
-__global__ void world_actuation(ActuationInputs a) {
+template<int Threads,bool Compose=false,bool Masked=false>
+__global__ void world_actuation(ActuationInputs a,SmoothForceInputs s) {
   const int w=blockIdx.x,x=threadIdx.x;
+  __shared__ unsigned present[Masked ? 4 : 1];
+  if constexpr (Masked) {
+    bool active=false;
+    if(x<s.bodies) {
+      const float* ft=s.external+6*(w*s.bodies+x);
+      active=ft[0]!=0 || ft[1]!=0 || ft[2]!=0 || ft[3]!=0 || ft[4]!=0 || ft[5]!=0;
+    }
+    const unsigned word=__ballot_sync(0xffffffffu,active);
+    if(!(x%32)) present[x/32]=word;
+  }
   for (int d=x;d<a.nv;d+=Threads) a.qfrc[w*a.nv+d]=0.f;
   for (int u=x;u<a.actuators;u+=Threads) {
     const int t=w*a.actuators+u;
@@ -94,6 +105,35 @@ __global__ void world_actuation(ActuationInputs a) {
     if (a.gravity_enabled && a.actgravcomp[j]) force+=a.gravcomp[t];
     if (a.jointlimited[j]) force=clip(force,a.jointrange+((w%a.jointrange_rows)*a.joints+j)*2);
     a.qfrc[t]=force;
+    if constexpr (Compose) {
+      // The current DOF owns both publications; no force reload or barrier.
+      float value=s.passive[w*s.vector_stride+d]-s.bias[w*s.vector_stride+d]+force+s.applied[w*s.vector_stride+d];
+      float sum=0.f;
+      const bool any=Masked ? bool(present[0]|present[1]|present[2]|present[3]) : true;
+      if(any) {
+        const float* cd = s.cdof + (w * s.nv + d) * 6;
+        // cd is (angular, linear); applied wrench is (force, torque), in world axes.
+        float jac[6] = {cd[3], cd[4], cd[5], cd[0], cd[1], cd[2]};
+        int body = s.dof_body[d];
+        const float* com = s.subtree_com + (w * s.bodies + s.body_root[body]) * 3;
+        // Model's depth-first order makes each subtree a contiguous body interval.
+        for (int b = body; b < body + s.subtree_size[body]; ++b) {
+          const float* ft = s.external + (w * s.bodies + b) * 6;
+          if constexpr (Masked) {if (!(present[b/32] & (1u<<(b%32)))) continue;}
+          else if (ft[0] == 0 && ft[1] == 0 && ft[2] == 0 && ft[3] == 0 && ft[4] == 0 && ft[5] == 0) continue;
+          const float* point = s.body_com + (w * s.bodies + b) * 3;
+          float dx = point[0] - com[0], dy = point[1] - com[1], dz = point[2] - com[2];
+          float cx = cd[1] * dz - cd[2] * dy;
+          float cy = cd[2] * dx - cd[0] * dz;
+          float cz = cd[0] * dy - cd[1] * dx;
+          float dot6 = 0.0f;
+          for (int k = 0; k < 6; ++k) dot6 += jac[k] * ft[k];
+          float dot3 = cx * ft[0] + cy * ft[1] + cz * ft[2];
+          sum += dot6 + dot3;
+        }
+      }
+      s.smooth[w*s.vector_stride+d]=value+sum;
+    }
   }
 }
 
@@ -118,7 +158,19 @@ int flash_mjwarp_actuation_fused(const flash::mjwarp::ActuationInputs* a,cudaStr
   if (!a || a->worlds<1 || a->nv<1 || a->controls<1 || a->actuators<1 || a->joints<1 || a->moments<1 ||
       a->gain_rows<1 || a->bias_rows<1 || a->ctrlrange_rows<1 || a->forcerange_rows<1 || a->jointrange_rows<1)
     return cudaErrorInvalidValue;
-  flash::mjwarp::world_actuation<128><<<a->worlds,128,0,stream>>>(*a);
+  flash::mjwarp::world_actuation<128><<<a->worlds,128,0,stream>>>(*a,{});
+  return cudaGetLastError();
+}
+
+std::size_t flash_mjwarp_actuation_smooth_bytes() { return sizeof(flash::mjwarp::SmoothForceInputs); }
+int flash_mjwarp_actuation_smooth(const flash::mjwarp::ActuationInputs* a,
+                                const flash::mjwarp::SmoothForceInputs* s,cudaStream_t stream) {
+  if (!a || !s || a->worlds<1 || a->nv<1 || a->controls<1 || a->actuators<1 || a->joints<1 || a->moments<1 ||
+      a->gain_rows<1 || a->bias_rows<1 || a->ctrlrange_rows<1 || a->forcerange_rows<1 || a->jointrange_rows<1 ||
+      s->worlds!=a->worlds || s->nv!=a->nv || s->vector_stride!=a->nv || s->bodies<1 || s->actuator!=a->qfrc)
+    return cudaErrorInvalidValue;
+  if(s->bodies<=128) flash::mjwarp::world_actuation<128,true,true><<<a->worlds,128,0,stream>>>(*a,*s);
+  else flash::mjwarp::world_actuation<128,true,false><<<a->worlds,128,0,stream>>>(*a,*s);
   return cudaGetLastError();
 }
 

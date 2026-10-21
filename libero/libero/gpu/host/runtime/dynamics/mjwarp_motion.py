@@ -9,6 +9,7 @@ def source_id(component):
     recipe = {'velocity':'Velocity','bias':'Bias','postconstraint':'Postconstraint','passive':'Passive','actuation':'Actuation','euler':'Euler','transmission':'Transmission','kinematics':'Kinematics','com_pos':'ComPos','camlight':'CamLight','fluid':'Fluid','external_wrench':'ExternalWrench','constraint_build':'ConstraintBuild','broadphase':'Broadphase','plane':'Plane','box':'Box','convex':'Convex','queries':'Queries','publication':'Publication'}[component]
     folder='collision' if component in ('broadphase','plane','box','convex') else 'dynamics'
     names = (f'cuda/{folder}/mjwarp_{component}.cu', f'cuda/{folder}/mjwarp_{component}.cuh')
+    if component=='actuation':names+=('cuda/dynamics/mjwarp_smooth_force.cuh',)
     if component=='kinematics':names+=('cuda/dynamics/mjwarp_camlight.cuh',)
     if component not in ('passive','actuation','euler','transmission','kinematics','com_pos','camlight','fluid','external_wrench','constraint_build','broadphase','plane','box','convex','publication'):names+=('cuda/dynamics/mjwarp_spatial.cuh',)
     if component=='convex':names+=('cuda/collision/mjwarp_convex_geometry.cuh','cuda/collision/mjwarp_convex_simplex.cuh','cuda/collision/mjwarp_convex_gjk.cuh','cuda/collision/mjwarp_convex_epa.cuh','cuda/collision/mjwarp_box_manifold.cuh','cuda/collision/mjwarp_convex_collision.cuh')

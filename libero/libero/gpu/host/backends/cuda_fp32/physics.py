@@ -114,6 +114,7 @@ class Physics:
         self.motion_bias=FusedMotion(self.velocity,self.bias,products.folder/'fp32_fused_motion.so')
         self.actuation=actuation.ActuatorForces(m,d,products('actuation'),stream)
         self.smooth=smooth_force.SmoothForce(m,d,products('smooth_force'),stream)
+        self.actuation.bind_smooth(self.smooth)
         self.newton=Newton(m,d,stream,products)
         self.external=external.ExternalWrenchNumerics(m,d,products('external_wrench'),stream,admission=external.qualify(m,d,implementation='cuda'))
         self.postconstraint=postconstraint.PostconstraintRNE(m,d,products('postconstraint'),stream,top)
@@ -153,9 +154,9 @@ class Physics:
         m,d=self.model,self.data
         if m.opt.disableflags&types.DisableBit.ACTUATION:
             d.act_dot.zero_();d.qfrc_actuator.zero_();d.actuator_force.zero_()
+            self.smooth.enqueue()
         else:
-            self.actuation.enqueue_fused()
-        self.smooth.enqueue()
+            self.actuation.enqueue_smooth()
         (self.public_solve if public else self.smooth_solve).enqueue()
         self.newton.solve()
         if m.opt.run_rne_postconstraint or (not m.opt.disableflags&types.DisableBit.SENSOR and m.sensor_rne_postconstraint):

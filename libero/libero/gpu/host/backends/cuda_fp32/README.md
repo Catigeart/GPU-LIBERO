@@ -255,3 +255,14 @@ The admitted stateless fixed/affine scalar-joint domain is unchanged and there
 is no numerical shared allocation or persistent physical cache. Original
 phase entries remain callable. Shared atomics, DOF-owned duplicate CSR scans
 and a smaller CTA gave no consistent improvement and were discarded.
+
+The default enabled-actuation schedule extends that function as
+`world_actuation<128,true>`: immediately after each DOF's final limit, its
+private force enters smooth-force assembly and current applied-wrench
+projection. `ActuatorForces.bind_smooth` admits the shared owner and pointer
+bridge; `enqueue_smooth` replaces the two accepted regional kernels. Up to
+128 bodies, four warp ballots produce a 16-byte shared activity mask before
+the already-required force barrier, avoiding repeated six-component zero
+checks and bypassing projection when all applied wrenches are zero. Larger
+models keep direct current-wrench checks. No extra barrier or physical cache
+is introduced. Disabled actuation retains its clear and standalone smooth path.

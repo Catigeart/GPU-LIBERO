@@ -112,3 +112,21 @@ class ActuatorForces:
     def enqueue_fused(self):
         error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused actuation failed: CUDA error '+str(error))
+
+    def bind_smooth(self,smooth):
+        from .mjwarp_smooth_force import SmoothForceInputs
+        if (self.model is not smooth.model or self.data is not smooth.data or self.stream is not smooth.stream or
+                smooth.arrays['actuator'].ptr!=self.arrays['qfrc'].ptr or smooth.arguments.vector_stride!=self.arguments.nv):
+            raise ValueError('Actuation/smooth owners or bridge differ')
+        arrays=dict(self.arrays)
+        arrays.update({'smooth_'+k:v for k,v in smooth.arrays.items() if k!='actuator'})
+        reject_output_overlap(arrays,('force','qfrc','smooth_smooth'))
+        size=self.library.flash_mjwarp_actuation_smooth_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(SmoothForceInputs):raise ValueError('Actuation/smooth ABI differs')
+        self.smooth=smooth;self.smooth_launch=self.library.flash_mjwarp_actuation_smooth
+        self.smooth_launch.argtypes=[ct.POINTER(ActuationInputs),ct.POINTER(SmoothForceInputs),ct.c_void_p]
+        self.smooth_launch.restype=ct.c_int
+
+    def enqueue_smooth(self):
+        error=self.smooth_launch(ct.byref(self.arguments),ct.byref(self.smooth.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Actuation/smooth failed: CUDA error '+str(error))
