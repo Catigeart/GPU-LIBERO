@@ -1,6 +1,7 @@
 """Load-only CRB / mass assembly on borrowed resident MJWarp arrays."""
 import ctypes as ct
 import hashlib
+from .mjwarp_motion import ResidentTree
 from pathlib import Path
 
 
@@ -99,6 +100,7 @@ class MassMatrix:
         layers = [bind('layer' + str(i), a, wp.int32, (a.size,)).numpy() for i, a in enumerate(self.layers)]
         validate_topology(static['body_parent'], static['dof_body'], static['dof_parent'],
                           static['matrix_row'], static['matrix_nnz'], static['matrix_column'], layers)
+        self.host_tree=static['body_parent'],layers
         armature = model.dof_armature
         if armature.ndim != 2 or armature.shape[0] < 1 or armature.shape[0]*nv > 2**31-1:
             raise ValueError('Mass matrix armature broadcast shape differs')
@@ -125,7 +127,8 @@ class MassMatrix:
     @property
     def identity(self):
         return dict(source_id=source_id(), library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
-                    layers=[a.size for a in self.layers], values='borrow-current-input-no-cache', workspace_bytes=0)
+                    layers=[a.size for a in self.layers], values='borrow-current-input-no-cache', workspace_bytes=0,
+                    additional_topology_bytes=self.tree.nbytes if hasattr(self,'tree') and self.owns_tree else 0)
 
     def enqueue(self):
         from libero.gpu.host.runtime.cuda_api import array_api
@@ -141,3 +144,20 @@ class MassMatrix:
             error = self.assemble(ct.byref(self.arguments), self.stream.cuda_stream)
             if error:
                 raise RuntimeError('Mass matrix assembly launch failed: CUDA error ' + str(error))
+
+    def prepare_fusion(self,topology=None):
+        """Borrow the independently admitted immutable layer/child indices."""
+        if topology is not None and (topology.model is not self.model or topology.data is not self.data or topology.stream is not self.stream):
+            raise ValueError('Mass fused tree owner differs')
+        if hasattr(self,'tree'):return
+        self.owns_tree=topology is None
+        self.tree=(ResidentTree(self.model,self.data,self.stream,*self.host_tree)
+                   if topology is None else topology.prepare_layer_tree())
+        self.fused=self.library.flash_mjwarp_mass_matrix_fused
+        self.fused.argtypes=[ct.POINTER(MassMatrixInputs),ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p]
+        self.fused.restype=ct.c_int
+
+    def enqueue_fused(self):
+        tree=self.tree
+        error=self.fused(ct.byref(self.arguments),self.arrays['cinert'].ptr,tree.bodies.ptr,tree.starts.ptr,tree.levels,tree.child_start.ptr,tree.child_id.ptr,self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused mass matrix failed: CUDA error '+str(error))

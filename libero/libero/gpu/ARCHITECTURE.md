@@ -203,3 +203,15 @@ outputs, including the accepted MJWarp zero-mass and world-body conventions,
 remain current. `MotionTopology.prepare_layer_tree` owns reusable immutable
 layer/child indices through `ResidentTree`; CoM borrows that owner, so downstream
 world-local tree fusions can reuse the indices without a physical-value cache.
+
+`Physics.position -> MassMatrix.enqueue_fused -> world_mass<128>` in
+`cuda/dynamics/mjwarp_mass_matrix.cu` joins composite inertia construction and CSR
+mass assembly. Independent tensor components gather children at each completed
+depth; every stored matrix element is then assigned once by its row owner, so
+there is no matrix-clear pass. World-body composite inertia retains its input.
+The common path uses a fixed 2560-byte shared tensor buffer; larger trees use
+global storage. `ResidentTree` is shared with CoM. Root-only admitted matrices
+have an explicit initialization barrier. The source retains the original
+component leaves. Flat-entry product staging was correct, but matched-width
+controls did not establish a general gain; its extra metadata and barriers were
+removed from the maintained path.

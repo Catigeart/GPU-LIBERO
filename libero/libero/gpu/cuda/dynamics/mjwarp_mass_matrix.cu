@@ -48,6 +48,55 @@ __global__ void assemble(MassMatrixInputs a) {
     matrix[at] += value;
   }
 }
+// The copy, reverse CRB reduction and CSR assembly belong to one world.
+// Global publication remains complete when this CTA returns.
+template<int Threads,bool Shared>
+__global__ void world_mass(MassMatrixInputs a,const float* cinert,const int* bodies,
+    const int* starts,int levels,const int* child_start,const int* child_id) {
+  const int w=blockIdx.x,lane=threadIdx.x;
+  __shared__ float scratch[Shared ? 10*64 : 1];
+  float* composite=Shared ? scratch : a.crb+10*w*a.bodies;
+  // World composite inertia is held. Every other body gathers its own
+  // children at the previous completed depth, with one writer per tensor.
+  for (int k=lane;k<10;k+=Threads) composite[k]=cinert[w*a.bodies*10+k];
+  if (levels==1) __syncthreads(); // root-only models have no depth barrier
+  for (int level=levels-1;level>0;--level) {
+    const int count=starts[level+1]-starts[level];
+    for (int work=lane;work<10*count;work+=Threads) {
+      const int b=bodies[starts[level]+work/10],component=work%10;
+      float value=cinert[(w*a.bodies+b)*10+component];
+      for (int edge=child_start[b];edge<child_start[b+1];++edge)
+        value+=composite[10*child_id[edge]+component];
+      composite[10*b+component]=value;
+    }
+    __syncthreads();
+  }
+  if constexpr (Shared) for (int slot=lane;slot<a.bodies*10;slot+=Threads)
+    a.crb[10*w*a.bodies+slot]=composite[slot];
+  for (int dof=lane;dof<a.nv;dof+=Threads) {
+    const float* inertia = composite + a.dof_body[dof] * 10;
+    const float* v = a.cdof + (w * a.nv + dof) * 6;
+    // Spatial vectors are (angular, linear); vec10 stores symmetric rotational
+    // inertia, first moment, and mass. Keep the pinned scalar expression order.
+    float product[6] = {
+        inertia[0]*v[0] + inertia[3]*v[1] + inertia[4]*v[2] - inertia[8]*v[4] + inertia[7]*v[5],
+        inertia[3]*v[0] + inertia[1]*v[1] + inertia[5]*v[2] + inertia[8]*v[3] - inertia[6]*v[5],
+        inertia[4]*v[0] + inertia[5]*v[1] + inertia[2]*v[2] - inertia[7]*v[3] + inertia[6]*v[4],
+        inertia[8]*v[1] - inertia[7]*v[2] + inertia[9]*v[3],
+        inertia[6]*v[2] - inertia[8]*v[0] + inertia[9]*v[4],
+        inertia[7]*v[0] - inertia[6]*v[1] + inertia[9]*v[5]};
+    int at = a.matrix_row[dof] + a.matrix_nnz[dof] - 1;
+    float* matrix = a.matrix + w * a.matrix_width;
+    const float armature=a.armature[(w % a.armature_rows)*a.nv+dof];
+    for (int ancestor = dof; ancestor >= 0; ancestor = a.dof_parent[ancestor], --at) {
+      const float* motion = a.cdof + (w * a.nv + ancestor) * 6;
+      float value = 0.0f;
+      for (int k = 0; k < 6; ++k) value += motion[k] * product[k];
+      matrix[at] = ancestor==dof ? armature+value : value;
+    }
+  }
+}
+
 }
 }
 
@@ -67,4 +116,15 @@ int flash_mjwarp_mass_matrix_assemble(const flash::mjwarp::MassMatrixInputs* a, 
   flash::mjwarp::assemble<<<(a->worlds * a->nv + 255) / 256, 256, 0, stream>>>(*a);
   return int(cudaGetLastError());
 }
+int flash_mjwarp_mass_matrix_fused(const flash::mjwarp::MassMatrixInputs* a,const float* cinert,
+    const int* bodies,const int* starts,int levels,const int* child_start,const int* child_id,cudaStream_t stream) {
+  if (!a || !cinert || !bodies || !starts || !child_start || a->worlds<1 || a->bodies<1 || a->nv<1 ||
+      a->armature_rows<1 || (a->bodies>1 && !child_id) || levels<1 || levels>a->bodies)
+    return cudaErrorInvalidValue;
+  using namespace flash::mjwarp;
+  if (a->bodies<=64) world_mass<128,true><<<a->worlds,128,0,stream>>>(*a,cinert,bodies,starts,levels,child_start,child_id);
+  else world_mass<128,false><<<a->worlds,128,0,stream>>>(*a,cinert,bodies,starts,levels,child_start,child_id);
+  return cudaGetLastError();
+}
+
 }
