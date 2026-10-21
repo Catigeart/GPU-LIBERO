@@ -110,12 +110,16 @@ still precede advancement; observation sampling follows the completed kernel.
 Local frozen-input qualification does not imply a new full-task numerical or
 performance result.
 
-`fused_observations.cu::pack_raw` combines the five low-dimensional field copies
+`fused_observations.cu::pack_and_sample` combines the five low-dimensional field copies
 in one 128-thread CTA per world. `DeviceFieldPacker` selects it for the default
 five-field layout; scene and other layouts retain their existing copy path.
 The target `flash_fp32_fused_observations` and the tail target have separate
 CMake recipes and source identities, so editing one region does not recompile
-the other. Packing retains the original observation buffer and sampling epoch.
+the other. Standalone packing retains the original observation buffer and sampling epoch.
+Default low-dimensional sampling directly gathers the current raw fields in the
+same kernel. Independent clocks advance through a fixed 16-byte bitmap before
+ordered dependent evaluation; plans above 128 specs use scalar clocks. The
+shared adapter completion hook and camera publication remain outside this leaf.
 
 The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
 compatibility helper in `facade.py` remain shared. Their location does not make

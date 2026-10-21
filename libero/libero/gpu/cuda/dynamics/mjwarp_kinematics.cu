@@ -161,6 +161,37 @@ __global__ void attached_frames(KinematicsInputs a) {
   }
 }
 
+// All derived frames are independent once body poses are complete.
+template<int Threads>
+__global__ void derived_frames(KinematicsInputs a) {
+  const int w=blockIdx.x;
+  for (int work=threadIdx.x;work<a.bodies+a.geoms+a.sites;work+=Threads) {
+    if (work<a.bodies) {
+      const int b=work;
+    const int t=w*a.bodies+b;
+    Q q=load4(a.xquat,t);
+    matrix(a.xmat,t,q);
+    store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
+    matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
+    } else {
+      const int job=work-a.bodies;
+    const bool geom=job<a.geoms;
+    const int i=geom ? job : job-a.geoms;
+    const int b=geom ? a.geom_body[i] : a.site_body[i];
+    if (geom && a.weld[b]==0 && a.mocap[a.root[b]]==-1) continue;
+    const int width=geom ? a.geoms : a.sites,t=w*width+i;
+    const int pr=geom ? a.gpos_rows : a.spos_rows,qr=geom ? a.gquat_rows : a.squat_rows;
+    const float* pos=geom ? a.gpos : a.spos;
+    const float* quat=geom ? a.gquat : a.squat;
+    float* outpos=geom ? a.geom_xpos : a.site_xpos;
+    float* outmat=geom ? a.geom_xmat : a.site_xmat;
+    Q q=load4(a.xquat,w*a.bodies+b);
+    store3(outpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(pos,(w%pr)*width+i),q));
+    matrix(outmat,t,mul(q,load4(quat,(w%qr)*width+i)));
+    }
+  }
+}
+
 }
 }
 extern "C" {
@@ -178,6 +209,7 @@ int flash_mjwarp_kinematics_launch(const flash::mjwarp::KinematicsInputs* a,int 
   else if (phase==4) {if (!a->sites) return 0;site_frames<<<(a->worlds*a->sites+255)/256,256,0,stream>>>(*a);}
   else if (phase==5) body_frames<64><<<a->worlds,64,0,stream>>>(*a);
   else if (phase==6) attached_frames<256><<<a->worlds,256,0,stream>>>(*a);
+  else if (phase==7) derived_frames<256><<<a->worlds,256,0,stream>>>(*a);
   else return int(cudaErrorInvalidValue);
   return int(cudaGetLastError());
 }
