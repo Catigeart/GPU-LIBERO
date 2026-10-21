@@ -37,7 +37,7 @@ __device__ inline V rotate(V v,Q q) {
   return r+(2.0f*q.w)*cross(u,v);
 }
 __device__ inline Q axis_angle(V axis,float angle) {
-  float s=sinf(angle*0.5f),c=cosf(angle*0.5f);
+  float s,c;sincosf(angle*0.5f,&s,&c);
   return {c,axis.x*s,axis.y*s,axis.z*s};
 }
 __device__ inline void matrix(float* p,int i,Q q) {
@@ -109,19 +109,6 @@ __global__ void inertial_frames(KinematicsInputs a) {
   store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
   matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
 }
-// One world owns body matrices and inertial frames. Both consume the same
-// current body quaternion; no inter-thread producer/consumer barrier is needed.
-template<int Threads>
-__global__ void body_frames(KinematicsInputs a) {
-  const int w=blockIdx.x;
-  for (int b=threadIdx.x;b<a.bodies;b+=Threads) {
-    const int t=w*a.bodies+b;
-    Q q=load4(a.xquat,t);
-    matrix(a.xmat,t,q);
-    store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
-    matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
-  }
-}
 __global__ void geom_frames(KinematicsInputs a) {
   int t=blockIdx.x*blockDim.x+threadIdx.x;
   if (t>=a.worlds*a.geoms) return;
@@ -139,56 +126,82 @@ __global__ void site_frames(KinematicsInputs a) {
   store3(a.site_xpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(a.spos,(w%a.spos_rows)*a.sites+s),q));
   matrix(a.site_xmat,t,mul(q,load4(a.squat,(w%a.squat_rows)*a.sites+s)));
 }
-// Read-only body poses feed disjoint geom and site outputs in the same world.
-template<int Threads>
-__global__ void attached_frames(KinematicsInputs a) {
-  const int w=blockIdx.x;
-  // Single disjoint work queue avoids a second loop and fills the final warp.
-  for (int job=threadIdx.x;job<a.geoms+a.sites;job+=Threads) {
-    const bool geom=job<a.geoms;
-    const int i=geom ? job : job-a.geoms;
-    const int b=geom ? a.geom_body[i] : a.site_body[i];
-    if (geom && a.weld[b]==0 && a.mocap[a.root[b]]==-1) continue;
-    const int width=geom ? a.geoms : a.sites,t=w*width+i;
-    const int pr=geom ? a.gpos_rows : a.spos_rows,qr=geom ? a.gquat_rows : a.squat_rows;
-    const float* pos=geom ? a.gpos : a.spos;
-    const float* quat=geom ? a.gquat : a.squat;
-    float* outpos=geom ? a.geom_xpos : a.site_xpos;
-    float* outmat=geom ? a.geom_xmat : a.site_xmat;
-    Q q=load4(a.xquat,w*a.bodies+b);
-    store3(outpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(pos,(w%pr)*width+i),q));
-    matrix(outmat,t,mul(q,load4(quat,(w%qr)*width+i)));
+// Lane0 of each warp traverses a complete root-to-leaf path, publishing
+// canonical poses. Its warp then cooperates on disjoint derived transforms.
+// Disjoint canonical owners remove the world-wide publication barrier.
+template<int Warps>
+__global__ void branch_kinematics(KinematicsInputs a,AttachedTopology attached) {
+  const int groups=(a.branches+Warps-1)/Warps;
+  const int w=blockIdx.x/groups,branch=(blockIdx.x%groups)*Warps+threadIdx.x/32,lane=threadIdx.x&31;
+  if (branch>=a.branches) return; // warp-uniform; there are no block barriers
+  if (lane==0) {
+    // Complete root-to-leaf paths were validated cold. Read only world pose;
+    // carry every parent pose privately instead of reading another CTA's output.
+    V parent_pos=load3(a.xpos,w*a.bodies);
+    Q parent_quat=load4(a.xquat,w*a.bodies);
+    for (int at=a.branch_start[branch];at<a.branch_start[branch+1];++at) {
+      int body=a.branch_body[at],first=a.jadr[body],count=a.jnum[body];
+      bool publish=a.owner[body]==branch;
+      V pos;Q quat;
+      if (count==1 && a.kind[first]==0) {
+        int q= w*a.nq+a.qadr[first];
+        pos={a.qpos[q],a.qpos[q+1],a.qpos[q+2]};
+        quat=normalize({a.qpos[q+3],a.qpos[q+4],a.qpos[q+5],a.qpos[q+6]});
+        if (publish) {
+          store3(a.anchor,w*a.joints+first,pos);
+          store3(a.axis,w*a.joints+first,load3(a.jnt_axis,(w%a.jnt_axis_rows)*a.joints+first));
+        }
+      } else {
+        int mocap=a.mocap[body];
+        if (mocap>=0) {pos=load3(a.mocap_pos,w*a.mocaps+mocap);quat=load4(a.mocap_quat,w*a.mocaps+mocap);}
+        else {pos=load3(a.body_pos,(w%a.body_pos_rows)*a.bodies+body);quat=load4(a.body_quat,(w%a.body_quat_rows)*a.bodies+body);}
+        pos=rotate(pos,parent_quat)+parent_pos;quat=mul(parent_quat,quat);
+        for (int j=first;j<first+count;++j) {
+          int kind=a.kind[j],q=a.qadr[j];
+          V local_pos=load3(a.jnt_pos,(w%a.jnt_pos_rows)*a.joints+j);
+          V local_axis=load3(a.jnt_axis,(w%a.jnt_axis_rows)*a.joints+j);
+          V anchor=rotate(local_pos,quat)+pos,axis=rotate(local_axis,quat);
+          if (kind==1) {
+            const float* x=a.qpos+w*a.nq+q;
+            quat=mul(quat,normalize({x[0],x[1],x[2],x[3]}));
+            pos=anchor-rotate(local_pos,quat);
+          } else if (kind==2) {
+            float displacement=a.qpos[w*a.nq+q]-a.qpos0[(w%a.qpos0_rows)*a.nq+q];
+            pos=pos+displacement*axis;
+          } else if (kind==3) {
+            float angle=a.qpos[w*a.nq+q]-a.qpos0[(w%a.qpos0_rows)*a.nq+q];
+            quat=mul(quat,axis_angle(local_axis,angle));pos=anchor-rotate(local_pos,quat);
+          }
+          if (publish) {store3(a.anchor,w*a.joints+j,anchor);store3(a.axis,w*a.joints+j,axis);}
+        }
+        quat=normalize(quat);
+      }
+      parent_pos=pos;parent_quat=quat;
+      if (publish) {store3(a.xpos,w*a.bodies+body,pos);store4(a.xquat,w*a.bodies+body,quat);}
+    }
   }
-}
-
-// All derived frames are independent once body poses are complete.
-template<int Threads>
-__global__ void derived_frames(KinematicsInputs a) {
-  const int w=blockIdx.x;
-  for (int work=threadIdx.x;work<a.bodies+a.geoms+a.sites;work+=Threads) {
-    if (work<a.bodies) {
-      const int b=work;
-    const int t=w*a.bodies+b;
+  __syncwarp(); // every owned pose is ready, without waiting for other branches
+  const int start=a.branch_start[branch];
+  for (int at=start-(branch==0)+lane;at<a.branch_start[branch+1];at+=32) {
+    const int b=at<start ? 0 : a.branch_body[at],t=w*a.bodies+b;
+    if (b && a.owner[b]!=branch) continue;
     Q q=load4(a.xquat,t);
     matrix(a.xmat,t,q);
     store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
     matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
-    } else {
-      const int job=work-a.bodies;
-    const bool geom=job<a.geoms;
-    const int i=geom ? job : job-a.geoms;
-    const int b=geom ? a.geom_body[i] : a.site_body[i];
-    if (geom && a.weld[b]==0 && a.mocap[a.root[b]]==-1) continue;
-    const int width=geom ? a.geoms : a.sites,t=w*width+i;
-    const int pr=geom ? a.gpos_rows : a.spos_rows,qr=geom ? a.gquat_rows : a.squat_rows;
-    const float* pos=geom ? a.gpos : a.spos;
-    const float* quat=geom ? a.gquat : a.squat;
-    float* outpos=geom ? a.geom_xpos : a.site_xpos;
-    float* outmat=geom ? a.geom_xmat : a.site_xmat;
+  }
+  for (int at=attached.geom_start[branch]+lane;at<attached.geom_start[branch+1];at+=32) {
+    const int g=attached.geom_id[at],b=a.geom_body[g],t=w*a.geoms+g;
+    if (a.weld[b]==0 && a.mocap[a.root[b]]==-1) continue;
     Q q=load4(a.xquat,w*a.bodies+b);
-    store3(outpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(pos,(w%pr)*width+i),q));
-    matrix(outmat,t,mul(q,load4(quat,(w%qr)*width+i)));
-    }
+    store3(a.geom_xpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(a.gpos,(w%a.gpos_rows)*a.geoms+g),q));
+    matrix(a.geom_xmat,t,mul(q,load4(a.gquat,(w%a.gquat_rows)*a.geoms+g)));
+  }
+  for (int at=attached.site_start[branch]+lane;at<attached.site_start[branch+1];at+=32) {
+    const int site=attached.site_id[at],b=a.site_body[site],t=w*a.sites+site;
+    Q q=load4(a.xquat,w*a.bodies+b);
+    store3(a.site_xpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(a.spos,(w%a.spos_rows)*a.sites+site),q));
+    matrix(a.site_xmat,t,mul(q,load4(a.squat,(w%a.squat_rows)*a.sites+site)));
   }
 }
 
@@ -207,10 +220,15 @@ int flash_mjwarp_kinematics_launch(const flash::mjwarp::KinematicsInputs* a,int 
   else if (phase==2) inertial_frames<<<(a->worlds*a->bodies+255)/256,256,0,stream>>>(*a);
   else if (phase==3) {if (!a->geoms) return 0;geom_frames<<<(a->worlds*a->geoms+255)/256,256,0,stream>>>(*a);}
   else if (phase==4) {if (!a->sites) return 0;site_frames<<<(a->worlds*a->sites+255)/256,256,0,stream>>>(*a);}
-  else if (phase==5) body_frames<64><<<a->worlds,64,0,stream>>>(*a);
-  else if (phase==6) attached_frames<256><<<a->worlds,256,0,stream>>>(*a);
-  else if (phase==7) derived_frames<256><<<a->worlds,256,0,stream>>>(*a);
   else return int(cudaErrorInvalidValue);
   return int(cudaGetLastError());
 }
+std::size_t flash_mjwarp_kinematics_attached_bytes() {return sizeof(flash::mjwarp::AttachedTopology);}
+int flash_mjwarp_kinematics_fused(const flash::mjwarp::KinematicsInputs* a,
+    const flash::mjwarp::AttachedTopology* attached,cudaStream_t stream) {
+  if (!a || !attached || a->worlds<1 || a->branches<1) return cudaErrorInvalidValue;
+  flash::mjwarp::branch_kinematics<4><<<a->worlds*((a->branches+3)/4),128,0,stream>>>(*a,*attached);
+  return cudaGetLastError();
+}
+
 }

@@ -42,6 +42,10 @@ class KinematicsInputs(ct.Structure):
         'xpos','xquat','anchor','axis','xmat','xipos','ximat','geom_xpos','geom_xmat','site_xpos','site_xmat')]
 
 
+class AttachedTopology(ct.Structure):
+    _fields_=[(k,ct.c_void_p) for k in ('geom_start','geom_id','site_start','site_id')]
+
+
 class KinematicFrames:
     def __init__(self,model,data,library,stream,*,topology=None):
         import numpy as np
@@ -91,8 +95,32 @@ class KinematicFrames:
     def identity(self):
         return dict(source_id=source_id('kinematics'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
             numerical_workspace_bytes=0,additional_topology_bytes=self.topology.identity['topology_bytes'] if self.owns_topology else 0,
+            attachment_topology_bytes=sum(a.capacity for a in getattr(self,'attached_arrays',{}).values()),
             topology='owned' if self.owns_topology else 'shared',owner_policy='first-full-leaf-path',prefix='private registers',values='borrow-current-input-no-cache')
 
     def enqueue(self,phase):
         error=self.launch(ct.byref(self.arguments),phase,self.stream.cuda_stream)
         if error:raise RuntimeError('Kinematics launch failed: CUDA error '+str(error))
+
+    def prepare_fusion(self):
+        """Group immutable attachment indices by their canonical branch owner."""
+        if hasattr(self,'attached'):return
+        import numpy as np
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp=array_api(self.stream)
+        size=self.library.flash_mjwarp_kinematics_attached_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(AttachedTopology):raise ValueError('Attached topology ABI differs')
+        values={};owner=self.topology.arrays['body_owner'].numpy()
+        for name in ('geom','site'):
+            ids=owner[self.arrays[name+'_body'].numpy()]
+            ids=np.where(ids<0,0,ids)
+            values[name+'_start']=np.r_[0,np.cumsum(np.bincount(ids,minlength=self.model.nbranch))].astype(np.int32)
+            values[name+'_id']=np.argsort(ids,kind='stable').astype(np.int32)
+        self.attached_arrays={k:wp.array(v,dtype=wp.int32,device=self.stream.device) for k,v in values.items()}
+        self.attached=AttachedTopology(**{k:a.ptr for k,a in self.attached_arrays.items()})
+        self.fused=self.library.flash_mjwarp_kinematics_fused
+        self.fused.argtypes=[ct.POINTER(KinematicsInputs),ct.POINTER(AttachedTopology),ct.c_void_p];self.fused.restype=ct.c_int
+
+    def enqueue_fused(self):
+        error=self.fused(ct.byref(self.arguments),ct.byref(self.attached),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused kinematics launch failed: CUDA error '+str(error))

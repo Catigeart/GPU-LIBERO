@@ -178,3 +178,16 @@ post-sample host hooks retain their existing contracts. Pose epochs are unchange
 post-integration qpos/qvel coexist with the previously computed body/site frames.
 These changes have local endpoint and region-timing evidence; they do not add a
 claim about complete-task throughput to the published benchmark table.
+
+`Physics.position` now calls `KinematicFrames.enqueue_fused` in
+`host/runtime/dynamics/mjwarp_kinematics.py`, loading the existing independent
+kinematics target. `cuda/dynamics/mjwarp_kinematics.cu::branch_kinematics<4>` joins
+body poses, body matrices, inertial frames, geom transforms and site transforms
+in one readable CUDA body. Four branch warps share a CTA within one world.
+One producer lane traverses each complete private prefix; canonical ownership
+makes its downstream frame jobs disjoint from other warps. A warp barrier orders
+those consumers, with zero shared numerical storage and no world-wide barrier.
+The cold attachment CSR contains only immutable canonical-branch indices, never
+physical values. Static geom and world-pose holds remain exact. The original
+five component leaves remain available; superseded intermediate fused bodies
+were removed rather than kept as runtime choices.

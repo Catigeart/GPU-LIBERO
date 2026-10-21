@@ -149,3 +149,15 @@ Independent checks prohibit Warp imports; an isolated installation additionally
 establishes that neither package can be found. Existing strict checks, accepted
 FP32 trajectory envelopes and geometry diagnostics retain separate outcomes.
 Shared-device timing is an observation, not an isolated performance guarantee.
+
+### Fused rigid kinematics
+
+`Physics.position -> KinematicFrames.enqueue_fused -> branch_kinematics<4>` joins
+the five kinematics leaves in `cuda/dynamics/mjwarp_kinematics.cu`. Each CTA groups
+four independent branch warps from one world. One lane computes a branch's
+private pose prefix; after a warp barrier its lanes build canonical body and
+attached frames cooperatively. This preserves holds and broadcast/live physical
+parameters without shared numerical storage or a world-wide barrier. The cold
+CSR groups immutable attachment indices by canonical branch owner. Component
+leaves remain callable; intermediate trial fusions are retained in Git history,
+not the runtime. Evidence is region-only N=2 endpoints and local graph timings.

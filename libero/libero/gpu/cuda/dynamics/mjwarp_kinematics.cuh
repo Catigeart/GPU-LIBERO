@@ -14,4 +14,9 @@ struct KinematicsInputs {
   const float *ipos,*iquat,*gpos,*gquat,*spos,*squat,*qpos,*mocap_pos,*mocap_quat;
   float *xpos,*xquat,*anchor,*axis,*xmat,*xipos,*ximat,*geom_xpos,*geom_xmat,*site_xpos,*site_xmat;
 };
+// Immutable canonical-branch index grouping; no cached physical values.
+struct AttachedTopology {
+  const int *geom_start,*geom_id,*site_start,*site_id;
+};
+
 }
