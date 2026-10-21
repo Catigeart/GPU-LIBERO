@@ -109,6 +109,7 @@ class Physics:
         self.fluid=fluid.FluidNumerics(m,d,products('fluid'),stream,admission=fa) if m.has_fluid else None
         self.gravity=queries.GravityProjection(m,d,products('queries'),stream)
         self.bias=bias.Bias(m,d,products('bias'),stream,top)
+        self.bias.prepare_fusion()
         self.actuation=actuation.ActuatorForces(m,d,products('actuation'),stream)
         self.smooth=smooth_force.SmoothForce(m,d,products('smooth_force'),stream)
         self.newton=Newton(m,d,stream,products)
@@ -142,7 +143,7 @@ class Physics:
             if not m.opt.disableflags&types.DisableBit.GRAVITY:self.gravity.enqueue()
             if self.fluid is not None:self.fluid.enqueue()
             d.qfrc_adhesion.zero_();self.passive.enqueue(1)
-        self.bias.enqueue()
+        self.bias.enqueue_fused()
 
     def step1(self,factorize=True):
         self.position(factorize);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()

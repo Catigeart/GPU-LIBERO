@@ -38,6 +38,7 @@ class Bias:
     @property
     def identity(self):
         return dict(source_id=source_id('bias'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
+            force_layout=('canonical-branch-warps' if self.branch_forces else 'world-body-threads') if hasattr(self,'fused_launch') else 'component-phases',
             gravity_disabled=self.gravity_disabled,values='borrow-current-input-no-cache',**self.topology.identity)
 
     def enqueue(self):
@@ -52,3 +53,20 @@ class Bias:
             for phase,layer,count in commands:
                 error=self.launch(ct.byref(self.arguments),phase,layer,count,self.stream.cuda_stream)
                 if error:raise RuntimeError('Bias RNE launch failed: CUDA error '+str(error))
+
+    def prepare_fusion(self):
+        if (self.topology.model is not self.model or self.topology.data is not self.data or
+                self.topology.stream is not self.stream):raise ValueError('Bias topology owner differs')
+        if hasattr(self,'fused_launch'):return
+        self.tree=self.topology.prepare_layer_tree();self.interval=self.tree.prepare_intervals()
+        self.branch_forces=(self.interval is not None and self.model.nbody<=64 and
+                            self.model.nbranch<=32 and self.tree.levels>=8)
+        self.fused_launch=self.library.flash_mjwarp_bias_fused
+        self.fused_launch.argtypes=[ct.POINTER(BiasInputs),ct.c_void_p,ct.c_void_p,ct.c_int,
+            ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p];self.fused_launch.restype=ct.c_int
+
+    def enqueue_fused(self):
+        t=self.tree
+        error=self.fused_launch(ct.byref(self.arguments),t.bodies.ptr,t.starts.ptr,t.levels,t.child_start.ptr,t.child_id.ptr,
+            self.interval.ptr if self.interval is not None else None,int(self.gravity_disabled),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused bias RNE launch failed: CUDA error '+str(error))

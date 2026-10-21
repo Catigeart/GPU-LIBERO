@@ -269,3 +269,22 @@ and allocate no shared storage. Existing overlap admission justifies restricted
 input/output aliases, allowing read-only loads without a physical-value cache.
 The original two component phases remain callable. Qualification covers local
 N=2 endpoints plus an N=128 regional layout comparison, not task trajectories.
+
+`Physics.velocity_stage -> Bias.enqueue_fused -> world_bias` in
+`cuda/dynamics/mjwarp_bias.cu` joins ordinary bias RNE: gravity/private
+acceleration prefixes, spatial body forces, subtree force gathering and DOF
+projection. Small admitted preorder trees use bounded direct subtree sums.
+Deep small branch sets use 512 threads: a warp produces six acceleration
+coordinates, synchronizes locally, then distributes its canonical bodies'
+force jobs over all 32 lanes. Shared rows hold acceleration until the unique
+body-thread consumer has finished every read, then hold raw force. This removes
+one block barrier while retaining public cacc/cfrc_int/qfrc_bias. Deferred jobs
+retain body parallelism; computing all force algebra serially at each prefix
+node is avoided. The selected path uses two block barriers, fixed 1536-byte
+shared storage, 40 registers and no stack/local allocation. Other models keep
+the 128-thread body queue; ineligible interval trees retain staged child gathering. A broad
+singleton parent uses warp-cooperative child summation. Larger trees use global
+storage with no shared allocation. World-force publication and disabled-gravity
+semantics retain the accepted FP32 behavior. Existing component entries remain
+available. N=2 regional endpoints include gravity-off and large/deep fallbacks;
+N=128 local comparisons additionally qualify the branch-warp organization.

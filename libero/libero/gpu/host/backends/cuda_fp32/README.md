@@ -197,3 +197,16 @@ selects a branch warp for deeper small branch sets or four groups per warp for
 broader shallow trees. Root zero publication shares this kernel; no branch
 reads it, so there is no new barrier. Live qvel/cdof and canonical publication
 remain unchanged. The original root/branch component phases remain available.
+
+### Fused ordinary bias RNE
+
+`Bias.prepare_fusion` shares the admitted immutable tree owner;
+`Physics.velocity_stage -> Bias.enqueue_fused -> mjwarp_bias.cu::world_bias`
+joins acceleration prefixes, body forces, subtree gathering and bias projection.
+Bounded small preorder trees use direct sums. Deep small branch sets produce
+and consume acceleration rows within canonical warps, then synchronize the world
+only for subtree forces and projection. The fixed 1536-byte shared row is reused
+as acceleration then raw force; public outputs remain current. Trees outside
+the direct interval domain retain staged gathering, including cooperative broad-parent sums and a
+global-storage fallback. Component phases remain callable. Qualification is
+local N=2 endpoints and N=128 layout comparisons, without a full-task claim.
