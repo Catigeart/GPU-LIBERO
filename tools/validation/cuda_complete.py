@@ -48,8 +48,9 @@ def signatures(candidate=False):
     paths+=list((GPU_ROOT/'cuda').rglob('mjwarp*.cu'))+list((GPU_ROOT/'cuda').rglob('mjwarp*.cuh'))
     if candidate:
         paths+=list((GPU_ROOT/'cuda/runtime').glob('*.cu'))
+        paths+=list((GPU_ROOT/'cuda/fp32').glob('*.cu'))+list((GPU_ROOT/'cuda/fp32').glob('*.cuh'))
         paths += [GPU_ROOT/n for n in ('host/backends/selection.py','data/cpu_scene_input_source_pin.json',
-            'cmake/CudaRuntime.cmake','cmake/CudaBridges.cmake','CMakeLists.txt')]
+            'cmake/CudaRuntime.cmake','cmake/CudaBridges.cmake','cmake/FP32Fusion.cmake','CMakeLists.txt')]
     return {str(p.relative_to(REPO_ROOT)):digest(p) for p in sorted(set(paths))}
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from . import device as cuda, constants as types
 from .data import newton_workspace
+from .fused_tail import FusedAdvance
 from libero.gpu.host.runtime.dynamics import (
     mjwarp_motion as motion,mjwarp_kinematics as kinematics,mjwarp_com_pos as com_pos,
     mjwarp_camlight as camlight,mjwarp_mass_matrix as mass_matrix,mjwarp_mass_factor as mass_factor,
@@ -114,6 +115,7 @@ class Physics:
             w=SimpleNamespace(matrix=cuda.empty_like(d.M),factor=cuda.empty_like(d.qLD),diagonal=cuda.empty_like(d.qLDiagInv),acceleration=cuda.empty_like(d.qacc),damping=cuda.empty_like(d.qvel))
             self.euler_workspace=w;self.euler_solve=self.factor_plan.bind(w.matrix,w.factor,w.diagonal,w.acceleration,d.efc.Ma)
         self.euler=euler.EulerNumerics(m,d,products('euler'),stream,workspace=self.euler_workspace)
+        self.advance=FusedAdvance(self.euler,products.folder/'fp32_fused_tail.so')
         self.publication=publication.PublicationState(m,d,products('publication'),stream)
 
     def position(self,factorize=True):
@@ -155,7 +157,7 @@ class Physics:
         if self.damped:
             self.euler.enqueue(0);cuda.copy(self.euler_workspace.matrix,self.data.M)
             self.euler.enqueue(1);self.euler_solve.enqueue()
-        self.euler.enqueue(2);self.euler.enqueue(3);self.publication.enqueue()
+        self.advance.enqueue();self.publication.enqueue()
         cuda.copy(self.data.qacc_warmstart,self.data.qacc)
 
     def step2(self):self.solve();self.integrate()

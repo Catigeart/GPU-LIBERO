@@ -76,3 +76,4 @@ include("${CMAKE_CURRENT_LIST_DIR}/MjwarpConvex.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/MjwarpQueries.cmake")
 
 include("${CMAKE_CURRENT_LIST_DIR}/MjwarpPublication.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/FP32Fusion.cmake")

@@ -43,7 +43,8 @@ The common project contains the CPU scene catalogue
 Those are CPU model inputs, not serialized Warp arrays. The existing catalogue
 preparation uses CPU MuJoCo 2.3.7; run it in its separate CPU environment.
 The command above imports the inputs using CPU MuJoCo 3.16.0 and builds only
-the independent runtime/transport and 29 shared handwritten CUDA targets.
+the independent runtime/transport, 29 shared handwritten CUDA targets and
+the world-local FP32 fusion target.
 It advances zero physics substeps. Existing compatible CMake products are reused.
 `--skip-build` prepares scenes only. Preparation and execution must be serialized
 on shared GPU machines. Runtime construction defaults to `allow_compile=False`.
@@ -96,6 +97,15 @@ They have independent CMake targets `flash_cuda_runtime` and
 and OSC in its existing controller target. The `mjwarp` prefix records algorithm
 provenance; those `.cu/.cuh` files do not depend on the Warp compiler or runtime.
 Shared ctypes pointer bindings select storage metadata via `host/runtime/cuda_api.py`.
+
+Readable world-local fusion lives in `cuda/fp32/`, independently compiled by
+`cmake/FP32Fusion.cmake`. `fused_tail.cu::advance` combines velocity and position
+advancement in one 64-thread CTA per world; its block barrier replaces the
+original kernel-completion dependency. `fused_tail.py::FusedAdvance` borrows
+the validated Euler pointer binding. Damping preparation and factor/solve still
+precede advancement, while publication and observation sampling retain their
+original boundaries. Local frozen-input qualification does not imply a new
+full-task numerical or performance result.
 
 The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
 compatibility helper in `facade.py` remain shared. Their location does not make
