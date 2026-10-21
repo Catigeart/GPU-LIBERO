@@ -385,3 +385,16 @@ has no actuator/moment dependency. Original phase and generic-CSR velocity
 entries remain available. N=2 regional qualification covers19 cases,1/20
 replays, changed inputs, zero/shared gears and row ownership. Warp aggregation
 added instructions without a stable real-domain gain and was discarded.
+
+
+Postconstraint dispatch is `external.enqueue -> postconstraint.enqueue_fused ->
+sensors.enqueue`. The pooled external-contact accumulation remains a global
+completion boundary. `mjwarp_postconstraint.cu::world_postconstraint` joins root
+and branch acceleration, the actual inertia/cross/external-wrench algebra and
+direct subtree sums. It uses256threads, two block barriers and1536bytes reused
+from acceleration to raw body force. Current solved acceleration is always read;
+no physical values are cached. Cold interval/branch admission retains the old
+layer path for other layouts. Fifteen N=2 regional cases pass independent FP64
+bounds and1/20replays with changed inputs. Two canonical-group barrier-removal
+trials were discarded because their local gains did not generalize to all three
+real layouts. The simple fused organization is retained.

@@ -121,7 +121,7 @@ class Physics:
         self.actuation.bind_smooth(self.smooth)
         self.newton=Newton(m,d,stream,products)
         self.external=external.ExternalWrenchNumerics(m,d,products('external_wrench'),stream,admission=external.qualify(m,d,implementation='cuda'))
-        self.postconstraint=postconstraint.PostconstraintRNE(m,d,products('postconstraint'),stream,top)
+        self.postconstraint=postconstraint.PostconstraintRNE(m,d,products('postconstraint'),stream,top).prepare_fusion()
         self.sensors=queries.ForceSensors(m,d,products('queries'),stream)
         self.damped=not bool(m.opt.disableflags&(types.DisableBit.EULERDAMP|types.DisableBit.DAMPER))
         self.euler_workspace=None;self.euler_solve=None
@@ -171,7 +171,7 @@ class Physics:
         (self.public_solve if public else self.smooth_solve).enqueue()
         self.newton.solve()
         if m.opt.run_rne_postconstraint or (not m.opt.disableflags&types.DisableBit.SENSOR and m.sensor_rne_postconstraint):
-            self.external.enqueue();self.postconstraint.enqueue()
+            self.external.enqueue();self.postconstraint.enqueue_fused()
         self.sensors.enqueue()
 
     def integrate(self):
