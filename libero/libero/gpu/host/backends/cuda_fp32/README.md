@@ -173,3 +173,9 @@ child gathering. Shared storage is capped at 2560 bytes and reused by lifetime,
 with a global-storage fallback for larger trees. Immutable intervals share the
 existing topology owner; no physical values persist as a cache. The original
 CoM/mass component entries remain callable.
+
+FIXED camera/light frames use `CamLightFrames.enqueue_fused` and the readable
+`mjwarp_camlight.cu::fixed_frames` queue. Small domains use one warp per world;
+large domains split independent attachments across world-local tiles. The
+component camera/light phases remain available. No shared storage or barrier
+is introduced, and live broadcast parameters retain their existing semantics.

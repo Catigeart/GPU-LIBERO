@@ -126,7 +126,7 @@ class Physics:
 
     def position(self,factorize=True):
         self.kinematics.enqueue_fused()
-        self.centered_mass.enqueue();self.camlight.enqueue()
+        self.centered_mass.enqueue();self.camlight.enqueue_fused()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue();self.transmission.enqueue(0)

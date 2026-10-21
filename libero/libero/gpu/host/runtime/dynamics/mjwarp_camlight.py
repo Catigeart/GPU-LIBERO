@@ -72,6 +72,8 @@ class CamLightFrames:
             **{k:a[k].ptr for k,_ in CamLightInputs._fields_[8:]})
         self.launch=self.library.flash_mjwarp_camlight_launch
         self.launch.argtypes=[ct.POINTER(CamLightInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+        self.fused_launch=self.library.flash_mjwarp_camlight_fused
+        self.fused_launch.argtypes=[ct.POINTER(CamLightInputs),ct.c_void_p];self.fused_launch.restype=ct.c_int
 
     @property
     def identity(self):
@@ -85,3 +87,7 @@ class CamLightFrames:
         if phase not in (0,1):raise ValueError('CamLight phase must be 0 or 1')
         error=self.launch(ct.byref(self.arguments),phase,self.stream.cuda_stream)
         if error:raise RuntimeError('CamLight launch failed: CUDA error '+str(error))
+
+    def enqueue_fused(self):
+        error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused CamLight launch failed: CUDA error '+str(error))

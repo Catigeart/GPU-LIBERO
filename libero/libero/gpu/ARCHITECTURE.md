@@ -232,3 +232,12 @@ Camera/light frames depend on body poses only in the admitted FIXED domain and
 follow the combined mass stage. The separately callable centered/mass kernels
 remain available for component users and comparison. This qualification covers
 local endpoints and regional timing, without a new full-task throughput claim.
+
+`CamLightFrames.enqueue_fused -> fixed_frames` in
+`cuda/dynamics/mjwarp_camlight.cu` joins FIXED camera/light transforms in one
+independent attachment queue. Small counts use a world-owned warp. Larger
+counts use multiple world-local CTA tiles so the queue does not serialize a
+large attachment domain. The body/quaternion inputs remain live, zero direction
+and homogeneous quaternion behavior retain the accepted FP32 convention, and
+both original component phases remain callable. There is no shared storage or
+barrier in this leaf.
