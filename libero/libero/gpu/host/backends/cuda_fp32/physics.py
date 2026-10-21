@@ -91,6 +91,7 @@ class Physics:
         self.com_pos=com_pos.CenteredFrames(m,d,products('com_pos'),stream)
         self.com_pos.prepare_fusion(top)
         self.camlight=camlight.CamLightFrames(m,d,products('camlight'),stream,admission=camlight.qualify(m,d,implementation='cuda'))
+        self.kinematics.prepare_frames(self.camlight)
         self.matrix=mass_matrix.MassMatrix(m,d,products('mass_matrix'),stream)
         self.matrix.prepare_fusion(top)
         self.centered_mass=FusedCenteredMass(self.com_pos,self.matrix,products.folder/'fp32_fused_position.so')
@@ -125,8 +126,8 @@ class Physics:
                                   qacc=d.qacc,warmstart=d.qacc_warmstart)
 
     def position(self,factorize=True):
-        self.kinematics.enqueue_fused()
-        self.centered_mass.enqueue();self.camlight.enqueue_fused()
+        self.kinematics.enqueue_frames()
+        self.centered_mass.enqueue()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue();self.transmission.enqueue(0)

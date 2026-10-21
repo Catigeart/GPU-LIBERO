@@ -241,3 +241,17 @@ large attachment domain. The body/quaternion inputs remain live, zero direction
 and homogeneous quaternion behavior retain the accepted FP32 convention, and
 both original component phases remain callable. There is no shared storage or
 barrier in this leaf.
+
+For the default independent position stage,
+`KinematicFrames.prepare_frames` groups geom, site, FIXED camera and light jobs
+by their canonical branch owner. `Physics.position -> enqueue_frames ->
+branch_kinematics<4,true>` appends their actual transform code after the existing
+pose publication barrier and shares one attachment transform body. No new
+barrier or shared numerical storage is needed; register usage remains 56.
+Each job reads a pose published by its own warp, including the held world pose.
+If any branch owns more than 32 camera/light jobs, cold selection retains the
+separate kinematics and tiled fixed-frame kernels to preserve attachment
+parallelism. Both paths publish the same public frame arrays and retain the
+same live/broadcast and static-geom hold contracts. This does not join the
+motion-prefix kernel to the world-wide mass stage or cross a pooled collision
+boundary.

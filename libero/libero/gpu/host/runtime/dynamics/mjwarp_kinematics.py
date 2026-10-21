@@ -46,6 +46,10 @@ class AttachedTopology(ct.Structure):
     _fields_=[(k,ct.c_void_p) for k in ('geom_start','geom_id','site_start','site_id')]
 
 
+class FrameAttachments(ct.Structure):
+    _fields_=[(k,ct.c_void_p) for k in ('start','job')]
+
+
 class KinematicFrames:
     def __init__(self,model,data,library,stream,*,topology=None):
         import numpy as np
@@ -96,6 +100,8 @@ class KinematicFrames:
         return dict(source_id=source_id('kinematics'),library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
             numerical_workspace_bytes=0,additional_topology_bytes=self.topology.identity['topology_bytes'] if self.owns_topology else 0,
             attachment_topology_bytes=sum(a.capacity for a in getattr(self,'attached_arrays',{}).values()),
+            frame_topology_bytes=sum(a.capacity for a in getattr(self,'frame_arrays',{}).values()),
+            frames=('canonical-branch' if self.combine_frames else 'separate-world-tiles') if hasattr(self,'frames') else 'unbound',
             topology='owned' if self.owns_topology else 'shared',owner_policy='first-full-leaf-path',prefix='private registers',values='borrow-current-input-no-cache')
 
     def enqueue(self,phase):
@@ -124,3 +130,44 @@ class KinematicFrames:
     def enqueue_fused(self):
         error=self.fused(ct.byref(self.arguments),ct.byref(self.attached),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused kinematics launch failed: CUDA error '+str(error))
+
+    def prepare_frames(self,frames):
+        """Bind admitted FIXED frames to their canonical body-publishing warp."""
+        import numpy as np
+        from .mjwarp_camlight import CamLightInputs
+        from libero.gpu.host.runtime.cuda_api import array_api
+        if frames.model is not self.model or frames.data is not self.data or frames.stream is not self.stream:
+            raise ValueError('Kinematic camera/light owners differ')
+        if hasattr(self,'frames'):
+            if self.frames is not frames:raise ValueError('Kinematic camera/light binding differs')
+            return
+        self.prepare_fusion()
+        for key in ('xpos','xquat'):
+            if self.arrays[key].ptr!=frames.arrays[key].ptr:raise ValueError('Kinematic frame producer differs: '+key)
+        arrays={'kin_'+k:v for k,v in self.arrays.items()}
+        arrays.update({'frame_'+k:v for k,v in frames.arrays.items() if k not in ('xpos','xquat')})
+        reject_output_overlap(arrays,tuple('kin_'+k for k in ('xpos','xquat','anchor','axis','xmat','xipos','ximat',
+            'geom_xpos','geom_xmat','site_xpos','site_xmat'))+tuple('frame_'+k for k in ('cam_xpos','cam_xmat','light_xpos','light_xdir')))
+        for name,kind in (('frames',CamLightInputs),('frame_ids',FrameAttachments)):
+            size=getattr(self.library,'flash_mjwarp_kinematics_'+name+'_bytes');size.restype=ct.c_size_t
+            if size()!=ct.sizeof(kind):raise ValueError('Kinematic frames ABI differs: '+name)
+        owner=self.topology.arrays['body_owner'].numpy();wp=array_api(self.stream)
+        body=np.concatenate([self.arrays[k+'_body'].numpy() for k in ('geom','site')]+
+                            [frames.arrays[k+'_body'].numpy() for k in ('cam','light')])
+        ids=owner[body];ids=np.where(ids<0,0,ids)
+        count=np.bincount(ids,minlength=self.model.nbranch)
+        frame_count=np.bincount(ids[self.model.ngeom+self.model.nsite:],minlength=self.model.nbranch)
+        self.combine_frames=bool(frame_count.max(initial=0)<=32)
+        values=dict(start=np.r_[0,np.cumsum(count)].astype(np.int32),job=np.argsort(ids,kind='stable').astype(np.int32))
+        self.frame_arrays={k:wp.array(v,dtype=wp.int32,device=self.stream.device) for k,v in values.items()}
+        self.frame_ids=FrameAttachments(**{k:a.ptr for k,a in self.frame_arrays.items()});self.frames=frames
+        self.frames_launch=self.library.flash_mjwarp_kinematics_frames
+        self.frames_launch.argtypes=[ct.POINTER(KinematicsInputs),ct.POINTER(AttachedTopology),
+            ct.POINTER(CamLightInputs),ct.POINTER(FrameAttachments),ct.c_void_p];self.frames_launch.restype=ct.c_int
+
+    def enqueue_frames(self):
+        if not self.combine_frames:
+            self.enqueue_fused();self.frames.enqueue_fused();return
+        error=self.frames_launch(ct.byref(self.arguments),ct.byref(self.attached),ct.byref(self.frames.arguments),
+                                 ct.byref(self.frame_ids),self.stream.cuda_stream)
+        if error:raise RuntimeError('Kinematic camera/light launch failed: CUDA error '+str(error))

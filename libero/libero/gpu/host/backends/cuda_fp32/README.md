@@ -179,3 +179,11 @@ FIXED camera/light frames use `CamLightFrames.enqueue_fused` and the readable
 large domains split independent attachments across world-local tiles. The
 component camera/light phases remain available. No shared storage or barrier
 is introduced, and live broadcast parameters retain their existing semantics.
+
+The default `KinematicFrames.enqueue_frames` additionally joins admitted FIXED
+camera/light jobs to the canonical kinematic branch warp. The readable
+`branch_kinematics<4,true>` body groups all attachment transforms behind its
+existing pose barrier. Heavy camera/light branches retain the separate tiled
+path; cold immutable indices select the path. This adds no shared storage or
+barrier, and the original independent entries remain callable. The following
+CoM/mass kernel retains its own completion boundary.

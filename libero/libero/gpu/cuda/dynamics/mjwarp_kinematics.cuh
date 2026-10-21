@@ -3,6 +3,7 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <cstddef>
+#include "mjwarp_camlight.cuh"
 namespace flash::mjwarp {
 struct KinematicsInputs {
   int worlds,bodies,joints,nq,branches,geoms,sites,mocaps;
@@ -17,6 +18,9 @@ struct KinematicsInputs {
 // Immutable canonical-branch index grouping; no cached physical values.
 struct AttachedTopology {
   const int *geom_start,*geom_id,*site_start,*site_id;
+};
+struct FrameAttachments {
+  const int *start,*job;
 };
 
 }

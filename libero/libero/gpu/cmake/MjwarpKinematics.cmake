@@ -1,6 +1,7 @@
 # Independent optional rigid-body, inertial, geom and site kinematics.
 set(mjwarp_kinematics_sources "${FLASH_GPU}/cuda/dynamics/mjwarp_kinematics.cu"
-  "${FLASH_GPU}/cuda/dynamics/mjwarp_kinematics.cuh" "${CMAKE_CURRENT_LIST_FILE}")
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_kinematics.cuh"
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_camlight.cuh" "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_kinematics_sources})
 set(kinematics_hashes)
 foreach(source IN LISTS mjwarp_kinematics_sources)
