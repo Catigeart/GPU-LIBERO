@@ -53,6 +53,29 @@ void launch_jv(const LinesearchInputs& a, cudaStream_t stream) {
   jacobian_product<<<(a.worlds * a.rows * parts + 255) / 256, 256, 0, stream>>>(a, parts, chunk);
 }
 
+// Large-NV products share a world CTA and the current search vector. Jv has
+// one writer per complete row, so active-row zeroing/partial atomics disappear.
+template<int Threads,bool Shared>
+__global__ void world_products(LinesearchInputs a) {
+  const int w=blockIdx.x,x=threadIdx.x;
+  if(a.done[w]) return;
+  __shared__ float scratch[Shared ? 128 : 1];
+  const float* selected=Shared ? scratch : a.search+w*a.nv;
+  if constexpr(Shared) {
+    for(int i=x;i<a.nv;i+=Threads) scratch[i]=a.search[w*a.nv+i];
+    __syncthreads();
+  }
+  for(int i=x;i<a.nv;i+=Threads)
+    a.mv[w*a.nv+i]=mass_row_dot(i,a.mass_row,a.mass_col,a.mass_address,a.mass+w*a.mass_entries,selected);
+  const int lane=x%4;const unsigned mask=0xfu<<((x%32)/4*4);
+  for(int row=x/4;row<min(a.rows,a.nefc[w]);row+=Threads/4) {
+    const int at=w*a.rows+row;float value=0.f;
+    for(int i=lane;i<a.nv;i+=4) value+=a.jacobian[at*a.pad+i]*selected[i];
+    value+=__shfl_down_sync(mask,value,2,4);value+=__shfl_down_sync(mask,value,1,4);
+    if(!lane) a.jv[at]=value;
+  }
+}
+
 // A point is (cost, first derivative, second derivative). Quadratic coefficient
 // triples are separately stored as [q0,q1,q2] in the existing ctx.quad array.
 struct Point {
@@ -203,10 +226,15 @@ __device__ Point evaluate_shifted(const Row& r, float alpha) {
 
 // One warp per world, matching the admitted MJWarp block dimension. Scalar
 // search state is replicated per lane; no thread-0 state mailbox/barriers.
+template<bool PrepareMass=false>
 __global__ void iterative_search(LinesearchInputs a) {
   int w = blockIdx.x, tid = threadIdx.x;
   if (a.done[w]) return;
   int ne = a.ne[w], count = min(a.rows, a.nefc[w]);
+  if constexpr(PrepareMass)
+    for(int i=tid;i<a.nv;i+=32)
+      a.mv[w*a.nv+i]=mass_row_dot(i,a.mass_row,a.mass_col,a.mass_address,
+                                a.mass+w*a.mass_entries,a.search+w*a.nv);
   if (a.nv <= 50) {
     for (int row = tid; row < count; row += 32) {
       float sum = jacobian_partial_dot(a.nv, 0, a.nv,
@@ -362,7 +390,19 @@ int flash_mjwarp_linesearch_launch(const flash::mjwarp::LinesearchInputs* input,
     if (a.nv > 50) launch_jv(a, stream);
   }
   if (stage == 3) launch_jv(a, stream);
-  if (stage == 0 || stage == 2) iterative_search<<<a.worlds, 32, 0, stream>>>(a);
+  if (stage == 0 || stage == 2) iterative_search<false><<<a.worlds, 32, 0, stream>>>(a);
   return int(cudaGetLastError());
 }
+int flash_mjwarp_linesearch_fused(const flash::mjwarp::LinesearchInputs* input,cudaStream_t stream) {
+  if(!input || input->worlds<1 || input->nv<1 || input->rows<1 || input->pad<input->nv) return cudaErrorInvalidValue;
+  const auto& a=*input;using namespace flash::mjwarp;
+  if(a.nv<=50) iterative_search<true><<<a.worlds,32,0,stream>>>(a);
+  else {
+    if(a.nv<=128) world_products<1024,true><<<a.worlds,1024,0,stream>>>(a);
+    else world_products<1024,false><<<a.worlds,1024,0,stream>>>(a);
+    iterative_search<false><<<a.worlds,32,0,stream>>>(a);
+  }
+  return cudaGetLastError();
+}
+
 }

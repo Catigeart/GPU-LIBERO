@@ -288,3 +288,14 @@ for invalid contact addresses. Larger active sets use the published global
 array; the storage bound is fixed. Done-world holds and the reset of
 search_unchanged are preserved. Original phase/gradient entries remain callable;
 Hessian construction, factorization, line search and stopping retain boundaries.
+
+`DenseLinesearch.enqueue_fused` keeps two size-specific compositions in
+`cuda/newton/mjwarp_linesearch.cu`. For NV<=50, `iterative_search<true>` prepends
+the current Mv product to the existing one-warp search, retaining its internal
+Jv computation and barriers. Larger NV uses `world_products<1024>` for Mv and
+complete four-lane Jv rows, then the maintained 32-thread search. The bounded
+512-byte search vector has a global fallback above NV128; inactive rows and
+done worlds retain their previous holds. No search iterations or root decisions
+are unrolled. Small-search shared staging and row regrouping were discarded.
+Regional timing uses independent state slots so each measured search starts
+from the frozen boundary; restores are outside the timed range.

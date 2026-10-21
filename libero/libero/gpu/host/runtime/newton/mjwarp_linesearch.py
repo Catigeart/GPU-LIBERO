@@ -119,3 +119,13 @@ class DenseLinesearch:
         error = self.launch(ct.byref(self.arguments),stage,self.stream.cuda_stream)
         if error:
             raise RuntimeError('Handwritten linesearch launch failed: CUDA error ' + str(error))
+
+    def prepare_fusion(self):
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import reject_output_overlap
+        reject_output_overlap(self.arrays,('mv','jv','quad','qacc','ma','jaref','improvement','alpha','overflow'))
+        self.fused_launch=self.plan.library.flash_mjwarp_linesearch_fused
+        self.fused_launch.argtypes=[ct.POINTER(LinesearchInputs),ct.c_void_p];self.fused_launch.restype=ct.c_int
+
+    def enqueue_fused(self):
+        error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused linesearch failed: CUDA error '+str(error))

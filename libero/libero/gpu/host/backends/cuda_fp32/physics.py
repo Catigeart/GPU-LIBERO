@@ -44,6 +44,7 @@ class Newton:
         self.constraint=constraint.ConstraintPlan(m,d,products('constraint'),stream).bind(c)
         self.constraint.bind_gradient(self.direction)
         self.linesearch=linesearch.LinesearchPlan(m,d,products('linesearch'),stream).bind(c)
+        self.linesearch.prepare_fusion()
         self.state=solver_state.SolverStatePlan(m,d,products('solver_state'),stream).bind(c)
         self.nsolving=cuda.zeros(1,dtype=int);self.state.bind_stopping(self.nsolving)
         self.state.bind_initialization(c.grad,c.ls_exhausted,self.nsolving)
@@ -55,7 +56,7 @@ class Newton:
         self.state.initialize_fused();self.gradient()
         if self.model.opt.iterations:
             with cuda.While(self.nsolving):
-                self.linesearch.enqueue();self.gradient();self.state.stop()
+                self.linesearch.enqueue_fused();self.gradient();self.state.stop()
 
 
 class Collision:
