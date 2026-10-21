@@ -139,6 +139,28 @@ __global__ void site_frames(KinematicsInputs a) {
   store3(a.site_xpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(a.spos,(w%a.spos_rows)*a.sites+s),q));
   matrix(a.site_xmat,t,mul(q,load4(a.squat,(w%a.squat_rows)*a.sites+s)));
 }
+// Read-only body poses feed disjoint geom and site outputs in the same world.
+template<int Threads>
+__global__ void attached_frames(KinematicsInputs a) {
+  const int w=blockIdx.x;
+  // Single disjoint work queue avoids a second loop and fills the final warp.
+  for (int job=threadIdx.x;job<a.geoms+a.sites;job+=Threads) {
+    const bool geom=job<a.geoms;
+    const int i=geom ? job : job-a.geoms;
+    const int b=geom ? a.geom_body[i] : a.site_body[i];
+    if (geom && a.weld[b]==0 && a.mocap[a.root[b]]==-1) continue;
+    const int width=geom ? a.geoms : a.sites,t=w*width+i;
+    const int pr=geom ? a.gpos_rows : a.spos_rows,qr=geom ? a.gquat_rows : a.squat_rows;
+    const float* pos=geom ? a.gpos : a.spos;
+    const float* quat=geom ? a.gquat : a.squat;
+    float* outpos=geom ? a.geom_xpos : a.site_xpos;
+    float* outmat=geom ? a.geom_xmat : a.site_xmat;
+    Q q=load4(a.xquat,w*a.bodies+b);
+    store3(outpos,t,load3(a.xpos,w*a.bodies+b)+rotate(load3(pos,(w%pr)*width+i),q));
+    matrix(outmat,t,mul(q,load4(quat,(w%qr)*width+i)));
+  }
+}
+
 }
 }
 extern "C" {
@@ -155,6 +177,7 @@ int flash_mjwarp_kinematics_launch(const flash::mjwarp::KinematicsInputs* a,int 
   else if (phase==3) {if (!a->geoms) return 0;geom_frames<<<(a->worlds*a->geoms+255)/256,256,0,stream>>>(*a);}
   else if (phase==4) {if (!a->sites) return 0;site_frames<<<(a->worlds*a->sites+255)/256,256,0,stream>>>(*a);}
   else if (phase==5) body_frames<64><<<a->worlds,64,0,stream>>>(*a);
+  else if (phase==6) attached_frames<256><<<a->worlds,256,0,stream>>>(*a);
   else return int(cudaErrorInvalidValue);
   return int(cudaGetLastError());
 }

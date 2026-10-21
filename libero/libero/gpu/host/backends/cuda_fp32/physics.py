@@ -120,7 +120,7 @@ class Physics:
                                   qacc=d.qacc,warmstart=d.qacc_warmstart)
 
     def position(self,factorize=True):
-        for phase in (0,5,3,4):self.kinematics.enqueue(phase)
+        for phase in (0,5,6):self.kinematics.enqueue(phase)
         self.com_pos.enqueue();self.camlight.enqueue();self.matrix.enqueue()
         if factorize:self.factor.enqueue()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
