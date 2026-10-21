@@ -499,3 +499,15 @@ share `world_transmission<true,...,true>` with transmission/actuator velocity,
 without another barrier or shared allocation. Standalone transmission retains
 those buffers. Local N=2 qualification includes empty/wide clear buffers and
 current-input replay updates; timing covers only these clears and transmission.
+
+
+Ordinary enabled-actuation substeps now use `FusedActuationSolve`, target
+`flash_fp32_fused_actuation_solve`. The continuous CUDA function in
+`cuda/fp32/fused_actuation_solve.cu` contains force production, CSR projection,
+limits, smooth force and scalar/SDK mass backsubstitution. Current DOF producers
+stage the9-DOF RHS directly; four block barriers and at most376 shared bytes
+suffice. Public forward retains factor/solve, disabled actuation retains its
+clears, and unsupported mass-group layouts retain accepted components.
+Twenty-two N=2 local cases pass independent FP64 block bounds and endpoint
+checks. Final local gains are~9--12% on three frozen actuator layouts with
+matched frozen/seeded matrices; no whole-task throughput was measured.

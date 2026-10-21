@@ -28,9 +28,11 @@ def unsupported_reason(model,data):
     return None
 
 
-def world_groups(arguments,input_type):
+def world_groups(arguments,input_type,*,allow_single=False):
     """Cold, bounded group selection; no physical values or device allocation."""
-    if len(arguments)<2:return None
+    # A composition with another numerical phase still saves a launch when
+    # only one mass group exists. Standalone group callers keep their policy.
+    if len(arguments)<(1 if allow_single else 2):return None
     groups={(kind,size):a for a,kind,size in arguments}
     if len(groups)!=len(arguments) or set(groups)-{(0,1),(0,6),(1,9)}:return None
     if sum(a.blocks for key,a in groups.items() if key[0]==0)>32:return None

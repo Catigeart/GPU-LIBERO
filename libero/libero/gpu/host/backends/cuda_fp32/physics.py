@@ -13,6 +13,7 @@ from .data import newton_workspace
 from .fused_tail import FusedAdvance
 from .fused_position import FusedCenteredMass
 from .fused_kinematic_mass import FusedKinematicMass
+from .fused_actuation_solve import FusedActuationSolve
 from .fused_motion import FusedMotion
 from .fused_motion_passive import FusedMotionPassive
 from .bridges import Bridges
@@ -134,6 +135,7 @@ class Physics:
         self.actuation=actuation.ActuatorForces(m,d,products('actuation'),stream)
         self.smooth=smooth_force.SmoothForce(m,d,products('smooth_force'),stream)
         self.actuation.bind_smooth(self.smooth)
+        self.actuation_solve=FusedActuationSolve(self.actuation,self.smooth_solve,products.folder/'fp32_fused_actuation_solve.so')
         self.newton=Newton(m,d,stream,products)
         self.external=external.ExternalWrenchNumerics(m,d,products('external_wrench'),stream,admission=external.qualify(m,d,implementation='cuda'))
         self.postconstraint=postconstraint.PostconstraintRNE(m,d,products('postconstraint'),stream,top).prepare_fusion()
@@ -183,9 +185,11 @@ class Physics:
         if m.opt.disableflags&types.DisableBit.ACTUATION:
             d.act_dot.zero_();d.qfrc_actuator.zero_();d.actuator_force.zero_()
             self.smooth.enqueue()
+            (self.public_solve if public else self.smooth_solve).enqueue_fused()
+        elif public:
+            self.actuation.enqueue_smooth();self.public_solve.enqueue_fused()
         else:
-            self.actuation.enqueue_smooth()
-        (self.public_solve if public else self.smooth_solve).enqueue_fused()
+            self.actuation_solve.enqueue()
         self.newton.solve()
         if m.opt.run_rne_postconstraint or (not m.opt.disableflags&types.DisableBit.SENSOR and m.sensor_rne_postconstraint):
             self.external.enqueue();self.postconstraint.enqueue_sensors()
