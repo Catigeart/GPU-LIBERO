@@ -10,6 +10,7 @@ def source_id(component):
     folder='collision' if component in ('broadphase','plane','box','convex') else 'dynamics'
     names = (f'cuda/{folder}/mjwarp_{component}.cu', f'cuda/{folder}/mjwarp_{component}.cuh')
     if component=='fluid':names+=('cuda/dynamics/mjwarp_passive.cuh',)
+    if component in ('fluid','passive'):names+=('cuda/dynamics/mjwarp_passive_math.cuh',)
     if component=='actuation':names+=('cuda/dynamics/mjwarp_smooth_force.cuh',)
     if component=='kinematics':names+=('cuda/dynamics/mjwarp_camlight.cuh',)
     if component not in ('passive','actuation','euler','transmission','kinematics','com_pos','camlight','fluid','external_wrench','constraint_build','broadphase','plane','box','convex','publication'):names+=('cuda/dynamics/mjwarp_spatial.cuh',)

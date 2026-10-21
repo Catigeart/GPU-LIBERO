@@ -320,3 +320,15 @@ pointer; the existing passive descriptor keeps its input const contract.
 There is no fluid reload or additional barrier/shared allocation. Spring/damper
 production and gravity projection still precede this kernel. No-fluid and
 both-disabled caller paths retain their existing scheduling and holds.
+
+The default fluid path further joins joint spring/damper production through
+`prepare_joint_fusion/enqueue_joint_passive -> world_fluid<...,true,true>`.
+The joint loop is literal CUDA inside the fused function. A dedicated otherwise
+idle warp produces small-model joint spans concurrently with body wrenches;
+the existing body-force barrier orders both before passive consumption.
+Large/unsupported producer layouts retain the full-thread mapping. The small
+quaternion/polynomial math definitions are shared with standalone passive in
+`cuda/dynamics/mjwarp_passive_math.cuh`, with both CMake identities admitting it.
+Gravity projection runs before these independent joint/fluid producers; its
+inputs do not depend on their outputs. No new numerical storage or barrier is
+added, and no-fluid/both-disabled paths retain their original behavior.

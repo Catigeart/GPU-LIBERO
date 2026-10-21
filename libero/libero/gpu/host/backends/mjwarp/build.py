@@ -106,6 +106,9 @@ def source_files(*, include_hessian=False, include_direction=False, include_cons
         for name in ('cuda/dynamics/mjwarp_fluid.cu','cuda/dynamics/mjwarp_fluid.cuh','cmake/MjwarpFluid.cmake',
                      'host/runtime/dynamics/mjwarp_fluid.py','host/runtime/dynamics/mjwarp_motion.py'):
             files[name]=digest(GPU_ROOT/name)
+    if include_passive or include_fluid:
+        for name in ('cuda/dynamics/mjwarp_passive.cuh','cuda/dynamics/mjwarp_passive_math.cuh'):
+            files[name]=digest(GPU_ROOT/name)
     if include_euler:
         files['host/runtime/dynamics/mjwarp_passive.py']=digest(GPU_ROOT/'host/runtime/dynamics/mjwarp_passive.py')
     return files

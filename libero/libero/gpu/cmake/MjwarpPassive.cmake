@@ -1,6 +1,6 @@
 # Independent optional joint spring/damper and passive-force combination.
 set(mjwarp_passive_sources "${FLASH_GPU}/cuda/dynamics/mjwarp_passive.cu"
-  "${FLASH_GPU}/cuda/dynamics/mjwarp_passive.cuh" "${CMAKE_CURRENT_LIST_FILE}")
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_passive.cuh" "${FLASH_GPU}/cuda/dynamics/mjwarp_passive_math.cuh" "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_passive_sources})
 set(passive_hashes)
 foreach(source IN LISTS mjwarp_passive_sources)

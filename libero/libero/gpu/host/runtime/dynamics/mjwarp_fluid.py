@@ -115,3 +115,16 @@ class FluidNumerics:
     def enqueue_passive(self):
         err=self.passive_launch(ct.byref(self.arguments),ct.byref(self.passive.arguments),self.passive.arrays['adhesion'].ptr,self.stream.cuda_stream)
         if err:raise RuntimeError('Fluid/passive failed: CUDA error '+str(err))
+
+    def prepare_joint_fusion(self):
+        from .mjwarp_passive import PassiveInputs
+        arrays=dict(self.arrays)
+        arrays.update({'passive_'+k:v for k,v in self.passive.arrays.items() if k!='fluid'})
+        reject_output_overlap(arrays,('body_force','qfrc','passive_spring','passive_damper','passive_adhesion','passive_passive'))
+        self.joint_launch=self.library.flash_mjwarp_fluid_joint_passive
+        self.joint_launch.argtypes=[ct.POINTER(FluidInputs),ct.POINTER(PassiveInputs),ct.c_void_p,ct.c_void_p]
+        self.joint_launch.restype=ct.c_int
+
+    def enqueue_joint_passive(self):
+        err=self.joint_launch(ct.byref(self.arguments),ct.byref(self.passive.arguments),self.passive.arrays['adhesion'].ptr,self.stream.cuda_stream)
+        if err:raise RuntimeError('Joint/fluid/passive failed: CUDA error '+str(err))

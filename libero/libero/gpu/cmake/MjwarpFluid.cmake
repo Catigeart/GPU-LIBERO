@@ -1,6 +1,6 @@
 # Independent inertia-box fluid force and generalized-force projection.
 set(mjwarp_fluid_sources "${FLASH_GPU}/cuda/dynamics/mjwarp_fluid.cu"
-  "${FLASH_GPU}/cuda/dynamics/mjwarp_fluid.cuh" "${FLASH_GPU}/cuda/dynamics/mjwarp_passive.cuh" "${CMAKE_CURRENT_LIST_FILE}")
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_fluid.cuh" "${FLASH_GPU}/cuda/dynamics/mjwarp_passive.cuh" "${FLASH_GPU}/cuda/dynamics/mjwarp_passive_math.cuh" "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_fluid_sources})
 set(fluid_hashes)
 foreach(source IN LISTS mjwarp_fluid_sources)

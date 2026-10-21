@@ -3,9 +3,12 @@
 // Pinned passive.py inertia-box fluid and support.py::_apply_ft(False).
 #include "mjwarp_fluid.cuh"
 #include "mjwarp_passive.cuh"
+#include "mjwarp_passive_math.cuh"
 #include <cmath>
 namespace flash::mjwarp {
 namespace {
+using passive_math::polynomial;
+using passive_math::rotation_difference;
 struct V {float x,y,z;};
 __device__ inline V load3(const float* p,int i) {p+=3*i;return {p[0],p[1],p[2]};}
 __device__ inline V operator-(V a,V b) {return {a.x-b.x,a.y-b.y,a.z-b.z};}
@@ -97,11 +100,52 @@ __global__ void project_fluid(FluidInputs a) {
 }
 // One world CTA produces current body wrenches and consumes them in the
 // complete per-DOF subtree projection. No contact-pool work is included.
-template<int Threads,bool Shared,bool Compose=false>
+template<int Threads,bool Shared,bool Compose=false,bool Joint=false>
 __global__ void world_fluid(FluidInputs a,PassiveInputs p,float* adhesion) {
   __shared__ float scratch[Shared ? 6*64 : 1];
   const int w=blockIdx.x,x=threadIdx.x;
   float* storage=Shared ? scratch : a.body_force+6*w*a.bodies;
+  if constexpr(Joint) {
+    // Small models leave the last warp free of body jobs. Its independent
+    // joint producer overlaps fluid work, sharing the existing final barrier.
+    const bool dedicated=Shared && Threads>=128 && p.joints<=64;
+    const int worker=dedicated ? (x>=Threads-32 ? x%32 : p.joints) : x;
+    const int stride=dedicated ? 32 : Threads;
+    for(int j=worker;j<p.joints;j+=stride) {
+      const int d=p.dofadr[j],kind=p.joint_type[j];
+      int pos=p.qposadr[j];const int width=kind==0 ? 6 : (kind==1 ? 3 : 1);
+      const float* q=p.qpos+w*p.nq;
+      const float* ref=p.qpos_spring+(w%p.spring_rows)*p.nq;
+      float k=p.stiffness[(w%p.stiffness_rows)*p.joints+j];
+      const float* sp=p.stiffnesspoly+((w%p.stiffnesspoly_rows)*p.joints+j)*2;
+      bool has_stiffness=!p.disable_spring && (k!=0.0f || sp[0]!=0.0f || sp[1]!=0.0f);
+      for (int i=0;i<width;++i) {
+        float damping=p.damping[(w%p.damping_rows)*p.nv+d+i];
+        const float* dp=p.dampingpoly+((w%p.dampingpoly_rows)*p.nv+d+i)*2;
+        float v=p.qvel[w*p.nv+d+i],force=0.0f;
+        if (!p.disable_damper && (damping!=0.0f || dp[0]!=0.0f || dp[1]!=0.0f))
+          force=-v*polynomial(damping,dp,fabsf(v));
+        p.damper[w*p.nv+d+i]=force;
+        p.spring[w*p.nv+d+i]=0.0f;
+      }
+      if (!has_stiffness) continue;
+      float* spring=p.spring+w*p.nv+d;
+      if (kind==0) {
+        float x=q[pos]-ref[pos],y=q[pos+1]-ref[pos+1],z=q[pos+2]-ref[pos+2];
+        float gain=polynomial(k,sp,sqrtf(x*x+y*y+z*z));
+        spring[0]=-gain*x;spring[1]=-gain*y;spring[2]=-gain*z;
+        spring+=3;pos+=3;
+      }
+      if (kind==0 || kind==1) {
+        float delta[3];rotation_difference(q+pos,ref+pos,delta);
+        float r=sqrtf(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2]);
+        float gain=polynomial(k,sp,r);
+        for (int i=0;i<3;++i) spring[i]=-gain*delta[i];
+      } else {
+        float delta=q[pos]-ref[pos];spring[0]=-delta*polynomial(k,sp,delta);
+      }
+    }
+  }
   for(int b=x;b<a.bodies;b+=Threads) {
     const int t=w*a.bodies+b;
     float* output=storage+6*b;
@@ -260,5 +304,16 @@ int flash_mjwarp_fluid_passive(const flash::mjwarp::FluidInputs* a,
   else flash::mjwarp::world_fluid<128,false,true><<<a->worlds,128,0,stream>>>(*a,*p,adhesion);
   return cudaGetLastError();
 }
+int flash_mjwarp_fluid_joint_passive(const flash::mjwarp::FluidInputs* a,
+                             const flash::mjwarp::PassiveInputs* p,float* adhesion,cudaStream_t stream) {
+  if (!a || !p || p->nq<1 || p->spring_rows<1 || p->stiffness_rows<1 || p->stiffnesspoly_rows<1 || p->damping_rows<1 || p->dampingpoly_rows<1 || a->worlds<1 || a->bodies<2 || a->nv<1 || a->mass_rows<1 || a->inertia_rows<1 ||
+      a->wind_rows<1 || a->density_rows<1 || a->viscosity_rows<1 || a->worlds!=p->worlds ||
+      a->nv!=p->nv || p->joints<1 || !p->has_fluid || p->fluid!=a->qfrc || !adhesion || adhesion!=p->adhesion) return cudaErrorInvalidValue;
+  if(a->bodies<=64) flash::mjwarp::world_fluid<128,true,true,true><<<a->worlds,128,0,stream>>>(*a,*p,adhesion);
+  else if(a->bodies>128 || a->nv>128) flash::mjwarp::world_fluid<512,false,true,true><<<a->worlds,512,0,stream>>>(*a,*p,adhesion);
+  else flash::mjwarp::world_fluid<128,false,true,true><<<a->worlds,128,0,stream>>>(*a,*p,adhesion);
+  return cudaGetLastError();
+}
+
 
 }

@@ -108,7 +108,8 @@ class Physics:
         fa=fluid.qualify(m,d,implementation='cuda')
         if m.has_fluid and fa['selected']!='cuda':raise ValueError(fa['fallback'])
         self.fluid=fluid.FluidNumerics(m,d,products('fluid'),stream,admission=fa) if m.has_fluid else None
-        if self.fluid is not None:self.fluid.bind_passive(self.passive)
+        if self.fluid is not None:
+            self.fluid.bind_passive(self.passive);self.fluid.prepare_joint_fusion()
         self.gravity=queries.GravityProjection(m,d,products('queries'),stream)
         self.bias=bias.Bias(m,d,products('bias'),stream,top)
         self.bias.prepare_fusion()
@@ -143,9 +144,10 @@ class Physics:
         if self.passive.flags['disable_spring'] and self.passive.flags['disable_damper']:
             for name in ('qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive'):getattr(d,name).zero_()
         else:
-            self.passive.enqueue(0);d.qfrc_gravcomp.zero_()
+            if self.fluid is None:self.passive.enqueue(0)
+            d.qfrc_gravcomp.zero_()
             if not m.opt.disableflags&types.DisableBit.GRAVITY:self.gravity.enqueue()
-            if self.fluid is not None:self.fluid.enqueue_passive()
+            if self.fluid is not None:self.fluid.enqueue_joint_passive()
             else:
                 d.qfrc_adhesion.zero_();self.passive.enqueue(1)
 
