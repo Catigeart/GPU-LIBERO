@@ -109,6 +109,19 @@ __global__ void inertial_frames(KinematicsInputs a) {
   store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
   matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
 }
+// One world owns body matrices and inertial frames. Both consume the same
+// current body quaternion; no inter-thread producer/consumer barrier is needed.
+template<int Threads>
+__global__ void body_frames(KinematicsInputs a) {
+  const int w=blockIdx.x;
+  for (int b=threadIdx.x;b<a.bodies;b+=Threads) {
+    const int t=w*a.bodies+b;
+    Q q=load4(a.xquat,t);
+    matrix(a.xmat,t,q);
+    store3(a.xipos,t,load3(a.xpos,t)+rotate(load3(a.ipos,(w%a.ipos_rows)*a.bodies+b),q));
+    matrix(a.ximat,t,mul(q,load4(a.iquat,(w%a.iquat_rows)*a.bodies+b)));
+  }
+}
 __global__ void geom_frames(KinematicsInputs a) {
   int t=blockIdx.x*blockDim.x+threadIdx.x;
   if (t>=a.worlds*a.geoms) return;
@@ -141,6 +154,7 @@ int flash_mjwarp_kinematics_launch(const flash::mjwarp::KinematicsInputs* a,int 
   else if (phase==2) inertial_frames<<<(a->worlds*a->bodies+255)/256,256,0,stream>>>(*a);
   else if (phase==3) {if (!a->geoms) return 0;geom_frames<<<(a->worlds*a->geoms+255)/256,256,0,stream>>>(*a);}
   else if (phase==4) {if (!a->sites) return 0;site_frames<<<(a->worlds*a->sites+255)/256,256,0,stream>>>(*a);}
+  else if (phase==5) body_frames<64><<<a->worlds,64,0,stream>>>(*a);
   else return int(cudaErrorInvalidValue);
   return int(cudaGetLastError());
 }
