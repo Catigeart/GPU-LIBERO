@@ -27,5 +27,6 @@ std::size_t flash_mjwarp_solver_state_init_bytes();
 std::size_t flash_mjwarp_solver_state_stop_bytes();
 int flash_mjwarp_solver_state_arch();
 int flash_mjwarp_solver_state_initialize(const flash::mjwarp::InitInputs*, cudaStream_t);
+int flash_mjwarp_solver_state_fused(const flash::mjwarp::InitInputs*, float*, bool*, int*, cudaStream_t);
 int flash_mjwarp_solver_state_stop(const flash::mjwarp::StopInputs*, cudaStream_t);
 }

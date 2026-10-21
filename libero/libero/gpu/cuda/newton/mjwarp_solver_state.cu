@@ -56,6 +56,41 @@ __global__ void initialize_ma(InitInputs a) {
                         a.mass + w * a.mass_entries, a.qacc + w * a.nv);
 }
 
+// One world owns initialization, so qacc selection and full zero/hold rules
+// share one producer barrier before independent Ma/Jaref consumers.
+template<int Threads,bool Shared>
+__global__ void initialize_world(InitInputs a,float* grad,bool* exhausted,int* nsolving) {
+  const int w=blockIdx.x,x=threadIdx.x;
+  __shared__ float scratch[Shared ? 128 : 1];
+  const float* selected=Shared ? scratch : a.qacc+w*a.nv;
+  const float* __restrict__ jac=a.jacobian;
+  const int chunk=a.nv>50 ? 20 : 50,parts=(a.nv+chunk-1)/chunk;
+  for(int i=x;i<a.nv;i+=Threads) {
+    float value=a.warmstart && a.nefc[w]>0 ? a.warm_acceleration[w*a.nv+i] : a.smooth_acceleration[w*a.nv+i];
+    a.qacc[w*a.nv+i]=value;
+    if constexpr(Shared) scratch[i]=value;
+  }
+  for(int i=x;i<a.pad;i+=Threads) grad[w*a.pad+i]=0.f;
+  if(parts>1) for(int r=x;r<a.rows;r+=Threads) a.jaref[w*a.rows+r]=0.f;
+  if(x==0) {
+    a.niter[w]=0;a.done[w]=false;a.search_dot[w]=0.f;
+    exhausted[w]=false;
+    if(w==0) *nsolving=a.worlds;
+  }
+  __syncthreads();
+  for(int i=x;i<a.nv;i+=Threads)
+    a.ma[w*a.nv+i]=mass_row_dot(i,a.mass_row,a.mass_col,a.mass_address,a.mass+w*a.mass_entries,selected);
+  // Four adjacent lanes cooperate on one row; the complete dot has a
+  // single publisher, replacing split partial atomics within this world.
+  const int lane=x%4;const unsigned mask=0xfu<<((x%32)/4*4);
+  for(int row=x/4;row<min(a.rows,a.nefc[w]);row+=Threads/4) {
+    const int at=w*a.rows+row;float value=0.f;
+    for(int i=lane;i<a.nv;i+=4) value+=jac[at*a.pad+i]*selected[i];
+    for(int shift=2;shift;shift/=2) value+=__shfl_down_sync(mask,value,shift,4);
+    if(lane==0) a.jaref[at]=value-a.aref[at];
+  }
+}
+
 // One thread per world, with an exact once-only transition to done. There is
 // no reduction/barrier here; nsolving is the device conditional-Graph counter.
 __global__ void stop_worlds(StopInputs a) {
@@ -106,6 +141,14 @@ int flash_mjwarp_solver_state_initialize(const flash::mjwarp::InitInputs* input,
   initialize_jaref<<<(a.worlds * a.rows * parts + 255) / 256, 256, 0, stream>>>(a, parts, chunk);
   initialize_ma<<<(a.worlds * a.nv + 255) / 256, 256, 0, stream>>>(a);
   return int(cudaGetLastError());
+}
+int flash_mjwarp_solver_state_fused(const flash::mjwarp::InitInputs* a,float* grad,
+                                  bool* exhausted,int* nsolving,cudaStream_t stream) {
+  if(!a || a->worlds<1 || a->nv<1 || a->pad<a->nv || a->rows<1 || !grad || !exhausted || !nsolving)
+    return cudaErrorInvalidValue;
+  if(a->nv<=128) flash::mjwarp::initialize_world<1024,true><<<a->worlds,1024,0,stream>>>(*a,grad,exhausted,nsolving);
+  else flash::mjwarp::initialize_world<1024,false><<<a->worlds,1024,0,stream>>>(*a,grad,exhausted,nsolving);
+  return cudaGetLastError();
 }
 int flash_mjwarp_solver_state_stop(const flash::mjwarp::StopInputs* input, cudaStream_t stream) {
   using namespace flash::mjwarp;

@@ -266,3 +266,14 @@ the already-required force barrier, avoiding repeated six-component zero
 checks and bypassing projection when all applied wrenches are zero. Larger
 models keep direct current-wrench checks. No extra barrier or physical cache
 is introduced. Disabled actuation retains its clear and standalone smooth path.
+
+Newton setup uses `DenseSolverState.initialize_fused` and
+`cuda/newton/mjwarp_solver_state.cu::initialize_world<1024>`: warmstart selection,
+per-solve clears, initial sparse Ma and dense Jaref share one world-owned CTA
+and one producer barrier. Four adjacent lanes own a J row and publish a full
+dot without partial atomics. Up to 128 DOFs, a bounded 512-byte shared vector
+reuses the selected acceleration; larger inputs read its global publication.
+The original initialization entry remains available. Inactive Jaref rows keep
+the original split-path clear or single-path hold rule. Iteration count,
+warmstart selection, stopping and the conditional Graph loop are unchanged.
+Qualification covers all 13 shipped NV families plus a larger fallback input.

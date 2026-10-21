@@ -45,15 +45,13 @@ class Newton:
         self.linesearch=linesearch.LinesearchPlan(m,d,products('linesearch'),stream).bind(c)
         self.state=solver_state.SolverStatePlan(m,d,products('solver_state'),stream).bind(c)
         self.nsolving=cuda.zeros(1,dtype=int);self.state.bind_stopping(self.nsolving)
+        self.state.bind_initialization(c.grad,c.ls_exhausted,self.nsolving)
 
     def gradient(self):
         self.direction.enqueue(stage=1);self.assembly.enqueue();self.direction.enqueue(stage=2)
 
     def solve(self):
-        # These were zeroed by upstream context creation for EACH solve.
-        self.context.grad.zero_();self.context.ls_exhausted.zero_()
-        self.state.initialize();self.constraint.enqueue();self.gradient()
-        cuda.store_integer(self.nsolving,self.data.nworld)
+        self.state.initialize_fused();self.constraint.enqueue();self.gradient()
         if self.model.opt.iterations:
             with cuda.While(self.nsolving):
                 self.linesearch.enqueue();self.constraint.enqueue();self.gradient();self.state.stop()

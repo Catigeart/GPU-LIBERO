@@ -123,3 +123,24 @@ class DenseSolverState:
         if not self.stop_arguments.nsolving:raise RuntimeError('bind the per-solve conditional counter first')
         error=self.stop_launch(ct.byref(self.stop_arguments),self.stream.cuda_stream)
         if error:raise RuntimeError('Handwritten Newton stopping failed: CUDA error '+str(error))
+
+    def bind_initialization(self,grad,exhausted,nsolving):
+        from libero.gpu.host.runtime.cuda_api import array_api
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import bind_array,reject_output_overlap
+        wp=array_api(self.stream);n=self.init_arguments.worlds;pad=self.init_arguments.pad
+        arrays=dict(self.initial_arrays)
+        bind_array(arrays,'grad',grad,wp.float32,(n,pad),self.stream)
+        bind_array(arrays,'exhausted',exhausted,wp.bool,(n,),self.stream)
+        bind_array(arrays,'nsolving',nsolving,wp.int32,(1,),self.stream)
+        if self.stop_arrays.get('nsolving') is not nsolving:
+            raise ValueError('Initialization/stopping counter owner differs')
+        reject_output_overlap(arrays,('qacc','ma','jaref','search_dot','niter','done','grad','exhausted','nsolving'))
+        self.initial_aux=grad,exhausted,nsolving
+        self.fused_launch=self.plan.library.flash_mjwarp_solver_state_fused
+        self.fused_launch.argtypes=[ct.POINTER(InitInputs),ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_void_p]
+        self.fused_launch.restype=ct.c_int
+
+    def initialize_fused(self):
+        grad,exhausted,nsolving=self.initial_aux
+        error=self.fused_launch(ct.byref(self.init_arguments),grad.ptr,exhausted.ptr,nsolving.ptr,self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused Newton initialization failed: CUDA error '+str(error))
