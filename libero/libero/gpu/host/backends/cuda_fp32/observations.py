@@ -187,6 +187,9 @@ class DeviceFieldPacker:
             occupied.update(region)
         self.buffer=cuda.zeros(nworld*self.stride,dtype=cuda.float32,device=device)
         self.bridge=bridge(device)
+        from .fused_observations import FusedRawPack,FIELDS
+        self.fused_raw=(FusedRawPack(self,self.buffer.stream.runtime.path.parent/'fp32_fused_observations.so')
+                        if self.stride>0 and set(self.layout)==set(FIELDS) else None)
 
 
     def validate(self,fields):
@@ -201,6 +204,9 @@ class DeviceFieldPacker:
 
     def copy_from(self,fields,stream=None):
         self.validate(fields)
+        if self.fused_raw is not None:
+            self.fused_raw.enqueue(fields)
+            return self.buffer
         for name,(offset,width) in self.layout.items():
             if width:self.bridge.call('pack',self.nworld,width,width,self.stride,offset,fields[name].ptr,self.buffer.ptr)
         return self.buffer

@@ -65,7 +65,8 @@ def main():
         if args.mathdx_root:
             configure.append('-DFLASH_MATHDX_ROOT='+str(args.mathdx_root))
         subprocess.run(configure, check=True)
-        targets = ['flash_cuda_runtime', 'flash_cuda_bridges_fp32', 'flash_fp32_fused_tail'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
+        targets = ['flash_cuda_runtime', 'flash_cuda_bridges_fp32', 'flash_fp32_fused_tail',
+                   'flash_fp32_fused_observations'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
         subprocess.run(['cmake', '--build', str(folder), '--parallel', str(args.jobs), '--target', *targets], check=True)
     report = dict(tasks=rows, cuda_directory=str(folder), warp_dependency=False,
                   physics_integrations=0, scene_backend='CPU MuJoCo 3.16.0')

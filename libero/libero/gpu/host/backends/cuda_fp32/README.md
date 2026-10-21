@@ -2,8 +2,9 @@
 
 This backend owns FP32 CUDA buffers, streams, graphs, model preprocessing and
 LIBERO batch lifecycle. Neither `warp` nor `mujoco_warp` is required to prepare
-its modern CPU models or execute physics. Its mathematical CUDA sources are
-shared with the handwritten MJWarp migration path, rather than duplicated.
+its modern CPU models or execute physics. Numerical leaves are shared with the
+handwritten MJWarp migration path; readable world-local fusion explicitly
+combines accepted phases in `cuda/fp32/`.
 It is the default `GpuBatchEnv` backend when precision is omitted and
 `LIBERO_GPU_PRECISION` is unset. Select `precision="fp64"` explicitly to use
 the native FP64 backend in its separate environment.
@@ -108,6 +109,13 @@ validated Euler and publication bindings. Damping preparation and factor/solve
 still precede advancement; observation sampling follows the completed kernel.
 Local frozen-input qualification does not imply a new full-task numerical or
 performance result.
+
+`fused_observations.cu::pack_raw` combines the five low-dimensional field copies
+in one 128-thread CTA per world. `DeviceFieldPacker` selects it for the default
+five-field layout; scene and other layouts retain their existing copy path.
+The target `flash_fp32_fused_observations` and the tail target have separate
+CMake recipes and source identities, so editing one region does not recompile
+the other. Packing retains the original observation buffer and sampling epoch.
 
 The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
 compatibility helper in `facade.py` remain shared. Their location does not make
