@@ -17,7 +17,7 @@ class DirectionInputs(ct.Structure):
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names = ('cuda/newton/mjwarp_direction.cu', 'cuda/newton/mjwarp_direction.cuh',
-             'cmake/MjwarpDirection.cmake')
+             'cuda/newton/mjwarp_solver_state.cuh','cmake/MjwarpDirection.cmake')
     hashes = ':'.join(hashlib.sha256((GPU_ROOT / n).read_bytes()).hexdigest() for n in names)
     return hashlib.sha256(hashes.encode()).hexdigest()
 
@@ -90,6 +90,34 @@ class DenseDirection:
         self.launch = plan.library.flash_mjwarp_direction_launch
         self.launch.argtypes = [ct.POINTER(DirectionInputs),ct.c_int,ct.c_void_p]
         self.launch.restype = ct.c_int
+
+    def bind_stopping(self,state):
+        from .mjwarp_solver_state import StopInputs
+        p=self.plan;sp=state.plan
+        if p.model is not sp.model or p.data is not sp.data or self.stream is not state.stream:
+            raise ValueError('Direction/stopping owner differs')
+        a,b=self.arguments,state.stop_arguments
+        if not b.nsolving or any(getattr(a,k)!=getattr(b,k) for k in ('worlds','nv','done','grad_dot','decrement')):
+            raise ValueError('Direction/stopping bridge differs')
+        size=p.library.flash_mjwarp_direction_stop_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(StopInputs):raise ValueError('Direction stopping ABI differs')
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import reject_output_overlap
+        arrays=dict(self.arrays)
+        arrays.update({'stop_'+k:v for k,v in state.stop_arrays.items()
+                       if k not in ('done','grad_dot','decrement')})
+        reject_output_overlap(arrays,('factor','search','search_dot','decrement','done',
+                                      'stop_niter','stop_overflow','stop_nsolving'))
+        self.stopping=state
+        self.stop_launch=p.library.flash_mjwarp_direction_stopping
+        self.stop_launch.argtypes=[ct.POINTER(DirectionInputs),ct.POINTER(StopInputs),ct.c_void_p]
+        self.stop_launch.restype=ct.c_int
+        return self
+
+    def enqueue_stopping(self):
+        if self.stopping.stop_arguments.warn_overflow & (1<<9):
+            self.enqueue(stage=2);self.stopping.stop();return
+        error=self.stop_launch(ct.byref(self.arguments),ct.byref(self.stopping.stop_arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Direction/stopping failed: CUDA error '+str(error))
 
     def enqueue(self, stage=0):
         error = self.launch(ct.byref(self.arguments),stage,self.stream.cuda_stream)

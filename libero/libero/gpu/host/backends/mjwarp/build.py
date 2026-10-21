@@ -27,6 +27,9 @@ def source_files(*, include_hessian=False, include_direction=False, include_cons
         for name in ('cuda/newton/mjwarp_direction.cu', 'cuda/newton/mjwarp_direction.cuh',
                      'cmake/MjwarpDirection.cmake', 'host/runtime/newton/mjwarp_direction.py'):
             files[name] = digest(GPU_ROOT / name)
+    if include_direction or include_constraint or include_linesearch or include_state:
+        for name in ('cuda/newton/mjwarp_solver_state.cuh','host/runtime/newton/mjwarp_solver_state.py'):
+            files[name]=digest(GPU_ROOT/name)
     if include_constraint or include_linesearch or include_state:
         for name in ('cuda/newton/mjwarp_constraint.cu', 'cuda/newton/mjwarp_constraint.cuh',
                      'cmake/MjwarpConstraint.cmake', 'host/runtime/newton/mjwarp_constraint.py'):

@@ -2,6 +2,7 @@
 set(mjwarp_direction_sources
   "${FLASH_GPU}/cuda/newton/mjwarp_direction.cu"
   "${FLASH_GPU}/cuda/newton/mjwarp_direction.cuh"
+  "${FLASH_GPU}/cuda/newton/mjwarp_solver_state.cuh"
   "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_direction_sources})
 set(direction_hashes)

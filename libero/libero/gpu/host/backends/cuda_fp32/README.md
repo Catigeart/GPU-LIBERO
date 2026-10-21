@@ -424,3 +424,21 @@ padding, compact inverse and unused-triangle rules are preserved. Sixty-nine
 N=2 local cases pass FP64 reconstruction/residual/sensitivity checks, including
 condition1e4 and budget/multi9 fallbacks. Local real-fixture gains are measured
 under contention and do not establish whole-task throughput.
+
+
+`DenseDirection.bind_stopping/enqueue_stopping` joins Newton stopping to the
+existing direction publication owner. Actual stop arithmetic is present in
+`mjwarp_direction.cu::direction_small/blocked<...,true>`, with no additional
+barrier or shared allocation. Initial gradient/direction still skips stopping;
+subsequent line-search gradients perform the same iteration, convergence,
+overflow and once-only conditional-counter update. The ordinary fused path has
+no printf call frame, while warning-enabled callers retain the standalone
+warning path. Common owners, bridge pointers, output nonoverlap and the stop
+ABI are checked before capture.
+
+Thirty-seven N=2 regional cases cover all13NVfamilies and warning/limit/done
+paths. Timing uses a frozen source-matched prechange direction DSO. NV21/NV39
+fixtures show modest local gains; some larger/real-derived paired measurements
+are inconclusive under contention, with large swings in the unchanged baseline
+itself. Those raw mixed outcomes remain experimental evidence and are not
+reported as stable gains or whole-task throughput.

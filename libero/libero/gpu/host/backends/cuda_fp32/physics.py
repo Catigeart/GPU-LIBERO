@@ -49,15 +49,18 @@ class Newton:
         self.state=solver_state.SolverStatePlan(m,d,products('solver_state'),stream).bind(c)
         self.nsolving=cuda.zeros(1,dtype=int);self.state.bind_stopping(self.nsolving)
         self.state.bind_initialization(c.grad,c.ls_exhausted,self.nsolving)
+        self.direction.bind_stopping(self.state)
 
-    def gradient(self):
-        self.constraint.enqueue_gradient();self.assembly.enqueue();self.direction.enqueue(stage=2)
+    def gradient(self,*,stop=False):
+        self.constraint.enqueue_gradient();self.assembly.enqueue()
+        if stop:self.direction.enqueue_stopping()
+        else:self.direction.enqueue(stage=2)
 
     def solve(self):
         self.state.initialize_fused();self.gradient()
         if self.model.opt.iterations:
             with cuda.While(self.nsolving):
-                self.linesearch.enqueue_fused();self.gradient();self.state.stop()
+                self.linesearch.enqueue_fused();self.gradient(stop=True)
 
 
 class Collision:
