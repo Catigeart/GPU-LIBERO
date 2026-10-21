@@ -98,7 +98,10 @@ CPU/GPU reset/time-event difference, retained in the per-task CSV flag.
 LIBERO-100 is the union of LIBERO-90 and LIBERO-10, not another 100 measurements.
 **FP32 timing predates the ND-05 GJK correction.** Subsequent local geometry and
 three-task correctness checks did not repeat the full-suite timings. No new
-physics or performance run was performed to assemble this figure.
+physics or performance run was performed to assemble this figure. The chart also
+predates the subsequent world-local FP32 fusion. That work uses
+[regional endpoint checks and local timings](libero/libero/gpu/host/backends/cuda_fp32/README.md#supported-scope-and-validation);
+it does not provide a new full-suite throughput result.
 
 [Per-task CSV](media/benchmarks/task-throughput.csv) ·
 [Aggregate CSV](media/benchmarks/suite-throughput.csv) ·

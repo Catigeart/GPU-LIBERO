@@ -70,6 +70,10 @@ def source_files(*, include_hessian=False, include_direction=False, include_cons
             for name in (f'cuda/dynamics/mjwarp_{component}.cu',f'cuda/dynamics/mjwarp_{component}.cuh',
                          f'cmake/Mjwarp{component.title()}.cmake',f'host/runtime/dynamics/mjwarp_{component}.py'):
                 files[name]=digest(GPU_ROOT/name)
+    for enabled,name in ((include_actuation,'cuda/dynamics/mjwarp_smooth_force.cuh'),
+                         (include_constraint or include_linesearch or include_state,'cuda/newton/mjwarp_direction.cuh'),
+                         (include_kinematics,'cuda/dynamics/mjwarp_camlight.cuh')):
+        if enabled:files[name]=digest(GPU_ROOT/name)
     if include_com_pos:
         for name in ('cuda/dynamics/mjwarp_com_pos.cu','cuda/dynamics/mjwarp_com_pos.cuh',
                      'cmake/MjwarpComPos.cmake','host/runtime/dynamics/mjwarp_com_pos.py','host/runtime/dynamics/mjwarp_motion.py'):

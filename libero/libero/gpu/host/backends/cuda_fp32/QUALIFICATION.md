@@ -7,7 +7,10 @@ trajectory is identical to unmodified MJWarp or CPU MuJoCo 2.3.7.
 **Revision scope:** the full-suite numbers and installed-package evidence below
 precede the ND-05 follow-up described at the end. The current convex library
 contains that later correction; no new 130-task numerical or timing total is
-inferred from its targeted checks.
+inferred from its targeted checks. The subsequent world-local fusion has
+[regional N=2 endpoint and local timing coverage](README.md#supported-scope-and-validation),
+without another full-task/130-task run. The historical counts below describe
+the qualified revision, not a rerun of every later fusion target.
 
 ## Dependency and integration results
 

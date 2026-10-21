@@ -439,6 +439,7 @@ def _source_identity_files(*, include_excluded=False):
                 'cuda/dynamics/mjwarp_postconstraint.cu', 'cuda/dynamics/mjwarp_postconstraint.cuh',
                 'host/runtime/dynamics/mjwarp_postconstraint.py',
                 'cuda/dynamics/mjwarp_passive.cu', 'cuda/dynamics/mjwarp_passive.cuh',
+                'cuda/dynamics/mjwarp_passive_math.cuh',
                 'host/runtime/dynamics/mjwarp_passive.py',
                 'cuda/dynamics/mjwarp_actuation.cu', 'cuda/dynamics/mjwarp_actuation.cuh',
                 'host/runtime/dynamics/mjwarp_actuation.py',
@@ -471,7 +472,7 @@ def _source_identity_files(*, include_excluded=False):
                         not include_excluded and base == GPU_ROOT and
                         (path.relative_to(base).as_posix() in excluded or
                          path.relative_to(base).as_posix().startswith((
-                             'host/backends/mjwarp/','host/backends/cuda_fp32/','cuda/runtime/')))):
+                             'host/backends/mjwarp/','host/backends/cuda_fp32/','cuda/runtime/','cuda/fp32/')))):
                     files[str(path.relative_to(REPO_ROOT))] = path
     return files
 

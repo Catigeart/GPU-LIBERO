@@ -44,8 +44,8 @@ The common project contains the CPU scene catalogue
 Those are CPU model inputs, not serialized Warp arrays. The existing catalogue
 preparation uses CPU MuJoCo 2.3.7; run it in its separate CPU environment.
 The command above imports the inputs using CPU MuJoCo 3.16.0 and builds only
-the independent runtime/transport, 29 shared handwritten CUDA targets and
-the world-local FP32 fusion target.
+the independent runtime/transport, shared handwritten CUDA targets and
+independently compiled FP32 fusion targets.
 It advances zero physics substeps. Existing compatible CMake products are reused.
 `--skip-build` prepares scenes only. Preparation and execution must be serialized
 on shared GPU machines. Runtime construction defaults to `allow_compile=False`.
@@ -66,470 +66,147 @@ fallback. Unsupported domains fail before simulation.
 ## Structure and call chain
 
 ```text
-GpuBatchEnv -> CudaFP32BatchEnv                       environment.py
-  build_scene -> prepare -> upload -> make_data      scene.py, model.py, data.py
-  Runtime.enqueue_action                             runtime.py
-    control Graph, 25 ordinary physical substeps
-      Physics.step1                                  physics.py
-        kinematics/COM/cameras/mass/collision/constraints/transmission
-        velocity/bias -> passive/gravity/fluid
-      Controller.enqueue                             controller.py, bridges.py
-        fused point/Jacobian/gather -> CUDA OSC + actuator publication
-      Physics.step2                                  physics.py
-        actuation -> smooth force -> mass solve
-        Newton.solve -> device conditional WHILE
-        postconstraint/sensors -> Euler -> warmstart publication
-      GPU observable/scene sampling                  observations.py
-  public boundary: predicates, dictionaries, GL      shared adapters
+GpuBatchEnv -> CudaFP32BatchEnv                         environment.py
+  scene inputs -> modern CPU model -> device data      scene.py, model.py, data.py
+  Runtime.enqueue_action                              runtime.py
+    CUDA Graph: 25 ordinary physical substeps
+      Physics.step1                                   physics.py
+        kinematics / derived frames / centers / mass
+        pooled collision -> constraint construction
+        transmission + entry clears
+        position-only gravity and motion / bias / passive forces
+      FusedControlDrive                               fused_control_drive.py
+        policy / full Jacobian / gather -> maintained OSC
+        actuator publication -> actuation / smooth force / mass solve
+      Physics.solve(unconstrained_ready=...)           physics.py
+        Newton initialization
+        constraint / gradient -> Hessian -> direction
+        device WHILE: line search -> gradient / Hessian / direction + stopping
+        pooled external wrench -> postconstraint / force sensors
+      FusedEulerStep                                  fused_euler_step.py
+        damping / private factor + solve -> qvel / qpos
+        Newton warmstart / time / overflow / substep accounting
+      current low-dimensional observation sampling     observations.py
+  public boundary: predicates, dictionaries, GL        shared adapters
 ```
 
-`device.py` defines contiguous allocations and views, not a numerical compiler.
-Logical vector/matrix shapes omit fixed components; byte capacities include
-them. Views retain their allocation owner. Uploads retain private host storage
-until stream completion. Graphs retain launch owners. Allocation is forbidden
-inside capture. Newton owns reusable device workspace; each solve explicitly
-initializes the same state that upstream initializes on allocation. Device
-conditionals use the current solve counter, without host iteration polling.
+This is one Newton solve per physical substep. Public `forward()` retains its
+factor/solve path; it does not reuse a stale public factor. Unsupported fusion
+layouts use accepted CUDA components. Disabled actuation, undamped integration,
+warning paths and custom observation callbacks keep their existing schedules.
+The archived 25-substep mega-kernel is not part of this execution path.
 
-`cuda/runtime/runtime.cu` implements the small C ABI resource owner;
-`cuda/runtime/bridges.cu` implements controller transport and observable sampling.
-They have independent CMake targets `flash_cuda_runtime` and
-`flash_cuda_bridges_fp32`. Physics remains in `cuda/{dynamics,newton,collision}/mjwarp*`
-and OSC in its existing controller target. The `mjwarp` prefix records algorithm
-provenance; those `.cu/.cuh` files do not depend on the Warp compiler or runtime.
-Shared ctypes pointer bindings select storage metadata via `host/runtime/cuda_api.py`.
+`device.py` owns contiguous allocations and views, rather than compiling
+numerical Python. Views retain allocation owners, uploads retain private host
+storage until completion, and Graphs retain launch owners. Allocation is
+forbidden during capture. Newton initializes its reusable workspace per solve;
+the conditional loop uses a current device counter without host iteration
+polling. `Controller.bootstrap` and standalone gather remain explicit entries.
 
-Readable world-local fusion lives in `cuda/fp32/`, independently compiled by
-`cmake/FP32Fusion.cmake`. `fused_tail.cu::advance` combines velocity and position
-advancement in one 64-thread CTA per world; its block barrier replaces the
-original kernel-completion dependency. The same kernel copies Newton `qacc`
-to warmstart and publishes time/overflow state. Warp 1 handles this auxiliary
-work while warp 0 integrates joint poses. `fused_tail.py::FusedAdvance` borrows
-validated Euler and publication bindings. Damping preparation and factor/solve
-still precede advancement; observation sampling follows the completed kernel.
-Local frozen-input qualification does not imply a new full-task numerical or
-performance result.
+### Numerical source map and selection
 
-`fused_observations.cu::pack_and_sample` combines the five low-dimensional field copies
-in one 128-thread CTA per world. `DeviceFieldPacker` selects it for the default
-five-field layout; scene and other layouts retain their existing copy path.
-The target `flash_fp32_fused_observations` and the tail target have separate
-CMake recipes and source identities, so editing one region does not recompile
-the other. Standalone packing retains the original observation buffer and sampling epoch.
-Default low-dimensional sampling directly gathers the current raw fields in the
-same kernel. Independent clocks advance through a fixed 16-byte bitmap before
-ordered dependent evaluation; plans above 128 specs use scalar clocks. The
-shared adapter completion hook and camera publication remain outside this leaf.
+All paths below read current device physical inputs. Only immutable topology
+and layout indices are retained between calls. Links point to actual CUDA
+bodies; fusion is continuous source, with small mathematical helpers and
+maintained SDK/OSC operations where appropriate.
 
-The pure CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and the model
-compatibility helper in `facade.py` remain shared. Their location does not make
-them external Warp dependencies. Source/asset/model hashes still admit every
-scene; each CUDA loader verifies the corresponding source identity and ABI.
+| Region | CUDA source / function | Organization and retained path |
+| --- | --- | --- |
+| Position prefix | [fused_kinematic_mass.cu](../../../cuda/fp32/fused_kinematic_mass.cu), `kinematic_mass` | One 512-thread world CTA when at most 16 canonical branches each have a resident warp, bounded preorder intervals and joint scratch fit. The fixed 2560-byte arena reuses joint/weighted-center storage as CRB storage. Wider trees use the two accepted regions below. |
+| Branch frames | [mjwarp_kinematics.cu](../../../cuda/dynamics/mjwarp_kinematics.cu), `branch_kinematics<4,true>` | Four independent branch warps per CTA publish body/inertial, geom/site and admitted FIXED camera/light frames. Heavy frame queues retain separate tiles. |
+| Centers and mass | [fused_position.cu](../../../cuda/fp32/fused_position.cu), `centered_mass` | Bounded direct subtree sums on small preorder trees; staged/global-storage fallback for other trees. Fixed 2560-byte shared storage. |
+| Transmission | [mjwarp_transmission.cu](../../../cuda/dynamics/mjwarp_transmission.cu), `world_transmission` | Counter reset, scalar rows and optional actuator velocity share a world warp or 128-thread CTA. Step1 also clears sensors/energy. Ordinary calls preserve those buffers; generic CSR velocity remains callable. |
+| Motion and passive forces | [fused_motion_passive.cu](../../../cuda/fp32/fused_motion_passive.cu), `motion_passive` | Literal joint spring/damper, spatial velocity/bias, fluid and passive composition in 512 threads. Three explicit block barriers and a reused 3072-byte arena. Packed fluid scratch through 42 bodies, global fluid storage for larger admitted trees; accepted components outside the tree domain. |
+| No-fluid / disabled passive | [fused_motion.cu](../../../cuda/fp32/fused_motion.cu), `motion_bias` | Accepted motion/bias region plus the caller's corresponding passive/clear paths. Position-only gravity projection retains its independent entry. |
+| Control through unconstrained acceleration | [fused_control_drive.cu](../../../cuda/fp32/fused_control_drive.cu), `control_drive` | The 9-control Panda domain joins actual preparation/publication and force/solve code in 64 threads. Warp-local control publication and the existing force barrier order reuse of the finished OSC arena; shared allocation does not grow. |
+| Control components | [fused_controller.cu](../../../cuda/fp32/fused_controller.cu), `controller_region`; [fused_control_prepare.cu](../../../cuda/fp32/fused_control_prepare.cu) | Preparation, maintained OSC and publication remain independently callable. Six 8-lane groups compute full-DOF EE velocity. NV above 64 uses the accepted preparation/publication components. |
+| Actuation and mass-solve component | [fused_actuation_solve.cu](../../../cuda/fp32/fused_actuation_solve.cu), `actuation_solve` | Force evaluation, CSR atomics, limits, smooth RHS and scalar/SDK backsubstitution. DOF producers stage the cooperative RHS directly. Four explicit barriers, at most 376 shared bytes; unsupported groups use accepted components. |
+| Independent mass groups | [mjwarp_mass_factor.cu](../../../cuda/dynamics/mjwarp_mass_factor.cu), `world_factor`; [mjwarp_mass_solve.cu](../../../cuda/dynamics/mjwarp_mass_solve.cu), `world_solve` | Literal scalar 1/6 blocks and one cooperative 9-DOF SDK block per world. Cold selection bounds scalar block count to 32; other layouts retain component launches. Exact in-place solves and padding contracts are retained. |
+| Newton initialization | [mjwarp_solver_state.cu](../../../cuda/newton/mjwarp_solver_state.cu), `initialize_world` | Warm/cold selection, solve clears, Ma and Jaref in a 1024-thread world CTA. Bounded 512-byte shared acceleration through NV128, global input above it. |
+| Constraint and gradient | [mjwarp_constraint.cu](../../../cuda/newton/mjwarp_constraint.cu), `constraint_gradient` | Row force/state, transpose force and gradient in 512 threads with one producer barrier. Four-KiB row staging through 1024 rows; larger sets read global publication. |
+| Newton matrix and direction | [mjwarp_hessian.cu](../../../cuda/newton/mjwarp_hessian.cu); [mjwarp_direction.cu](../../../cuda/newton/mjwarp_direction.cu) | World quadratic assembly, pooled contact-cone contributions and SDK direction retain completion boundaries. Iterative direction publication includes stopping without another barrier; initial direction omits stopping and warning mode retains its original path. |
+| Line search | [mjwarp_linesearch.cu](../../../cuda/newton/mjwarp_linesearch.cu), `iterative_search`, `world_products` | Small NV prepends Mv to the one-warp search; larger NV joins world products before the maintained search. Search iterations and root decisions are not unrolled. |
+| Postconstraint and sensors | [mjwarp_postconstraint.cu](../../../cuda/dynamics/mjwarp_postconstraint.cu), `world_postconstraint` | 256 threads, two explicit barriers, 1536 bytes reused from acceleration to raw force. Admitted force/torque sensors consume the shared result; large sensor/tree domains retain accepted queries/layers. Pooled external-contact accumulation remains separate. |
+| Damped integration | [fused_euler_step.cu](../../../cuda/fp32/fused_euler_step.cu), `euler_step` | Derivative/private factor/solve, integration and publication in 64 threads with 372 shared bytes. The normal cooperative path uses five explicit barriers, apart from SDK internals. Optional world-local accounting adds no barrier. Warning/layout/output fallbacks use prepared factor plus advance and separate accounting. |
+| Integration component | [fused_tail.cu](../../../cuda/fp32/fused_tail.cu), `advance` | Velocity/position advancement, Newton warmstart and time/overflow publication; also used for undamped integration. Private damped acceleration never replaces public Newton qacc or warmstart. |
+| Observations | [fused_observations.cu](../../../cuda/fp32/fused_observations.cu), `pack_and_sample` | Default five-field packing or direct current-field gathering with ordered dependent sampling. Plans through 128 specs use a fixed 16-byte parallel-clock bitmap; larger plans retain scalar clocks. Camera/public completion remains outside this region. |
+
+The pooled collision reset in
+[bridges.cu](../../../cuda/runtime/bridges.cu), `collision_reset`, clears both
+pool counters in one small launch. It remains ahead of all producer CTAs;
+placing reset in a world producer would introduce a cross-CTA race. Disabled
+contact/constraint clears only the contact count and retains the pair pool.
+Broadphase, narrowphase families and constraint construction retain their
+pooled publication boundaries.
+
+### Build and binding boundaries
+
+[FP32Fusion.cmake](../../../cmake/FP32Fusion.cmake) includes separate targets for
+tail, observations, centered mass, motion, preparation, motion/passive,
+controller, kinematic mass, actuation/solve, Euler step and control/force/solve.
+Editing one source rebuilds its own target and required device link, rather than
+all scene variants. Controller products reuse the separately compiled OSC and
+MathDx objects. OSC remains in
+[osc_solver.cu](../../../cuda/control/osc_solver.cu); its matrix implementation
+is not copied into a giant forward/Newton source expansion.
+
+`cuda/runtime/runtime.cu` and `cuda/runtime/bridges.cu` have independent resource
+and transport targets. Shared mathematical leaves live in
+`cuda/{dynamics,newton,collision}/mjwarp*`; the name records algorithm provenance,
+not a dependency on the Warp compiler or runtime. Source identities include
+transitive headers, architecture and C ABI sizes. Pointer/index/owner/alias
+admission occurs before capture. Captured replay borrows live arrays and does
+not compile, allocate numerical scratch or cache physical factor values.
+FP32-only sources do not invalidate native FP64 numerical source identities.
+
+The CPU helpers `../mjwarp/scene_cache.py`, `scene_inputs.py` and model
+compatibility helper remain shared. Their directory does not make them Warp
+runtime dependencies. Scene/asset/model hashes and source admission remain in
+force. Larger input domains use bounded CUDA fallbacks rather than increasing
+shared memory with world count.
 
 ## Supported scope and validation
 
 The admitted shipped task domain is rigid, dense Newton, elliptic contacts,
 Euler integration, the default Panda OSC, FORCE/TORQUE sensors and FIXED
 cameras/lights. Flex, tendons, equalities, activation/history, sleep, noslip and
-plugins are rejected. This is the LIBERO batch implementation, not a general
-replacement for every MuJoCo feature. FP64/native and the explicit upstream
-MJWarp reference remain separate backends and environments.
+plugins are rejected. This implements the LIBERO batch domain rather than all
+MuJoCo features. Native FP64 and the explicit upstream MJWarp reference retain
+separate backends and environments.
 
 Stable independent validation commands in `tools/validate_gpu.py` are:
 
-- `cuda-runtime`: buffer/stream/Graph/conditional-loop ownership and replay.
-- `cuda-model`: all model arrays/scalars/layouts against CPU-exported pinned data.
+- `cuda-runtime`: buffers, streams, Graphs, conditional loops and ownership.
+- `cuda-model`: all arrays/scalars/layouts against CPU-exported pinned data.
 - `cuda-functions`: common-input prefix, OSC, Newton and Euler comparisons.
-- `cuda-lifecycle`: partial reset, continuation, observation mutation and callbacks;
-  `--cameras --prepare` additionally checks explicit CPU scene preparation and RGB/depth.
+- `cuda-lifecycle`: partial reset, continuation, mutations and callbacks;
+  `--cameras --prepare` additionally checks explicit scene preparation and RGB/depth.
 - `cuda-complete`: source-bound N=2 trajectories, optional single timing pass.
 
 Reference export is explicit and uses the separate reference environment.
-Independent checks prohibit Warp imports; an isolated installation additionally
-establishes that neither package can be found. Existing strict checks, accepted
-FP32 trajectory envelopes and geometry diagnostics retain separate outcomes.
-Shared-device timing is an observation, not an isolated performance guarantee.
+Independent checks prohibit Warp imports; isolated installation checks also
+establish that neither package can be found. Existing strict checks, accepted
+FP32 trajectory envelopes and geometry diagnostics remain distinct outcomes.
 
-### Fused rigid kinematics
+The later world-local fusion campaign uses **regional N=2 endpoints**, normally
+1 and 20 replays with current inputs changed after capture, plus independent
+FP64 function/residual/sensitivity bounds where applicable. It does not require
+bitwise numerical equality. Indexing, exact-copy, padding, owner, counter and
+public hold contracts remain exact. No full-task rollout or 130-task timing
+was added for these changes. The earlier full-suite results in
+[QUALIFICATION.md](QUALIFICATION.md) and the repository throughput chart retain
+their original revision and measurement scopes.
 
-`Physics.position -> KinematicFrames.enqueue_fused -> branch_kinematics<4>` joins
-the five kinematics leaves in `cuda/dynamics/mjwarp_kinematics.cu`. Each CTA groups
-four independent branch warps from one world. One lane computes a branch's
-private pose prefix; after a warp barrier its lanes build canonical body and
-attached frames cooperatively. This preserves holds and broadcast/live physical
-parameters without shared numerical storage or a world-wide barrier. The cold
-CSR groups immutable attachment indices by canonical branch owner. Component
-leaves remain callable; intermediate trial fusions are retained in Git history,
-not the runtime. Evidence is region-only N=2 endpoints and local graph timings.
+Local timing compares each candidate with its immediate accepted regional
+reference in one interleaved paired round. Other GPU jobs were resident.
+Controller-region measurements use a warmed controller cache; Euler-region
+measurements advance warmed local state with fixed matrix/RHS. Those are not
+fresh-state or complete-task measurements. Position fusion deliberately excludes
+a wider tree layout that regressed. Some larger direction/control timings were
+mixed under contention; they are not stable gain claims. Regional ratios must
+not be multiplied into an alleged whole-task speedup.
 
-### Fused centered frames and mass
-
-`Physics.position` calls `FusedCenteredMass` from `fused_position.py`. The
-independent `flash_fp32_fused_position` target compiles
-`cuda/fp32/fused_position.cu::centered_mass`: centers -> inertia/motion axes ->
-composite inertia -> CSR mass assembly. Validated small preorder trees use
-bounded direct subtree sums to remove depth barriers; other domains keep staged
-child gathering. Shared storage is capped at 2560 bytes and reused by lifetime,
-with a global-storage fallback for larger trees. Immutable intervals share the
-existing topology owner; no physical values persist as a cache. The original
-CoM/mass component entries remain callable.
-
-FIXED camera/light frames use `CamLightFrames.enqueue_fused` and the readable
-`mjwarp_camlight.cu::fixed_frames` queue. Small domains use one warp per world;
-large domains split independent attachments across world-local tiles. The
-component camera/light phases remain available. No shared storage or barrier
-is introduced, and live broadcast parameters retain their existing semantics.
-
-The default `KinematicFrames.enqueue_frames` additionally joins admitted FIXED
-camera/light jobs to the canonical kinematic branch warp. The readable
-`branch_kinematics<4,true>` body groups all attachment transforms behind its
-existing pose barrier. Heavy camera/light branches retain the separate tiled
-path; cold immutable indices select the path. This adds no shared storage or
-barrier, and the original independent entries remain callable. The following
-CoM/mass kernel retains its own completion boundary.
-
-### Fused spatial velocity
-
-`ComVelocity.enqueue_fused` in `host/runtime/dynamics/mjwarp_velocity.py` selects
-`velocity_components<8/32>` in `cuda/dynamics/mjwarp_velocity.cu`. Six lanes carry
-the spatial vector and two lanes complete the shuffle group. Cold topology
-selects a branch warp for deeper small branch sets or four groups per warp for
-broader shallow trees. Root zero publication shares this kernel; no branch
-reads it, so there is no new barrier. Live qvel/cdof and canonical publication
-remain unchanged. The original root/branch component phases remain available.
-
-### Fused ordinary bias RNE
-
-`Bias.prepare_fusion` shares the admitted immutable tree owner;
-`Physics.velocity_stage -> Bias.enqueue_fused -> mjwarp_bias.cu::world_bias`
-joins acceleration prefixes, body forces, subtree gathering and bias projection.
-Bounded small preorder trees use direct sums. Deep small branch sets produce
-and consume acceleration rows within canonical warps, then synchronize the world
-only for subtree forces and projection. The fixed 1536-byte shared row is reused
-as acceleration then raw force; public outputs remain current. Trees outside
-the direct interval domain retain staged gathering, including cooperative broad-parent sums and a
-global-storage fallback. Component phases remain callable. Qualification is
-local N=2 endpoints and N=128 layout comparisons, without a full-task claim.
-
-### Fused spatial velocity and bias
-
-The default velocity stage calls `FusedMotion` in `fused_motion.py`, loading the
-independent `flash_fp32_fused_motion` product. Its continuous CUDA function
-`cuda/fp32/fused_motion.cu::motion_bias` computes velocity, derivatives and bias
-acceleration in canonical branch warps, then body forces, subtree forces and
-DOF bias. The 3072-byte shared allocation has two reused lifetimes: acceleration
-becomes raw force; velocity becomes composite force. No physical cache persists
-between calls. Cold interval/owner/pointer admission keeps larger or unsupported
-trees on the accepted component kernels.
-
-The call chain is transmission velocity -> fused velocity/bias -> passive,
-gravity and fluid forces. The fluid workspace is private, and those later stages
-write distinct qfrc outputs, preserving public state. Selected configuration is
-512 threads, 40 registers and three block barriers; original component APIs
-remain available. Tests and timing cover only this region at N=2 and N=128.
-
-OSC output publication now shares its existing kernel:
-`Controller.enqueue -> mjwarp_controller.cu::control<true>`. Nine lanes scatter
-the controller buffer through current actuator IDs after the maintained solver
-returns. Its existing publication barrier suffices; inactive/error holds remain
-unchanged. No OSC mathematics or common argument ABI changes. The original
-controller launch and bridge scatter remain callable for component users.
-
-Controller input preparation has its own small compilation unit and source
-identity: `cuda/fp32/fused_control_prepare.cu::control_prepare`, target
-`flash_fp32_fused_control_prepare`. `Controller.gather` now dispatches one
-256-thread CTA per world: live policy/point publication -> full Jacobian ->
-selected OSC fields and full-DOF EE velocity. One block barrier orders query
-production before gathering; six warp reductions replace scalar full-NV dots.
-All public query outputs remain current, live GPU gather indices are read on
-each replay, and bootstrap holds policy when no source is supplied. No shared
-numerical allocation or NV size cap is added. The independent point, query and
-gather component APIs remain available. Qualification uses frozen query
-geometry plus seeded transport inputs, not complete task trajectories.
-
-`Physics.solve -> ActuatorForces.enqueue_fused ->
-mjwarp_actuation.cu::world_actuation<128>` combines force evaluation, output
-zeroing, current CSR projection and gravity/limit publication. Each world owns
-one CTA; two block barriers order zero/force production and atomic projection.
-The admitted stateless fixed/affine scalar-joint domain is unchanged and there
-is no numerical shared allocation or persistent physical cache. Original
-phase entries remain callable. Shared atomics, DOF-owned duplicate CSR scans
-and a smaller CTA gave no consistent improvement and were discarded.
-
-The default enabled-actuation schedule extends that function as
-`world_actuation<128,true>`: immediately after each DOF's final limit, its
-private force enters smooth-force assembly and current applied-wrench
-projection. `ActuatorForces.bind_smooth` admits the shared owner and pointer
-bridge; `enqueue_smooth` replaces the two accepted regional kernels. Up to
-128 bodies, four warp ballots produce a 16-byte shared activity mask before
-the already-required force barrier, avoiding repeated six-component zero
-checks and bypassing projection when all applied wrenches are zero. Larger
-models keep direct current-wrench checks. No extra barrier or physical cache
-is introduced. Disabled actuation retains its clear and standalone smooth path.
-
-Newton setup uses `DenseSolverState.initialize_fused` and
-`cuda/newton/mjwarp_solver_state.cu::initialize_world<1024>`: warmstart selection,
-per-solve clears, initial sparse Ma and dense Jaref share one world-owned CTA
-and one producer barrier. Four adjacent lanes own a J row and publish a full
-dot without partial atomics. Up to 128 DOFs, a bounded 512-byte shared vector
-reuses the selected acceleration; larger inputs read its global publication.
-The original initialization entry remains available. Inactive Jaref rows keep
-the original split-path clear or single-path hold rule. Iteration count,
-warmstart selection, stopping and the conditional Graph loop are unchanged.
-Qualification covers all 13 shipped NV families plus a larger fallback input.
-
-`Newton.gradient -> DenseConstraint.enqueue_gradient ->
-mjwarp_constraint.cu::constraint_gradient<512>` joins row force/state, J^T force,
-gradient initialization and values. One producer barrier orders the row phase.
-Each warp owns four DOFs and eight interleaved row ranges; its shuffle reduction
-exposes row parallelism inside a world. Up to 1024 active rows, a fixed 4-KiB
-shared row force buffer reuses current producer values, including held values
-for invalid contact addresses. Larger active sets use the published global
-array; the storage bound is fixed. Done-world holds and the reset of
-search_unchanged are preserved. Original phase/gradient entries remain callable;
-Hessian construction, factorization, line search and stopping retain boundaries.
-
-`DenseLinesearch.enqueue_fused` keeps two size-specific compositions in
-`cuda/newton/mjwarp_linesearch.cu`. For NV<=50, `iterative_search<true>` prepends
-the current Mv product to the existing one-warp search, retaining its internal
-Jv computation and barriers. Larger NV uses `world_products<1024>` for Mv and
-complete four-lane Jv rows, then the maintained 32-thread search. The bounded
-512-byte search vector has a global fallback above NV128; inactive rows and
-done worlds retain their previous holds. No search iterations or root decisions
-are unrolled. Small-search shared staging and row regrouping were discarded.
-Regional timing uses independent state slots so each measured search starts
-from the frozen boundary; restores are outside the timed range.
-
-Fluid force uses `FluidNumerics.enqueue_fused ->
-cuda/dynamics/mjwarp_fluid.cu::world_fluid`: current inertia-box body wrenches
-and subtree projection share one world CTA and one producer barrier. Up to
-64 bodies, a fixed 1536-byte shared wrench array feeds projection while public
-private-workspace publication uses coalesced stores. Larger models use global
-storage; above 128 bodies/DOFs a 512-thread configuration exposes more work.
-That configuration assigns subtrees of at least 64 bodies to a whole warp,
-keeping short subtrees thread-owned. This avoids one long root DOF becoming a
-serial straggler without adding metadata or barriers. Common LIBERO small
-models retain their 128-thread path. Original two phase entries remain callable.
-Local checks use the existing CPU-qualified FP64 force/roundoff reference.
-
-The enabled-fluid caller extends this region through
-`FluidNumerics.bind_passive/enqueue_passive -> world_fluid<...,true>`: the same
-DOF owner immediately consumes its private fluid sum, clears adhesion and
-publishes total passive force. The adhesion output is an explicit writable
-pointer; the existing passive descriptor keeps its input const contract.
-There is no fluid reload or additional barrier/shared allocation. Spring/damper
-production and gravity projection still precede this kernel. No-fluid and
-both-disabled caller paths retain their existing scheduling and holds.
-
-The default fluid path further joins joint spring/damper production through
-`prepare_joint_fusion/enqueue_joint_passive -> world_fluid<...,true,true>`.
-The joint loop is literal CUDA inside the fused function. A dedicated otherwise
-idle warp produces small-model joint spans concurrently with body wrenches;
-the existing body-force barrier orders both before passive consumption.
-Large/unsupported producer layouts retain the full-thread mapping. The small
-quaternion/polynomial math definitions are shared with standalone passive in
-`cuda/dynamics/mjwarp_passive_math.cuh`, with both CMake identities admitting it.
-Gravity projection runs before these independent joint/fluid producers; its
-inputs do not depend on their outputs. No new numerical storage or barrier is
-added, and no-fluid/both-disabled paths retain their original behavior.
-
-
-The fluid-enabled velocity stage now loads the independent
-`flash_fp32_fused_motion_passive` target through
-`fused_motion_passive.py::FusedMotionPassive`. Its actual continuous CUDA source
-is `cuda/fp32/fused_motion_passive.cu::motion_passive`: joint spring/damper and
-spatial prefixes -> body bias/fluid wrenches -> composite bias -> DOF bias,
-fluid, adhesion clear and passive composition. It reuses the accepted three
-motion barriers and the same 3072-byte shared arena. For NB<=42, three live
-spatial arrays fit by packed offsets; NB43..64 keeps two original arenas and
-the private global fluid workspace. All current catalogue bodies fit NB<=38.
-Current physical values are never cached. The load-only binding verifies common
-owners, exact bridge pointers, source identity, architecture, and all four ABIs;
-nonadmitted trees retain accepted component kernels. Gravity projection reads
-only position outputs and runs before this region. No-fluid and both-disabled
-paths retain their prior producers and hold contracts.
-
-Regional N=2 qualification covers frozen metadata with independently frozen or
-seeded physical inputs, changed inputs after capture, mixed joints, gravity and
-zero/nonzero wind, the packing boundary and larger-tree fallback. Initial local
-fusion was 2.07--2.40x faster than the two previously fused motion and passive
-regions on three real metadata fixtures with other GPU jobs resident. Shared
-packing was latency-neutral. An idle joint warp and 1024-thread block did not
-consistently improve those fixtures and were discarded; the accepted block is
-512 threads. These local measurements do not imply a complete-task speedup.
-
-
-`EulerNumerics.bind_preparation/prepare_damping` now joins damping derivative,
-full mass-matrix copy and diagonal adjustment in
-`cuda/dynamics/mjwarp_euler.cu::damping_prepare`. Eight lanes copy each admitted
-CSR row, with private derivative math and lane-zero derivative/diagonal
-publication. This needs no shared memory or synchronization. Cold metadata
-proves full disjoint CSR coverage; layouts with gaps retain all three original
-operations. The source mass matrix, public Newton acceleration, factors and
-warmstart are read-only to this preparation. Existing phase APIs remain usable.
-The default integration chain is `prepare_damping -> factor/solve -> advance`.
-Eleven N=2 local fixtures, changed inputs after graph capture,1/20 replays and
-an independent FP64 preparation oracle pass; no full-task rollout is involved.
-Eight-lane row copies improved the first fused DOF-thread version by24--26%
-on the three frozen real task layouts, measured with other GPU work resident.
-
-
-`TransmissionNumerics.enqueue_scalar(velocity=...)` joins counter reset and
-scalar-joint transmission in `mjwarp_transmission.cu::world_transmission`.
-The optional full entry consumes private gear/DOF values immediately for
-actuator velocity. Small domains use one warp and one warp synchronization;
-larger domains use128threads and one block barrier. Each world retains its
-atomic append counter and CSR publication. Position-only calls hold velocity.
-Full `step1` defers transmission until `velocity_stage`; constraint construction
-has no actuator/moment dependency. Original phase and generic-CSR velocity
-entries remain available. N=2 regional qualification covers19 cases,1/20
-replays, changed inputs, zero/shared gears and row ownership. Warp aggregation
-added instructions without a stable real-domain gain and was discarded.
-
-
-Postconstraint dispatch is `external.enqueue -> postconstraint.enqueue_fused ->
-sensors.enqueue`. The pooled external-contact accumulation remains a global
-completion boundary. `mjwarp_postconstraint.cu::world_postconstraint` joins root
-and branch acceleration, the actual inertia/cross/external-wrench algebra and
-direct subtree sums. It uses256threads, two block barriers and1536bytes reused
-from acceleration to raw body force. Current solved acceleration is always read;
-no physical values are cached. Cold interval/branch admission retains the old
-layer path for other layouts. Fifteen N=2 regional cases pass independent FP64
-bounds and1/20replays with changed inputs. Two canonical-group barrier-removal
-trials were discarded because their local gains did not generalize to all three
-real layouts. The simple fused organization is retained.
-
-
-`PostconstraintRNE.bind_sensors/enqueue_sensors` extends that suffix to force and
-torque sensors in the same actual CUDA function. Each8-lane group reduces six
-wrench coordinates from the still-live shared raw-force tree, then applies the
-current site transform and cutoff. It adds no shared bytes or block barrier.
-A cold `sensors*bodies<=256` bound limits repeated work without caching sensor
-objects or physical values. Larger domains retain the accepted suffix+sensor
-components. Exact sensor gaps and disabled holds, current geometry/output
-bridges, ABI and source dependencies are validated. Seventeen N=2 local cases
-pass with frozen motion and seeded sensor frames; input/cutoff/object changes
-after capture remain live. Grouped sensor production was mixed but near-neutral
-against the first fusion under contention. No full-task speedup is inferred.
-
-
-`MassFactor.enqueue_fused` and `MassSolve.enqueue_fused` join independent scalar
-1/6 groups with one cooperative9-DOF block per world. Actual CUDA functions are
-`mjwarp_mass_factor.cu::world_factor` and `mjwarp_mass_solve.cu::world_solve`.
-Both use64-thread SDK instances, preserving full-block barrier participation.
-Two static scalar selectors are compiler-unrolled; cold group selection bounds
-scalar block count to32 and the cooperative count to1. Other layouts retain
-component launches. Matrix/factor/RHS values are never cached, and exact alias,
-padding, compact inverse and unused-triangle rules are preserved. Sixty-nine
-N=2 local cases pass FP64 reconstruction/residual/sensitivity checks, including
-condition1e4 and budget/multi9 fallbacks. Local real-fixture gains are measured
-under contention and do not establish whole-task throughput.
-
-
-`DenseDirection.bind_stopping/enqueue_stopping` joins Newton stopping to the
-existing direction publication owner. Actual stop arithmetic is present in
-`mjwarp_direction.cu::direction_small/blocked<...,true>`, with no additional
-barrier or shared allocation. Initial gradient/direction still skips stopping;
-subsequent line-search gradients perform the same iteration, convergence,
-overflow and once-only conditional-counter update. The ordinary fused path has
-no printf call frame, while warning-enabled callers retain the standalone
-warning path. Common owners, bridge pointers, output nonoverlap and the stop
-ABI are checked before capture.
-
-Thirty-seven N=2 regional cases cover all13NVfamilies and warning/limit/done
-paths. Timing uses a frozen source-matched prechange direction DSO. NV21/NV39
-fixtures show modest local gains; some larger/real-derived paired measurements
-are inconclusive under contention, with large swings in the unchanged baseline
-itself. Those raw mixed outcomes remain experimental evidence and are not
-reported as stable gains or whole-task throughput.
-
-
-Damped integration now calls `MassFactor.bind_preparation/enqueue_prepared`.
-`mjwarp_mass_factor.cu::world_factor<true,true>` contains the actual derivative,
-full CSR copy and diagonal-adjustment prefix followed by the scalar and SDK
-factor/solve loops. A single producer barrier replaces the kernel boundary;
-shared storage stays unchanged. Each DOF owns a row. A4-lane copy trial added
-producer iterations and regressed3--16%, so the qualified initial organization
-was restored. Cold owner/matrix/full-partition/group/alias checks retain the
-accepted preparation and group kernels as fallback. Public Newton acceleration,
-warmstart and public factors remain untouched. Twenty-three N=2 local cases
-pass FP64 derivative/reconstruction/residual and regional endpoint bounds; local
-real-matrix gains are9--14% with other GPU work resident. This is not a measured
-complete-integrator or task speedup.
-
-
-`Controller.enqueue` now calls `fused_controller.py::FusedController`, loading
-independent `flash_fp32_fused_controller`. The continuous CUDA function
-`cuda/fp32/fused_controller.cu::controller_region` contains policy/site/full
-Jacobian/gather arithmetic, the maintained block OSC call and actuator
-publication. OSC's first existing state barrier orders all prepared fields;
-there is no added boundary barrier. Six8-lane spatial groups cooperate within
-the existing64-thread solver block. The large OSC numerical function and its
-MathDx product remain separately compiled. Standalone gather/bootstrap and
-NV>64 retain the accepted preparation/publication components. Source/ABI/owner
-and index admission is load-only; FP64-only CMake skips this dependent target.
-Nine N=2 regional cases pass1/20replays and mutable/index/flag cases. Final local
-real-fixture timings are~3--5% better under contention, measured with warmed
-cached controller state. Fresh-state or complete-task throughput is not claimed.
-
-
-Collision pool counter initialization uses
-`cuda/runtime/bridges.cu::collision_reset`: two global counters share one small
-launch ahead of pooled broadphase producers. Disabled contact/constraint clears
-only the contact count and preserves the pair count and pool. This completion
-boundary remains separate from all world producers. Twenty-one N=2 local
-clear/broadphase cases pass; regional timing does not cover narrowphase/tasks.
-
-
-The position prefix optionally calls `FusedKinematicMass` in
-`cuda/fp32/fused_kinematic_mass.cu::kinematic_mass`, target
-`flash_fp32_fused_kinematic_mass`. Up to16 canonical branches with admitted
-bounded intervals use one512-thread world CTA for kinematics/derived frames,
-centers/inertias and CRB/CSR mass. Current joint-local deltas and weighted
-centers share dead CRB storage within a fixed2560-byte arena. All physical
-inputs remain live. Wider trees retain branch-CTA kinematics plus accepted
-centered/mass; the broad32branch prototype regressed and is excluded.
-Twelve N=2 regional endpoint cases pass. Eligible real-fixture gains are modest
-and contention-dependent; same-code fallback differences are measurement noise.
-
-
-`Physics.step1 -> velocity_stage(clear_step1=True)` uses
-`TransmissionNumerics.bind_step1/enqueue_step1`. Actual sensor/energy clears
-share `world_transmission<true,...,true>` with transmission/actuator velocity,
-without another barrier or shared allocation. Standalone transmission retains
-those buffers. Local N=2 qualification includes empty/wide clear buffers and
-current-input replay updates; timing covers only these clears and transmission.
-
-
-Ordinary enabled-actuation substeps now use `FusedActuationSolve`, target
-`flash_fp32_fused_actuation_solve`. The continuous CUDA function in
-`cuda/fp32/fused_actuation_solve.cu` contains force production, CSR projection,
-limits, smooth force and scalar/SDK mass backsubstitution. Current DOF producers
-stage the9-DOF RHS directly; four block barriers and at most376 shared bytes
-suffice. Public forward retains factor/solve, disabled actuation retains its
-clears, and unsupported mass-group layouts retain accepted components.
-Twenty-two N=2 local cases pass independent FP64 block bounds and endpoint
-checks. Final local gains are~9--12% on three frozen actuator layouts with
-matched frozen/seeded matrices; no whole-task throughput was measured.
-
-
-Damped integration optionally uses `FusedEulerStep`, target
-`flash_fp32_fused_euler_step`, with continuous source
-`cuda/fp32/fused_euler_step.cu::euler_step`. Derivative/private factor/solve,
-qvel/qpos advancement, Newton warmstart and time/overflow publication share a
-64-thread world CTA. Shared storage stays372bytes; deferred factor publication
-removes one explicit barrier while keeping SDK inputs immutable. Warning and
-incompatible layout/output domains retain prepared factor+advance. Twenty-five
-N=2 local1/20-step cases pass FP64 block and endpoint bounds. Regional timings
-use continuously advanced warmed state with fixed matrix/RHS, without a task.
-
-
-The default runtime additionally composes preparation/OSC with unconstrained
-force and mass solve in `cuda/fp32/fused_control_drive.cu::control_drive`, target
-`flash_fp32_fused_control_drive`. The9-control Panda domain reuses the OSC arena;
-warp-local publication and the existing force barrier order its lifetimes.
-`Runtime.enqueue_substep` passes explicit `unconstrained_ready` to `Physics.solve`
-so Newton runs once and force/solve is not repeated. Disabled/wide domains retain
-accepted components. Ten N=2 regional cases pass. Warm-cache local timings are
-near-neutral to modestly better with retained mixed contention outliers; they
-establish no complete-task gain. OSC remains a separate numerical function.
+World/pool completion boundaries, the Newton conditional loop and SDK block
+contracts remain explicit. Further broad expansion that removes those useful
+work mappings requires a new algorithmic organization, rather than simply
+concatenating more source or unrolling solver calls.

@@ -10,6 +10,8 @@ set(fp32_controller_sources
   "${FLASH_GPU}/cuda/control/osc_solver.cuh"
   "${FLASH_GPU}/cuda/control/osc_profile.cuh"
   "${FLASH_GPU}/cuda/step/substep_shared_layout.cuh"
+  "${FLASH_GPU}/cuda/step/substep_shared.cuh"
+  "${FLASH_GPU}/cuda/step/forward_workspace.cuh"
   "${FLASH_GPU}/cuda/step/substep_shape.cuh"
   "${FLASH_GPU}/cuda/step/substep_parameters.cuh"
   "${FLASH_GPU}/cuda/step/substep_types.cuh"
