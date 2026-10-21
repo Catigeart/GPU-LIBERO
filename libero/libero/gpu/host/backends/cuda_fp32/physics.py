@@ -14,6 +14,7 @@ from .fused_tail import FusedAdvance
 from .fused_position import FusedCenteredMass
 from .fused_motion import FusedMotion
 from .fused_motion_passive import FusedMotionPassive
+from .bridges import Bridges
 from libero.gpu.host.runtime.dynamics import (
     mjwarp_motion as motion,mjwarp_kinematics as kinematics,mjwarp_com_pos as com_pos,
     mjwarp_camlight as camlight,mjwarp_mass_matrix as mass_matrix,mjwarp_mass_factor as mass_factor,
@@ -66,6 +67,12 @@ class Newton:
 class Collision:
     def __init__(self,m,d,stream,products):
         self.model,self.data=m,d
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import bind_array,reject_output_overlap
+        self.counts=Bridges(products.folder/'cuda_bridges_fp32.so',stream)
+        self.count_arrays={}
+        for name in ('nacon','ncollision'):
+            bind_array(self.count_arrays,name,getattr(d,name),cuda.int32,(1,),stream)
+        reject_output_overlap(self.count_arrays,('nacon','ncollision'))
         self.context=ctx=SimpleNamespace(collision_pair=cuda.empty(d.naconmax,dtype=cuda.vec2i),
             collision_pairid=cuda.empty(d.naconmax,dtype=cuda.vec2i),collision_worldid=cuda.empty(d.naconmax,dtype=int))
         self.broadphase=broadphase.BroadphaseNumerics(m,d,ctx,products('broadphase'),stream,admission=broadphase.qualify(m,d,implementation='cuda'))
@@ -81,9 +88,11 @@ class Collision:
                 raise ValueError('Unported primitive family: '+str((a,b)))
 
     def enqueue(self):
-        m,d=self.model,self.data;d.nacon.zero_()
-        if m.opt.disableflags&(types.DisableBit.CONSTRAINT|types.DisableBit.CONTACT):return
-        d.ncollision.zero_();self.broadphase.enqueue();self.convex.enqueue();self.planes.enqueue();self.boxes.enqueue()
+        m,d=self.model,self.data
+        disabled=bool(m.opt.disableflags&(types.DisableBit.CONSTRAINT|types.DisableBit.CONTACT))
+        self.counts.call('collision_reset',d.nacon.ptr,None if disabled else d.ncollision.ptr)
+        if disabled:return
+        self.broadphase.enqueue();self.convex.enqueue();self.planes.enqueue();self.boxes.enqueue()
 
 
 class Physics:

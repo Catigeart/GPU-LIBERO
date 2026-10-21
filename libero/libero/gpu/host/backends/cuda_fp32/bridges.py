@@ -34,7 +34,7 @@ class Bridges:
             masked=[i,i,p,p,p,p],bootstrap=[i]+[p]*10,count=[i,i]+[p]*7,
             pack=[i,i,i,i,i,p,p,p],observe=[ct.POINTER(Observe),ct.c_float,i,p],
             reset_observation=[i,i,i]+[p]*7,capture_scene=[ct.POINTER(Scene),ct.c_float,i,p],
-            scene_transform=[i,i,i,i]+[p]*9)
+            scene_transform=[i,i,i,i]+[p]*9,collision_reset=[p,p,p])
         for name,args in signatures.items():
             f=getattr(self.library,'flash_bridge_'+name);f.argtypes=args;f.restype=i
         for name,structure in (('gather',Gather),('observe',Observe),('scene',Scene)):

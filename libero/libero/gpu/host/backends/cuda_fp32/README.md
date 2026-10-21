@@ -471,3 +471,11 @@ and index admission is load-only; FP64-only CMake skips this dependent target.
 Nine N=2 regional cases pass1/20replays and mutable/index/flag cases. Final local
 real-fixture timings are~3--5% better under contention, measured with warmed
 cached controller state. Fresh-state or complete-task throughput is not claimed.
+
+
+Collision pool counter initialization uses
+`cuda/runtime/bridges.cu::collision_reset`: two global counters share one small
+launch ahead of pooled broadphase producers. Disabled contact/constraint clears
+only the contact count and preserves the pair count and pool. This completion
+boundary remains separate from all world producers. Twenty-one N=2 local
+clear/broadphase cases pass; regional timing does not cover narrowphase/tasks.

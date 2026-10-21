@@ -8,6 +8,14 @@
 
 namespace flash::bridge {
 
+// Global pool reset is a completion boundary before any world may append.
+// Keep both stores in one small launch; a producer CTA cannot reset counters
+// safely while other CTAs in that launch are already emitting pairs/contacts.
+__global__ void collision_reset(int* contacts,int* pairs) {
+  if (threadIdx.x==0) *contacts=0;
+  if (threadIdx.x==1 && pairs) *pairs=0;
+}
+
 struct Observe {
   int worlds,ns,width,stride;
   const int *op,*offset,*size,*index_offset,*indices,*dep0,*dep1,*dep2,*presence,*enabled;
@@ -203,6 +211,11 @@ __global__ void scene_transform(int worlds,int bodies,int count,int rotation,con
 
 extern "C" {
 const char* flash_bridge_source_id() { return FLASH_BRIDGE_SOURCE_ID; }
+int flash_bridge_collision_reset(int* contacts,int* pairs,cudaStream_t stream) {
+  if (!contacts) return int(cudaErrorInvalidValue);
+  flash::bridge::collision_reset<<<1,32,0,stream>>>(contacts,pairs);
+  return int(cudaGetLastError());
+}
 std::size_t flash_bridge_gather_bytes() { return sizeof(flash::bridge::Gather); }
 std::size_t flash_bridge_observe_bytes() { return sizeof(flash::bridge::Observe); }
 std::size_t flash_bridge_scene_bytes() { return sizeof(flash::bridge::Scene); }
