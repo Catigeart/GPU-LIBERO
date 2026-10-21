@@ -16,6 +16,10 @@ def source_id():
                                   for n in names).encode()).hexdigest()
 
 
+class StepCounters(ct.Structure):
+    _fields_=[(name,ct.c_void_p) for name in ('integration_count','state_epoch','newton_attempts','position_math')]
+
+
 class FusedEulerStep:
     def __init__(self,factor,advance,library):
         from libero.gpu.host.build.compilation import MissingCompiledProduct
@@ -47,8 +51,33 @@ class FusedEulerStep:
         self.launch=lib.flash_fp32_euler_step_launch
         self.launch.argtypes=[ct.POINTER(MassFactorInputs)]*3+[ct.POINTER(TailInputs),ct.c_void_p,ct.c_void_p];self.launch.restype=ct.c_int
 
+    def bind_counters(self,counters):
+        from . import device as cuda
+        from libero.gpu.host.runtime.dynamics.mjwarp_motion import bind_array
+        a={};n=self.factor.euler.data.nworld
+        for name in ('integration_count','state_epoch','reset_events','newton_attempts','position_math'):
+            bind_array(a,name,counters[name],cuda.int64,(n,),self.stream)
+        reject_output_overlap(a,tuple(a))
+        self.counter_arrays=a
+        if not self.eligible:return
+        arrays=dict(self.factor.arrays)
+        arrays.update({'euler_'+k:v for k,v in self.factor.euler.arrays.items()})
+        arrays.update({'publication_'+k:v for k,v in self.advance.owners[1].arrays.items()})
+        arrays.update(a)
+        reject_output_overlap(arrays,tuple(a))
+        size=self.library.flash_fp32_euler_step_counts_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(StepCounters):raise ValueError('Euler counter ABI differs')
+        self.counter_arguments=StepCounters(**{name:a[name].ptr for name,_ in StepCounters._fields_})
+        self.counter_launch=self.library.flash_fp32_euler_step_count
+        self.counter_launch.argtypes=[ct.POINTER(MassFactorInputs)]*3+[ct.POINTER(TailInputs),ct.c_void_p,ct.POINTER(StepCounters),ct.c_void_p]
+        self.counter_launch.restype=ct.c_int
+
     def enqueue(self):
-        if not self.eligible:self.factor.enqueue_prepared();self.advance.enqueue();return
-        error=self.launch(*(ct.byref(a) for a in self.factor.group_arguments),
-            ct.byref(self.advance.arguments),self.factor.euler.source_matrix.ptr,self.stream.cuda_stream)
+        if not self.eligible:self.factor.enqueue_prepared();self.advance.enqueue();return False
+        counted=hasattr(self,'counter_arguments')
+        launch=self.counter_launch if counted else self.launch
+        error=launch(*(ct.byref(a) for a in self.factor.group_arguments),
+            ct.byref(self.advance.arguments),self.factor.euler.source_matrix.ptr,
+            *([ct.byref(self.counter_arguments)] if counted else []),self.stream.cuda_stream)
         if error:raise RuntimeError('Euler step failed: CUDA error '+str(error))
+        return counted

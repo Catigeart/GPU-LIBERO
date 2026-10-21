@@ -5,6 +5,7 @@
 // One readable world-local damped Euler step; public Newton qacc stays intact.
 #include "../dynamics/mjwarp_mass_factor.cuh"
 #include "fused_tail.cuh"
+#include <cstdint>
 #include <cusolverdx.hpp>
 #ifndef FLASH_FP32_EULER_STEP_SOURCE_ID
 #error "Build through flash_fp32_fused_euler_step"
@@ -26,11 +27,15 @@ using Potrs9 =
              dx::Arrangement<dx::row_major, dx::col_major>() + dx::SM<800>() +
              dx::BlockDim<64>() + dx::Block());
 
+struct StepCounters {
+  std::int64_t *integration, *epoch, *attempts, *positions;
+};
 using Potrf9World = Potrf9;
 using Potrs9World = Potrs9;
+template <bool Count>
 __global__ void euler_step(MassFactorInputs one, MassFactorInputs six,
                            MassFactorInputs nine, TailInputs inputs,
-                           const float *original) {
+                           const float *original, StepCounters counts) {
 
   const int w = blockIdx.x, tid = threadIdx.x;
   const EulerInputs e = inputs.integration;
@@ -252,6 +257,15 @@ __global__ void euler_step(MassFactorInputs one, MassFactorInputs six,
       }
     }
   }
+  // Runtime kind0 accounting belongs to this same completed world. No lane
+  // consumes it until the kernel boundary; resetting uses a separate entry.
+  if constexpr (Count)
+    if (tid == 33) {
+      ++counts.integration[w];
+      ++counts.epoch[w];
+      ++counts.attempts[w];
+      ++counts.positions[w];
+    }
 }
 } // namespace flash::fp32
 
@@ -266,13 +280,13 @@ std::size_t flash_fp32_euler_step_mass_bytes() {
 std::size_t flash_fp32_euler_step_tail_bytes() {
   return sizeof(flash::fp32::TailInputs);
 }
-int flash_fp32_euler_step_launch(const flash::mjwarp::MassFactorInputs *one,
-                                 const flash::mjwarp::MassFactorInputs *six,
-                                 const flash::mjwarp::MassFactorInputs *nine,
-                                 const flash::fp32::TailInputs *inputs,
-                                 const float *original, cudaStream_t stream) {
+static bool valid_euler_step(const flash::mjwarp::MassFactorInputs *one,
+                             const flash::mjwarp::MassFactorInputs *six,
+                             const flash::mjwarp::MassFactorInputs *nine,
+                             const flash::fp32::TailInputs *inputs,
+                             const float *original) {
   if (!one || !six || !nine || !inputs || !original)
-    return int(cudaErrorInvalidValue);
+    return false;
   const auto &e = inputs->integration;
   if (e.worlds < 1 || e.nv < 1 || e.joints < 1 ||
       inputs->publication.worlds != e.worlds || inputs->publication.warnings ||
@@ -284,9 +298,36 @@ int flash_fp32_euler_step_launch(const flash::mjwarp::MassFactorInputs *one,
       one->solution_width != e.nv || one->matrix_width != e.matrix_width ||
       one->blocks < 0 || six->blocks < 0 || nine->blocks < 0 ||
       nine->blocks > 1 || one->blocks + six->blocks > 32)
+    return false;
+  return true;
+}
+int flash_fp32_euler_step_launch(const flash::mjwarp::MassFactorInputs *one,
+                                 const flash::mjwarp::MassFactorInputs *six,
+                                 const flash::mjwarp::MassFactorInputs *nine,
+                                 const flash::fp32::TailInputs *inputs,
+                                 const float *original, cudaStream_t stream) {
+  if (!valid_euler_step(one, six, nine, inputs, original))
     return int(cudaErrorInvalidValue);
-  flash::fp32::euler_step<<<e.worlds, 64, 0, stream>>>(*one, *six, *nine,
-                                                       *inputs, original);
+  flash::fp32::euler_step<false><<<one->worlds, 64, 0, stream>>>(
+      *one, *six, *nine, *inputs, original, {});
+  return int(cudaGetLastError());
+}
+std::size_t flash_fp32_euler_step_counts_bytes() {
+  return sizeof(flash::fp32::StepCounters);
+}
+int flash_fp32_euler_step_count(const flash::mjwarp::MassFactorInputs *one,
+                                const flash::mjwarp::MassFactorInputs *six,
+                                const flash::mjwarp::MassFactorInputs *nine,
+                                const flash::fp32::TailInputs *inputs,
+                                const float *original,
+                                const flash::fp32::StepCounters *counts,
+                                cudaStream_t stream) {
+  if (!valid_euler_step(one, six, nine, inputs, original) || !counts ||
+      !counts->integration || !counts->epoch || !counts->attempts ||
+      !counts->positions)
+    return int(cudaErrorInvalidValue);
+  flash::fp32::euler_step<true><<<one->worlds, 64, 0, stream>>>(
+      *one, *six, *nine, *inputs, original, *counts);
   return int(cudaGetLastError());
 }
 }

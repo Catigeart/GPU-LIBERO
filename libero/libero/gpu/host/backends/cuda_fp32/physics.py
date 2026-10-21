@@ -200,8 +200,8 @@ class Physics:
         else:self.sensors.enqueue()
 
     def integrate(self):
-        if self.damped:self.euler_step.enqueue()
-        else:self.advance.enqueue()
+        if self.damped:return self.euler_step.enqueue()
+        self.advance.enqueue();return False
 
     def step2(self):self.solve();self.integrate()
     def forward(self):self.step1(factorize=False);self.solve(public=True)

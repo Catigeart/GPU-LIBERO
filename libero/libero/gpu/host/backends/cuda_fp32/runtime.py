@@ -18,6 +18,8 @@ class Runtime:
         self.bridge=Bridges(products.folder/'cuda_bridges_fp32.so',self.stream)
         for name in ('integration_count','state_epoch','reset_events','newton_attempts','position_math'):
             setattr(self,name,cuda.zeros(env.num_envs,dtype=cuda.int64))
+        if self.physics.euler_step is not None:
+            self.physics.euler_step.bind_counters({name:getattr(self,name) for name in ('integration_count','state_epoch','reset_events','newton_attempts','position_math')})
         self.intent=cuda.full(env.num_envs,1,dtype=int)
         self._control_graph=self._forward_graph=self._substep_fusion=None
         self._step_graphs={}
@@ -39,7 +41,8 @@ class Runtime:
         self.physics.step1()
         ready=self.control_drive.enqueue(self.controller.policy_values[int(policy_step)])
         self.physics.solve(unconstrained_ready=ready)
-        self.physics.integrate();self.count(0)
+        counted=self.physics.integrate()
+        if not counted:self.count(0)
 
     def prepare_control_graph(self):
         if not self.env.observer.graph_eligible:return self
