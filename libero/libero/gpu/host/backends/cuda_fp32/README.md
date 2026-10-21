@@ -411,3 +411,16 @@ bridges, ABI and source dependencies are validated. Seventeen N=2 local cases
 pass with frozen motion and seeded sensor frames; input/cutoff/object changes
 after capture remain live. Grouped sensor production was mixed but near-neutral
 against the first fusion under contention. No full-task speedup is inferred.
+
+
+`MassFactor.enqueue_fused` and `MassSolve.enqueue_fused` join independent scalar
+1/6 groups with one cooperative9-DOF block per world. Actual CUDA functions are
+`mjwarp_mass_factor.cu::world_factor` and `mjwarp_mass_solve.cu::world_solve`.
+Both use64-thread SDK instances, preserving full-block barrier participation.
+Two static scalar selectors are compiler-unrolled; cold group selection bounds
+scalar block count to32 and the cooperative count to1. Other layouts retain
+component launches. Matrix/factor/RHS values are never cached, and exact alias,
+padding, compact inverse and unused-triangle rules are preserved. Sixty-nine
+N=2 local cases pass FP64 reconstruction/residual/sensitivity checks, including
+condition1e4 and budget/multi9 fallbacks. Local real-fixture gains are measured
+under contention and do not establish whole-task throughput.

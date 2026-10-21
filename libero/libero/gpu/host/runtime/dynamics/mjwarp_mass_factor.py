@@ -28,6 +28,17 @@ def unsupported_reason(model,data):
     return None
 
 
+def world_groups(arguments,input_type):
+    """Cold, bounded group selection; no physical values or device allocation."""
+    if len(arguments)<2:return None
+    groups={(kind,size):a for a,kind,size in arguments}
+    if len(groups)!=len(arguments) or set(groups)-{(0,1),(0,6),(1,9)}:return None
+    if sum(a.blocks for key,a in groups.items() if key[0]==0)>32:return None
+    if (1,9) in groups and groups[1,9].blocks>1:return None
+    empty=input_type.from_buffer_copy(bytes(arguments[0][0]));empty.blocks=0
+    return tuple(groups.get(key,empty) for key in ((0,1),(0,6),(1,9)))
+
+
 class MassFactorPlan:
     """Validate static CSR/block maps once, before capture; cache no matrix values."""
     def __init__(self,model,data,library,stream):
@@ -145,6 +156,15 @@ class MassFactor:
         self.launch=plan.library.flash_mjwarp_mass_factor_launch
         self.launch.argtypes=[ct.POINTER(MassFactorInputs),ct.c_int,ct.c_int,ct.c_int,ct.c_void_p]
         self.launch.restype=ct.c_int
+        self.group_arguments=world_groups(self.arguments,MassFactorInputs)
+        self.group_launch=plan.library.flash_mjwarp_mass_factor_groups
+        self.group_launch.argtypes=[ct.POINTER(MassFactorInputs)]*3+[ct.c_int,ct.c_void_p]
+        self.group_launch.restype=ct.c_int
+
+    def enqueue_fused(self):
+        if self.group_arguments is None:self.enqueue();return
+        error=self.group_launch(*(ct.byref(a) for a in self.group_arguments),int(self.solve),self.plan.stream.cuda_stream)
+        if error:raise RuntimeError('Mass factor groups failed: CUDA error '+str(error))
 
     def enqueue(self):
         for a,kind,size in self.arguments:

@@ -43,6 +43,8 @@ def source_files(*, include_hessian=False, include_direction=False, include_cons
         for name in ('cuda/dynamics/mjwarp_mass_solve.cu','cuda/dynamics/mjwarp_mass_solve.cuh',
                      'cmake/MjwarpMassSolve.cmake','host/runtime/dynamics/mjwarp_mass_solve.py'):
             files[name] = digest(GPU_ROOT / name)
+    if include_mass or include_force:
+        files['host/runtime/dynamics/mjwarp_mass_factor.py']=digest(GPU_ROOT/'host/runtime/dynamics/mjwarp_mass_factor.py')
     if include_force:
         for name in ('cuda/dynamics/mjwarp_smooth_force.cu','cuda/dynamics/mjwarp_smooth_force.cuh',
                      'cmake/MjwarpSmoothForce.cmake','host/runtime/dynamics/mjwarp_smooth_force.py'):

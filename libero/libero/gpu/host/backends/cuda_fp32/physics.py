@@ -138,7 +138,7 @@ class Physics:
     def position(self,factorize=True,*,transmit=True):
         self.kinematics.enqueue_frames()
         self.centered_mass.enqueue()
-        if factorize:self.factor.enqueue()
+        if factorize:self.factor.enqueue_fused()
         if self.model.opt.run_collision_detection:self.collision.enqueue()
         self.constraints.enqueue()
         if transmit:self.transmission.enqueue_scalar()
@@ -169,7 +169,7 @@ class Physics:
             self.smooth.enqueue()
         else:
             self.actuation.enqueue_smooth()
-        (self.public_solve if public else self.smooth_solve).enqueue()
+        (self.public_solve if public else self.smooth_solve).enqueue_fused()
         self.newton.solve()
         if m.opt.run_rne_postconstraint or (not m.opt.disableflags&types.DisableBit.SENSOR and m.sensor_rne_postconstraint):
             self.external.enqueue();self.postconstraint.enqueue_sensors()
@@ -177,7 +177,7 @@ class Physics:
 
     def integrate(self):
         if self.damped:
-            self.euler.prepare_damping();self.euler_solve.enqueue()
+            self.euler.prepare_damping();self.euler_solve.enqueue_fused()
         self.advance.enqueue()
 
     def step2(self):self.solve();self.integrate()

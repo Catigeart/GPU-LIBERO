@@ -2,6 +2,7 @@
 import ctypes as ct
 import hashlib
 from pathlib import Path
+from .mjwarp_mass_factor import world_groups
 
 
 class MassSolveInputs(ct.Structure):
@@ -119,6 +120,15 @@ class MassSolve:
         self.launch=plan.library.flash_mjwarp_mass_solve_launch
         self.launch.argtypes=[ct.POINTER(MassSolveInputs),ct.c_int,ct.c_int,ct.c_void_p]
         self.launch.restype=ct.c_int
+        self.group_arguments=world_groups(self.arguments,MassSolveInputs)
+        self.group_launch=plan.library.flash_mjwarp_mass_solve_groups
+        self.group_launch.argtypes=[ct.POINTER(MassSolveInputs)]*3+[ct.c_void_p]
+        self.group_launch.restype=ct.c_int
+
+    def enqueue_fused(self):
+        if self.group_arguments is None:self.enqueue();return
+        error=self.group_launch(*(ct.byref(a) for a in self.group_arguments),self.plan.stream.cuda_stream)
+        if error:raise RuntimeError('Mass solve groups failed: CUDA error '+str(error))
 
     def enqueue(self):
         for a,kind,size in self.arguments:
