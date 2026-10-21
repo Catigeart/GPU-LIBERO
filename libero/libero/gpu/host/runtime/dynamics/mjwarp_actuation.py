@@ -95,6 +95,8 @@ class ActuatorForces:
             **{k:a[k].ptr for k,_ in ActuationInputs._fields_[13:]})
         self.launch=self.library.flash_mjwarp_actuation_launch
         self.launch.argtypes=[ct.POINTER(ActuationInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+        self.fused_launch=self.library.flash_mjwarp_actuation_fused
+        self.fused_launch.argtypes=[ct.POINTER(ActuationInputs),ct.c_void_p];self.fused_launch.restype=ct.c_int
 
     @property
     def identity(self):
@@ -106,3 +108,7 @@ class ActuatorForces:
         if phase==1:self.arrays['qfrc'].zero_()
         error=self.launch(ct.byref(self.arguments),phase,self.stream.cuda_stream)
         if error:raise RuntimeError('Actuation launch failed: CUDA error '+str(error))
+
+    def enqueue_fused(self):
+        error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused actuation failed: CUDA error '+str(error))

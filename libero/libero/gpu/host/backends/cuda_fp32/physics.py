@@ -154,7 +154,7 @@ class Physics:
         if m.opt.disableflags&types.DisableBit.ACTUATION:
             d.act_dot.zero_();d.qfrc_actuator.zero_();d.actuator_force.zero_()
         else:
-            for phase in range(3):self.actuation.enqueue(phase)
+            self.actuation.enqueue_fused()
         self.smooth.enqueue()
         (self.public_solve if public else self.smooth_solve).enqueue()
         self.newton.solve()

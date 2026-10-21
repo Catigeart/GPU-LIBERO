@@ -246,3 +246,12 @@ each replay, and bootstrap holds policy when no source is supplied. No shared
 numerical allocation or NV size cap is added. The independent point, query and
 gather component APIs remain available. Qualification uses frozen query
 geometry plus seeded transport inputs, not complete task trajectories.
+
+`Physics.solve -> ActuatorForces.enqueue_fused ->
+mjwarp_actuation.cu::world_actuation<128>` combines force evaluation, output
+zeroing, current CSR projection and gravity/limit publication. Each world owns
+one CTA; two block barriers order zero/force production and atomic projection.
+The admitted stateless fixed/affine scalar-joint domain is unchanged and there
+is no numerical shared allocation or persistent physical cache. Original
+phase entries remain callable. Shared atomics, DOF-owned duplicate CSR scans
+and a smaller CTA gave no consistent improvement and were discarded.
