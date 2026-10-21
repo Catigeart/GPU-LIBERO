@@ -66,8 +66,32 @@ class EulerNumerics:
         self.arguments=EulerInputs(worlds=n,nv=nv,nq=nq,joints=nj,matrix_width=nc,**broadcasts,
             **{k:a[k].ptr if k in a else 0 for k,_ in EulerInputs._fields_[8:]})
         self.has_damping_workspace=workspace is not None
+        self.preparation_eligible=bool(np.array_equal(rows,np.r_[0,np.cumsum(nnz)[:-1]]) and int(nnz.sum())==nc)
+        self.source_matrix=None
         self.launch=self.library.flash_mjwarp_euler_launch
         self.launch.argtypes=[ct.POINTER(EulerInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+
+    def bind_preparation(self,source):
+        from libero.gpu.host.runtime.cuda_api import array_api
+        wp=array_api(self.stream)
+        if not self.has_damping_workspace:raise ValueError('Euler damping workspace absent')
+        bind_array(self.arrays,'source_matrix',source,wp.float32,
+                   (self.data.nworld,self.model.nC),self.stream)
+        reject_output_overlap(self.arrays,('derivative','matrix','qvel','qpos'))
+        self.source_matrix=source
+        self.prepare_launch=self.library.flash_mjwarp_euler_prepare
+        self.prepare_launch.argtypes=[ct.POINTER(EulerInputs),ct.c_void_p,ct.c_void_p]
+        self.prepare_launch.restype=ct.c_int
+        return self
+
+    def prepare_damping(self):
+        if self.source_matrix is None:raise ValueError('Euler preparation source is unbound')
+        if not self.preparation_eligible:
+            from libero.gpu.host.runtime.cuda_api import array_api
+            self.enqueue(0);array_api(self.stream).copy(self.arrays['matrix'],self.source_matrix)
+            self.enqueue(1);return
+        error=self.prepare_launch(ct.byref(self.arguments),self.source_matrix.ptr,self.stream.cuda_stream)
+        if error:raise RuntimeError('Euler preparation failed: CUDA error '+str(error))
 
     @property
     def identity(self):

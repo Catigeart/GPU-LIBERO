@@ -48,6 +48,26 @@ __global__ void damping_diagonal(EulerInputs a) {
   int w=t/a.nv,d=t%a.nv,at=w*a.matrix_width+a.rowadr[d]+a.rownnz[d]-1;
   a.matrix[at]+=a.timestep[w%a.timestep_rows]*a.derivative[t];
 }
+// Admission proves that the CSR rows partition the complete input matrix and
+// that each row ends with its unique diagonal. Eight lanes cooperate on a row
+// copy; lane zero publishes its derivative and adjusted diagonal. All lanes
+// compute the same current derivative privately, with no shared state/barrier.
+__global__ void damping_prepare(EulerInputs a,const float* source) {
+  const int w=blockIdx.y,lane=threadIdx.x&7,
+      d=blockIdx.x*(blockDim.x/8)+threadIdx.x/8;
+  if (d>=a.nv) return;
+  const int t=w*a.nv+d,first=a.rowadr[d],count=a.rownnz[d];
+  const float* p=a.dampingpoly+((w%a.dampingpoly_rows)*a.nv+d)*2;
+  const float v=fabsf(a.qvel[t]);
+  float derivative=a.damping[(w%a.damping_rows)*a.nv+d];
+  derivative+=2.0f*p[0]*v;
+  derivative+=3.0f*p[1]*v*v;
+  if (lane==0) a.derivative[t]=derivative;
+  const int base=w*a.matrix_width+first;
+  for (int k=lane;k<count-1;k+=8) a.matrix[base+k]=source[base+k];
+  if (lane==0) a.matrix[base+count-1]=source[base+count-1]
+      +a.timestep[w%a.timestep_rows]*derivative;
+}
 __global__ void next_velocity(EulerInputs a) {
   int t=blockIdx.x*blockDim.x+threadIdx.x;
   if (t>=a.worlds*a.nv) return;
@@ -75,6 +95,13 @@ extern "C" {
 const char* flash_mjwarp_euler_source_id() { return FLASH_MJW_EULER_SOURCE_ID; }
 std::size_t flash_mjwarp_euler_arguments_bytes() { return sizeof(flash::mjwarp::EulerInputs); }
 int flash_mjwarp_euler_arch() { return FLASH_MJW_EULER_ARCH; }
+int flash_mjwarp_euler_prepare(const flash::mjwarp::EulerInputs* a,
+                             const float* source,cudaStream_t stream) {
+  if (!a || !source || !a->matrix || !a->derivative || a->worlds<1 ||
+      a->nv<1 || a->matrix_width<1) return int(cudaErrorInvalidValue);
+  flash::mjwarp::damping_prepare<<<dim3((a->nv+15)/16,a->worlds),128,0,stream>>>(*a,source);
+  return int(cudaGetLastError());
+}
 int flash_mjwarp_euler_launch(const flash::mjwarp::EulerInputs* a,int phase,cudaStream_t stream) {
   if (!a || a->worlds<1 || a->nv<1 || a->nq<1 || a->joints<1 || a->matrix_width<1 ||
       a->timestep_rows<1 || a->damping_rows<1 || a->dampingpoly_rows<1) return int(cudaErrorInvalidValue);

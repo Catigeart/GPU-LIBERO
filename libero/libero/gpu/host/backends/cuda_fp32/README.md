@@ -357,3 +357,18 @@ regions on three real metadata fixtures with other GPU jobs resident. Shared
 packing was latency-neutral. An idle joint warp and 1024-thread block did not
 consistently improve those fixtures and were discarded; the accepted block is
 512 threads. These local measurements do not imply a complete-task speedup.
+
+
+`EulerNumerics.bind_preparation/prepare_damping` now joins damping derivative,
+full mass-matrix copy and diagonal adjustment in
+`cuda/dynamics/mjwarp_euler.cu::damping_prepare`. Eight lanes copy each admitted
+CSR row, with private derivative math and lane-zero derivative/diagonal
+publication. This needs no shared memory or synchronization. Cold metadata
+proves full disjoint CSR coverage; layouts with gaps retain all three original
+operations. The source mass matrix, public Newton acceleration, factors and
+warmstart are read-only to this preparation. Existing phase APIs remain usable.
+The default integration chain is `prepare_damping -> factor/solve -> advance`.
+Eleven N=2 local fixtures, changed inputs after graph capture,1/20 replays and
+an independent FP64 preparation oracle pass; no full-task rollout is involved.
+Eight-lane row copies improved the first fused DOF-thread version by24--26%
+on the three frozen real task layouts, measured with other GPU work resident.
