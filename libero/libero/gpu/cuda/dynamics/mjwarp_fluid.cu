@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Pinned passive.py inertia-box fluid and support.py::_apply_ft(False).
 #include "mjwarp_fluid.cuh"
+#include "mjwarp_passive.cuh"
 #include <cmath>
 namespace flash::mjwarp {
 namespace {
@@ -96,8 +97,8 @@ __global__ void project_fluid(FluidInputs a) {
 }
 // One world CTA produces current body wrenches and consumes them in the
 // complete per-DOF subtree projection. No contact-pool work is included.
-template<int Threads,bool Shared>
-__global__ void world_fluid(FluidInputs a) {
+template<int Threads,bool Shared,bool Compose=false>
+__global__ void world_fluid(FluidInputs a,PassiveInputs p,float* adhesion) {
   __shared__ float scratch[Shared ? 6*64 : 1];
   const int w=blockIdx.x,x=threadIdx.x;
   float* storage=Shared ? scratch : a.body_force+6*w*a.bodies;
@@ -177,6 +178,14 @@ __global__ void world_fluid(FluidInputs a) {
       sum+=dot6+dot3;
     }
     a.qfrc[t]=sum;
+    if constexpr(Compose) {
+      adhesion[t]=0.f;
+      float value=p.spring[t];value+=p.damper[t];
+      if(p.gravity_enabled && !p.actgravcomp[p.dof_joint[d]]) value+=p.gravcomp[t];
+      if(p.has_fluid) value+=sum;
+      if(p.has_adhesion) value+=0.f;
+      p.passive[t]=value;
+    }
   }
   if constexpr(Threads>=512) {
     // Long subtrees are rare stragglers. A whole warp consumes their body
@@ -200,7 +209,17 @@ __global__ void world_fluid(FluidInputs a) {
         sum+=dot6+dot3;
       }
       for(int offset=16;offset;offset/=2) sum+=__shfl_down_sync(0xffffffffu,sum,offset);
-      if(!lane) a.qfrc[w*a.nv+d]=sum;
+      if(!lane) {
+        const int t=w*a.nv+d;a.qfrc[t]=sum;
+        if constexpr(Compose) {
+          adhesion[t]=0.f;
+          float value=p.spring[t];value+=p.damper[t];
+          if(p.gravity_enabled && !p.actgravcomp[p.dof_joint[d]]) value+=p.gravcomp[t];
+          if(p.has_fluid) value+=sum;
+          if(p.has_adhesion) value+=0.f;
+          p.passive[t]=value;
+        }
+      }
     }
   }
 
@@ -224,9 +243,21 @@ int flash_mjwarp_fluid_launch(const flash::mjwarp::FluidInputs* a,int phase,cuda
 int flash_mjwarp_fluid_fused(const flash::mjwarp::FluidInputs* a,cudaStream_t stream) {
   if (!a || a->worlds<1 || a->bodies<2 || a->nv<1 || a->mass_rows<1 || a->inertia_rows<1 ||
       a->wind_rows<1 || a->density_rows<1 || a->viscosity_rows<1) return cudaErrorInvalidValue;
-  if(a->bodies<=64) flash::mjwarp::world_fluid<128,true><<<a->worlds,128,0,stream>>>(*a);
-  else if(a->bodies>128 || a->nv>128) flash::mjwarp::world_fluid<512,false><<<a->worlds,512,0,stream>>>(*a);
-  else flash::mjwarp::world_fluid<128,false><<<a->worlds,128,0,stream>>>(*a);
+  if(a->bodies<=64) flash::mjwarp::world_fluid<128,true><<<a->worlds,128,0,stream>>>(*a,{},nullptr);
+  else if(a->bodies>128 || a->nv>128) flash::mjwarp::world_fluid<512,false><<<a->worlds,512,0,stream>>>(*a,{},nullptr);
+  else flash::mjwarp::world_fluid<128,false><<<a->worlds,128,0,stream>>>(*a,{},nullptr);
+  return cudaGetLastError();
+}
+
+std::size_t flash_mjwarp_fluid_passive_bytes() {return sizeof(flash::mjwarp::PassiveInputs);}
+int flash_mjwarp_fluid_passive(const flash::mjwarp::FluidInputs* a,
+                             const flash::mjwarp::PassiveInputs* p,float* adhesion,cudaStream_t stream) {
+  if (!a || !p || a->worlds<1 || a->bodies<2 || a->nv<1 || a->mass_rows<1 || a->inertia_rows<1 ||
+      a->wind_rows<1 || a->density_rows<1 || a->viscosity_rows<1 || a->worlds!=p->worlds ||
+      a->nv!=p->nv || p->joints<1 || !p->has_fluid || p->fluid!=a->qfrc || !adhesion || adhesion!=p->adhesion) return cudaErrorInvalidValue;
+  if(a->bodies<=64) flash::mjwarp::world_fluid<128,true,true><<<a->worlds,128,0,stream>>>(*a,*p,adhesion);
+  else if(a->bodies>128 || a->nv>128) flash::mjwarp::world_fluid<512,false,true><<<a->worlds,512,0,stream>>>(*a,*p,adhesion);
+  else flash::mjwarp::world_fluid<128,false,true><<<a->worlds,128,0,stream>>>(*a,*p,adhesion);
   return cudaGetLastError();
 }
 

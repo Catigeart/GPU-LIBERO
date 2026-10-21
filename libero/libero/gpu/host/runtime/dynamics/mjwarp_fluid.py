@@ -97,3 +97,21 @@ class FluidNumerics:
     def enqueue_fused(self):
         error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
         if error:raise RuntimeError('Fused fluid failed: CUDA error '+str(error))
+
+    def bind_passive(self,passive):
+        from .mjwarp_passive import PassiveInputs
+        if (self.model is not passive.model or self.data is not passive.data or self.stream is not passive.stream or
+                self.arrays['qfrc'].ptr!=passive.arrays['fluid'].ptr or not passive.flags['has_fluid']):
+            raise ValueError('Fluid/passive owner or bridge differs')
+        arrays=dict(self.arrays)
+        arrays.update({'passive_'+k:v for k,v in passive.arrays.items() if k!='fluid'})
+        reject_output_overlap(arrays,('body_force','qfrc','passive_adhesion','passive_passive'))
+        size=self.library.flash_mjwarp_fluid_passive_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(PassiveInputs):raise ValueError('Fluid/passive ABI differs')
+        self.passive=passive;self.passive_launch=self.library.flash_mjwarp_fluid_passive
+        self.passive_launch.argtypes=[ct.POINTER(FluidInputs),ct.POINTER(PassiveInputs),ct.c_void_p,ct.c_void_p]
+        self.passive_launch.restype=ct.c_int
+
+    def enqueue_passive(self):
+        err=self.passive_launch(ct.byref(self.arguments),ct.byref(self.passive.arguments),self.passive.arrays['adhesion'].ptr,self.stream.cuda_stream)
+        if err:raise RuntimeError('Fluid/passive failed: CUDA error '+str(err))

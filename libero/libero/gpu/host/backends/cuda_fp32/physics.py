@@ -108,6 +108,7 @@ class Physics:
         fa=fluid.qualify(m,d,implementation='cuda')
         if m.has_fluid and fa['selected']!='cuda':raise ValueError(fa['fallback'])
         self.fluid=fluid.FluidNumerics(m,d,products('fluid'),stream,admission=fa) if m.has_fluid else None
+        if self.fluid is not None:self.fluid.bind_passive(self.passive)
         self.gravity=queries.GravityProjection(m,d,products('queries'),stream)
         self.bias=bias.Bias(m,d,products('bias'),stream,top)
         self.bias.prepare_fusion()
@@ -144,8 +145,9 @@ class Physics:
         else:
             self.passive.enqueue(0);d.qfrc_gravcomp.zero_()
             if not m.opt.disableflags&types.DisableBit.GRAVITY:self.gravity.enqueue()
-            if self.fluid is not None:self.fluid.enqueue_fused()
-            d.qfrc_adhesion.zero_();self.passive.enqueue(1)
+            if self.fluid is not None:self.fluid.enqueue_passive()
+            else:
+                d.qfrc_adhesion.zero_();self.passive.enqueue(1)
 
     def step1(self,factorize=True):
         self.position(factorize);self.data.sensordata.zero_();self.data.energy.zero_();self.velocity_stage()

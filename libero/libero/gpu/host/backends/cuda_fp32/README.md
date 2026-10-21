@@ -311,3 +311,12 @@ keeping short subtrees thread-owned. This avoids one long root DOF becoming a
 serial straggler without adding metadata or barriers. Common LIBERO small
 models retain their 128-thread path. Original two phase entries remain callable.
 Local checks use the existing CPU-qualified FP64 force/roundoff reference.
+
+The enabled-fluid caller extends this region through
+`FluidNumerics.bind_passive/enqueue_passive -> world_fluid<...,true>`: the same
+DOF owner immediately consumes its private fluid sum, clears adhesion and
+publishes total passive force. The adhesion output is an explicit writable
+pointer; the existing passive descriptor keeps its input const contract.
+There is no fluid reload or additional barrier/shared allocation. Spring/damper
+production and gravity projection still precede this kernel. No-fluid and
+both-disabled caller paths retain their existing scheduling and holds.
