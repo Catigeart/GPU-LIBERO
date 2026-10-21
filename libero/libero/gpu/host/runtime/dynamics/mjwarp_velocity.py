@@ -26,10 +26,16 @@ class ComVelocity:
             **{k:a[k].ptr for k,_ in VelocityInputs._fields_[4:]})
         self.launch = self.library.flash_mjwarp_velocity_launch
         self.launch.argtypes = [ct.POINTER(VelocityInputs), ct.c_int, ct.c_void_p]; self.launch.restype = ct.c_int
+        self.fused_launch=self.library.flash_mjwarp_velocity_fused
+        self.fused_launch.argtypes=[ct.POINTER(VelocityInputs),ct.c_void_p];self.fused_launch.restype=ct.c_int
+        self.warp_launch=self.library.flash_mjwarp_velocity_warp
+        self.warp_launch.argtypes=[ct.POINTER(VelocityInputs),ct.c_void_p];self.warp_launch.restype=ct.c_int
+        self.warp_layout=model.nbranch<=32 and len(topology.layers)>=8
 
     @property
     def identity(self):
         return dict(source_id=source_id('velocity'), library_sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),
+                    component_layout='branch-warp' if self.warp_layout else 'four-branches-per-warp',
                     values='borrow-current-input-no-cache', **self.topology.identity)
 
     def enqueue(self):
@@ -37,3 +43,12 @@ class ComVelocity:
             error = self.launch(ct.byref(self.arguments), phase, self.stream.cuda_stream)
             if error:
                 raise RuntimeError('com_vel launch failed: CUDA error '+str(error))
+
+    def enqueue_fused(self):
+        launch=self.warp_launch if self.warp_layout else self.fused_launch
+        error=launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused com_vel launch failed: CUDA error '+str(error))
+
+    def enqueue_warp(self):
+        error=self.warp_launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Warp com_vel launch failed: CUDA error '+str(error))

@@ -187,3 +187,13 @@ existing pose barrier. Heavy camera/light branches retain the separate tiled
 path; cold immutable indices select the path. This adds no shared storage or
 barrier, and the original independent entries remain callable. The following
 CoM/mass kernel retains its own completion boundary.
+
+### Fused spatial velocity
+
+`ComVelocity.enqueue_fused` in `host/runtime/dynamics/mjwarp_velocity.py` selects
+`velocity_components<8/32>` in `cuda/dynamics/mjwarp_velocity.cu`. Six lanes carry
+the spatial vector and two lanes complete the shuffle group. Cold topology
+selects a branch warp for deeper small branch sets or four groups per warp for
+broader shallow trees. Root zero publication shares this kernel; no branch
+reads it, so there is no new barrier. Live qvel/cdof and canonical publication
+remain unchanged. The original root/branch component phases remain available.

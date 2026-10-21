@@ -255,3 +255,17 @@ parallelism. Both paths publish the same public frame arrays and retain the
 same live/broadcast and static-geom hold contracts. This does not join the
 motion-prefix kernel to the world-wide mass stage or cross a pooled collision
 boundary.
+
+`Physics.velocity_stage -> ComVelocity.enqueue_fused -> velocity_components`
+uses a readable six-component spatial prefix in
+`cuda/dynamics/mjwarp_velocity.cu`. Eight active lanes carry six components and
+two shuffle participants. Canonical ownership still publishes every body/DOF
+once; FREE translations precede rotations, and all BALL/FREE rotational axes
+consume the same pre-rotation velocity. Root zero publication shares the kernel
+without a barrier because private prefixes never read root output. Deep trees
+with at most 32 branches use one branch per warp; broader/shallow domains pack
+four independent branches into a warp. Both layouts tile only within a world
+and allocate no shared storage. Existing overlap admission justifies restricted
+input/output aliases, allowing read-only loads without a physical-value cache.
+The original two component phases remain callable. Qualification covers local
+N=2 endpoints plus an N=128 regional layout comparison, not task trajectories.

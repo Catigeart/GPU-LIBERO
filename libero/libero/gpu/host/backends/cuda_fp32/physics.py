@@ -134,7 +134,7 @@ class Physics:
 
     def velocity_stage(self):
         m,d=self.model,self.data
-        self.transmission.enqueue(1);self.velocity.enqueue()
+        self.transmission.enqueue(1);self.velocity.enqueue_fused()
         if self.passive.flags['disable_spring'] and self.passive.flags['disable_damper']:
             for name in ('qfrc_spring','qfrc_damper','qfrc_gravcomp','qfrc_fluid','qfrc_passive'):getattr(d,name).zero_()
         else:
