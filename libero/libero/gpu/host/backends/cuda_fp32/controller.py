@@ -7,6 +7,7 @@ import numpy as np
 from . import device as cuda
 from .bridges import Bridges,Gather
 from .fused_control_prepare import FusedControlPrepare
+from .fused_controller import FusedController
 from libero.gpu.host.runtime.dynamics.mjwarp_queries import Jacobian
 
 from libero.gpu.host.build.compilation import MissingCompiledProduct
@@ -99,6 +100,7 @@ class Controller:
         self.jacobian=Jacobian(model,data,self.points,self.body,self.jp,self.jr,Path(library).parent/'mjwarp_queries_fp32.so',stream)
         self.policy_values=[cuda.full(self.n,value,dtype=int,device=dev) for value in (0,1)]
         self.preparation=FusedControlPrepare(self,Path(library).parent/'fp32_fused_control_prepare.so')
+        self.fused=FusedController(self,Path(library).parent/'fp32_fused_controller.so')
 
     def _gather_arguments(self):
         return Gather(worlds=self.n,site=self.site,nv=self.model.nv,nq=self.model.nq,nmass=self.model.nC,nsites=self.model.nsite,
@@ -112,9 +114,7 @@ class Controller:
         self.preparation.enqueue(policy_source)
 
     def enqueue(self,policy_step):
-        self.gather(self.policy_values[int(policy_step)])
-        error=self.publish(self.args.ptr,self.n,self.ids.ptr,self.data.ctrl.ptr,self.model.nu,self.stream.cuda_stream)
-        if error:raise RuntimeError('CUDA OSC launch failed: '+str(error))
+        self.fused.enqueue(self.policy_values[int(policy_step)])
 
     def bootstrap(self,mask):
         self.gather()

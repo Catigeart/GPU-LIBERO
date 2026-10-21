@@ -456,3 +456,18 @@ warmstart and public factors remain untouched. Twenty-three N=2 local cases
 pass FP64 derivative/reconstruction/residual and regional endpoint bounds; local
 real-matrix gains are9--14% with other GPU work resident. This is not a measured
 complete-integrator or task speedup.
+
+
+`Controller.enqueue` now calls `fused_controller.py::FusedController`, loading
+independent `flash_fp32_fused_controller`. The continuous CUDA function
+`cuda/fp32/fused_controller.cu::controller_region` contains policy/site/full
+Jacobian/gather arithmetic, the maintained block OSC call and actuator
+publication. OSC's first existing state barrier orders all prepared fields;
+there is no added boundary barrier. Six8-lane spatial groups cooperate within
+the existing64-thread solver block. The large OSC numerical function and its
+MathDx product remain separately compiled. Standalone gather/bootstrap and
+NV>64 retain the accepted preparation/publication components. Source/ABI/owner
+and index admission is load-only; FP64-only CMake skips this dependent target.
+Nine N=2 regional cases pass1/20replays and mutable/index/flag cases. Final local
+real-fixture timings are~3--5% better under contention, measured with warmed
+cached controller state. Fresh-state or complete-task throughput is not claimed.
