@@ -12,7 +12,7 @@ class MassFactorInputs(ct.Structure):
 
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
-    names=('cuda/dynamics/mjwarp_mass_factor.cu','cuda/dynamics/mjwarp_mass_factor.cuh','cmake/MjwarpMassFactor.cmake')
+    names=('cuda/dynamics/mjwarp_mass_factor.cu','cuda/dynamics/mjwarp_mass_factor.cuh','cuda/dynamics/mjwarp_euler.cuh','cmake/MjwarpMassFactor.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest() for n in names).encode()).hexdigest()
 
 
@@ -160,6 +160,32 @@ class MassFactor:
         self.group_launch=plan.library.flash_mjwarp_mass_factor_groups
         self.group_launch.argtypes=[ct.POINTER(MassFactorInputs)]*3+[ct.c_int,ct.c_void_p]
         self.group_launch.restype=ct.c_int
+
+    def bind_preparation(self,euler):
+        from .mjwarp_euler import EulerInputs
+        from .mjwarp_motion import reject_output_overlap
+        p=self.plan
+        if (not self.solve or p.model is not euler.model or p.data is not euler.data or
+                p.stream is not euler.stream or euler.source_matrix is None or
+                euler.arrays['matrix'].ptr!=self.arrays['matrix'].ptr):
+            raise ValueError('Euler/factor preparation owners or matrix differ')
+        arrays=dict(self.arrays)
+        if self.arrays['solution'].ptr==self.arrays['rhs'].ptr:arrays.pop('rhs')
+        arrays.update({'euler_'+k:v for k,v in euler.arrays.items() if k not in ('matrix','acceleration')})
+        reject_output_overlap(arrays,('factor','diagonal','solution','matrix','euler_derivative'))
+        self.euler=euler;self.preparation_eligible=euler.preparation_eligible and self.group_arguments is not None
+        size=p.library.flash_mjwarp_mass_factor_euler_bytes;size.restype=ct.c_size_t
+        if size()!=ct.sizeof(EulerInputs):raise ValueError('Euler/factor preparation ABI differs')
+        self.euler_launch=p.library.flash_mjwarp_mass_factor_euler
+        self.euler_launch.argtypes=[ct.POINTER(MassFactorInputs)]*3+[ct.POINTER(EulerInputs),ct.c_void_p,ct.c_void_p]
+        self.euler_launch.restype=ct.c_int
+        return self
+
+    def enqueue_prepared(self):
+        e=self.euler
+        if not self.preparation_eligible:e.prepare_damping();self.enqueue_fused();return
+        error=self.euler_launch(*(ct.byref(a) for a in self.group_arguments),ct.byref(e.arguments),e.source_matrix.ptr,self.plan.stream.cuda_stream)
+        if error:raise RuntimeError('Euler/factor preparation failed: CUDA error '+str(error))
 
     def enqueue_fused(self):
         if self.group_arguments is None:self.enqueue();return

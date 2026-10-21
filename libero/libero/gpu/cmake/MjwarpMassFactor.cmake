@@ -2,6 +2,7 @@
 set(mjwarp_mass_factor_sources
   "${FLASH_GPU}/cuda/dynamics/mjwarp_mass_factor.cu"
   "${FLASH_GPU}/cuda/dynamics/mjwarp_mass_factor.cuh"
+  "${FLASH_GPU}/cuda/dynamics/mjwarp_euler.cuh"
   "${CMAKE_CURRENT_LIST_FILE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${mjwarp_mass_factor_sources})
 set(mass_factor_hashes)

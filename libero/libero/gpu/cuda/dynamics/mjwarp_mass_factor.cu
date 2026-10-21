@@ -4,6 +4,7 @@
 // of pinned MJWarp c384ac51df67eb92ab7657cc472ff7494dc036bf: smooth.py
 // small/tile Cholesky factorize and factorize_solve blocks. Opposite-triangle
 // clearing follows Warp 1.18 native/tile_cholesky.h.
+#include "mjwarp_euler.cuh"
 #include "mjwarp_mass_factor.cuh"
 #include <cusolverdx.hpp>
 #ifndef FLASH_MJW_MASS_FACTOR_SOURCE_ID
@@ -130,10 +131,33 @@ using Potrs9World =
 // Literal scalar1/6 factor/solve loops followed by a whole-CTA9-DOF SDK
 // operation. Scalar groups are independent; bounded admission limits work
 // serialized before the SDK, whose block barriers require all64threads.
-template <bool Solve>
+template <bool Solve, bool Prepare = false>
 __global__ void world_factor(MassFactorInputs one, MassFactorInputs six,
-                             MassFactorInputs nine) {
+                             MassFactorInputs nine, EulerInputs e,
+                             const float *original) {
   const int w = blockIdx.x, tid = threadIdx.x;
+  if constexpr (Prepare) {
+    // Each DOF owns its current derivative, full CSR row and modified diagonal.
+    // The one producer barrier is also the input boundary for every factor
+    // block.
+    for (int dof = tid; dof < e.nv; dof += 64) {
+      const int t = w * e.nv + dof;
+      const float *polynomial =
+          e.dampingpoly + 2 * ((w % e.dampingpoly_rows) * e.nv + dof);
+      const float speed = fabsf(e.qvel[t]);
+      float damping = e.damping[(w % e.damping_rows) * e.nv + dof];
+      damping += 2.f * polynomial[0] * speed;
+      damping += 3.f * polynomial[1] * speed * speed;
+      e.derivative[t] = damping;
+      const int first = w * e.matrix_width + e.rowadr[dof],
+                count = e.rownnz[dof];
+      for (int k = 0; k < count - 1; ++k)
+        e.matrix[first + k] = original[first + k];
+      e.matrix[first + count - 1] = original[first + count - 1] +
+                                    e.timestep[w % e.timestep_rows] * damping;
+    }
+    __syncthreads(); // all current rows are ready for scalar/SDK consumers
+  }
 #pragma unroll
   for (int group = 0; group < 2; ++group) {
     const MassFactorInputs a = group ? six : one;
@@ -244,10 +268,10 @@ int flash_mjwarp_mass_factor_groups(const flash::mjwarp::MassFactorInputs *one,
     return int(cudaErrorInvalidValue);
   if (solve)
     flash::mjwarp::world_factor<true>
-        <<<one->worlds, 64, 0, stream>>>(*one, *six, *nine);
+        <<<one->worlds, 64, 0, stream>>>(*one, *six, *nine, {}, nullptr);
   else
     flash::mjwarp::world_factor<false>
-        <<<one->worlds, 64, 0, stream>>>(*one, *six, *nine);
+        <<<one->worlds, 64, 0, stream>>>(*one, *six, *nine, {}, nullptr);
   return int(cudaGetLastError());
 }
 int flash_mjwarp_mass_factor_launch(const flash::mjwarp::MassFactorInputs *a,
@@ -276,4 +300,25 @@ int flash_mjwarp_mass_factor_launch(const flash::mjwarp::MassFactorInputs *a,
     return int(cudaErrorInvalidValue);
   return int(cudaGetLastError());
 }
+}
+
+extern "C" std::size_t flash_mjwarp_mass_factor_euler_bytes() {
+  return sizeof(flash::mjwarp::EulerInputs);
+}
+extern "C" int
+flash_mjwarp_mass_factor_euler(const flash::mjwarp::MassFactorInputs *one,
+                               const flash::mjwarp::MassFactorInputs *six,
+                               const flash::mjwarp::MassFactorInputs *nine,
+                               const flash::mjwarp::EulerInputs *e,
+                               const float *source, cudaStream_t stream) {
+  if (!one || !six || !nine || !e || !source || e->worlds < 1 || e->nv < 1 ||
+      one->worlds != e->worlds || six->worlds != e->worlds ||
+      nine->worlds != e->worlds || one->nv != e->nv ||
+      one->matrix_width != e->matrix_width || one->matrix != e->matrix ||
+      one->blocks < 0 || six->blocks < 0 || nine->blocks < 0 ||
+      nine->blocks > 1 || one->blocks + six->blocks > 32)
+    return int(cudaErrorInvalidValue);
+  flash::mjwarp::world_factor<true, true>
+      <<<e->worlds, 64, 0, stream>>>(*one, *six, *nine, *e, source);
+  return int(cudaGetLastError());
 }

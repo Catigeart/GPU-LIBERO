@@ -442,3 +442,17 @@ fixtures show modest local gains; some larger/real-derived paired measurements
 are inconclusive under contention, with large swings in the unchanged baseline
 itself. Those raw mixed outcomes remain experimental evidence and are not
 reported as stable gains or whole-task throughput.
+
+
+Damped integration now calls `MassFactor.bind_preparation/enqueue_prepared`.
+`mjwarp_mass_factor.cu::world_factor<true,true>` contains the actual derivative,
+full CSR copy and diagonal-adjustment prefix followed by the scalar and SDK
+factor/solve loops. A single producer barrier replaces the kernel boundary;
+shared storage stays unchanged. Each DOF owns a row. A4-lane copy trial added
+producer iterations and regressed3--16%, so the qualified initial organization
+was restored. Cold owner/matrix/full-partition/group/alias checks retain the
+accepted preparation and group kernels as fallback. Public Newton acceleration,
+warmstart and public factors remain untouched. Twenty-three N=2 local cases
+pass FP64 derivative/reconstruction/residual and regional endpoint bounds; local
+real-matrix gains are9--14% with other GPU work resident. This is not a measured
+complete-integrator or task speedup.
