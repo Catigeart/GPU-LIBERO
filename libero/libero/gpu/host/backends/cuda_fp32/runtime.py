@@ -3,6 +3,7 @@ from . import device as cuda
 from .bridges import Bridges
 from .physics import Physics,Products
 from .controller import Controller,controller_product
+from .fused_control_drive import FusedControlDrive
 
 
 class Runtime:
@@ -13,6 +14,7 @@ class Runtime:
         self.newton=self.physics.newton
         self.controller=Controller(env.built.native_model,self.model,self.data,env.built.metadata,
             self.stream,controller_product(env.build_root,fast_compile=fast_compile))
+        self.control_drive=FusedControlDrive(self.controller,self.physics.actuation_solve,products.folder/'fp32_fused_control_drive.so')
         self.bridge=Bridges(products.folder/'cuda_bridges_fp32.so',self.stream)
         for name in ('integration_count','state_epoch','reset_events','newton_attempts','position_math'):
             setattr(self,name,cuda.zeros(env.num_envs,dtype=cuda.int64))
@@ -33,12 +35,18 @@ class Runtime:
             self._forward_graph=graph
         self._forward_graph.launch()
 
+    def enqueue_substep(self,policy_step):
+        self.physics.step1()
+        ready=self.control_drive.enqueue(self.controller.policy_values[int(policy_step)])
+        self.physics.solve(unconstrained_ready=ready)
+        self.physics.integrate();self.count(0)
+
     def prepare_control_graph(self):
         if not self.env.observer.graph_eligible:return self
         if self._control_graph is None:
-            with cuda.Graph(self.stream,owners=[self.physics,self.controller,self.env.observer]) as graph:
+            with cuda.Graph(self.stream,owners=[self.physics,self.controller,self.control_drive,self.env.observer]) as graph:
                 for k in range(self.substeps):
-                    self.physics.step1();self.controller.enqueue(k==0);self.physics.step2();self.count(0)
+                    self.enqueue_substep(k==0)
                     self.env.observer.sample(self.env.observation_fields(),stream=self.stream)
             self._control_graph=graph
         self._substep_fusion=self
@@ -59,8 +67,8 @@ class Runtime:
                 for k in range(self.substeps):
                     policy=k==0
                     if policy not in self._step_graphs:
-                        with cuda.Graph(self.stream,owners=[self.physics,self.controller]) as graph:
-                            self.physics.step1();self.controller.enqueue(policy);self.physics.step2();self.count(0)
+                        with cuda.Graph(self.stream,owners=[self.physics,self.controller,self.control_drive]) as graph:
+                            self.enqueue_substep(policy)
                         self._step_graphs[policy]=graph
                     self._step_graphs[policy].launch()
                     self.env.observer.sample(self.env.observation_fields(),stream=self.stream)

@@ -182,16 +182,18 @@ class Physics:
     def step1(self,factorize=True):
         self.position(factorize,transmit=False);self.velocity_stage(clear_step1=True)
 
-    def solve(self,public=False):
+    def solve(self,public=False,*,unconstrained_ready=False):
         m,d=self.model,self.data
-        if m.opt.disableflags&types.DisableBit.ACTUATION:
-            d.act_dot.zero_();d.qfrc_actuator.zero_();d.actuator_force.zero_()
-            self.smooth.enqueue()
-            (self.public_solve if public else self.smooth_solve).enqueue_fused()
-        elif public:
-            self.actuation.enqueue_smooth();self.public_solve.enqueue_fused()
-        else:
-            self.actuation_solve.enqueue()
+        if public and unconstrained_ready:raise ValueError('Public forward requires current factor/solve')
+        if not unconstrained_ready:
+            if m.opt.disableflags&types.DisableBit.ACTUATION:
+                d.act_dot.zero_();d.qfrc_actuator.zero_();d.actuator_force.zero_()
+                self.smooth.enqueue()
+                (self.public_solve if public else self.smooth_solve).enqueue_fused()
+            elif public:
+                self.actuation.enqueue_smooth();self.public_solve.enqueue_fused()
+            else:
+                self.actuation_solve.enqueue()
         self.newton.solve()
         if m.opt.run_rne_postconstraint or (not m.opt.disableflags&types.DisableBit.SENSOR and m.sensor_rne_postconstraint):
             self.external.enqueue();self.postconstraint.enqueue_sensors()

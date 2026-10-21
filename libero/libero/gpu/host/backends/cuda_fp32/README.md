@@ -522,3 +522,14 @@ removes one explicit barrier while keeping SDK inputs immutable. Warning and
 incompatible layout/output domains retain prepared factor+advance. Twenty-five
 N=2 local1/20-step cases pass FP64 block and endpoint bounds. Regional timings
 use continuously advanced warmed state with fixed matrix/RHS, without a task.
+
+
+The default runtime additionally composes preparation/OSC with unconstrained
+force and mass solve in `cuda/fp32/fused_control_drive.cu::control_drive`, target
+`flash_fp32_fused_control_drive`. The9-control Panda domain reuses the OSC arena;
+warp-local publication and the existing force barrier order its lifetimes.
+`Runtime.enqueue_substep` passes explicit `unconstrained_ready` to `Physics.solve`
+so Newton runs once and force/solve is not repeated. Disabled/wide domains retain
+accepted components. Ten N=2 regional cases pass. Warm-cache local timings are
+near-neutral to modestly better with retained mixed contention outliers; they
+establish no complete-task gain. OSC remains a separate numerical function.
