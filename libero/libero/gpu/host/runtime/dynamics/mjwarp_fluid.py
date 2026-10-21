@@ -79,6 +79,8 @@ class FluidNumerics:
         self.arguments=FluidInputs(worlds=n,bodies=nb,nv=nv,**rows,**{k:a[k].ptr for k,_ in FluidInputs._fields_[8:]})
         self.launch=self.library.flash_mjwarp_fluid_launch
         self.launch.argtypes=[ct.POINTER(FluidInputs),ct.c_int,ct.c_void_p];self.launch.restype=ct.c_int
+        self.fused_launch=self.library.flash_mjwarp_fluid_fused
+        self.fused_launch.argtypes=[ct.POINTER(FluidInputs),ct.c_void_p];self.fused_launch.restype=ct.c_int
 
     @property
     def identity(self):
@@ -91,3 +93,7 @@ class FluidNumerics:
         if phase not in (0,1):raise ValueError('Fluid phase must be 0 or 1')
         error=self.launch(ct.byref(self.arguments),phase,self.stream.cuda_stream)
         if error:raise RuntimeError('Fluid launch failed: CUDA error '+str(error))
+
+    def enqueue_fused(self):
+        error=self.fused_launch(ct.byref(self.arguments),self.stream.cuda_stream)
+        if error:raise RuntimeError('Fused fluid failed: CUDA error '+str(error))

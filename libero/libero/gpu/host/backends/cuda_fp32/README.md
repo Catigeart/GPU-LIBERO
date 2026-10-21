@@ -299,3 +299,15 @@ done worlds retain their previous holds. No search iterations or root decisions
 are unrolled. Small-search shared staging and row regrouping were discarded.
 Regional timing uses independent state slots so each measured search starts
 from the frozen boundary; restores are outside the timed range.
+
+Fluid force uses `FluidNumerics.enqueue_fused ->
+cuda/dynamics/mjwarp_fluid.cu::world_fluid`: current inertia-box body wrenches
+and subtree projection share one world CTA and one producer barrier. Up to
+64 bodies, a fixed 1536-byte shared wrench array feeds projection while public
+private-workspace publication uses coalesced stores. Larger models use global
+storage; above 128 bodies/DOFs a 512-thread configuration exposes more work.
+That configuration assigns subtrees of at least 64 bodies to a whole warp,
+keeping short subtrees thread-owned. This avoids one long root DOF becoming a
+serial straggler without adding metadata or barriers. Common LIBERO small
+models retain their 128-thread path. Original two phase entries remain callable.
+Local checks use the existing CPU-qualified FP64 force/roundoff reference.

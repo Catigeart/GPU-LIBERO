@@ -144,7 +144,7 @@ class Physics:
         else:
             self.passive.enqueue(0);d.qfrc_gravcomp.zero_()
             if not m.opt.disableflags&types.DisableBit.GRAVITY:self.gravity.enqueue()
-            if self.fluid is not None:self.fluid.enqueue()
+            if self.fluid is not None:self.fluid.enqueue_fused()
             d.qfrc_adhesion.zero_();self.passive.enqueue(1)
 
     def step1(self,factorize=True):
