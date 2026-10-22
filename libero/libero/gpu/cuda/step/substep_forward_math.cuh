@@ -3048,4 +3048,3 @@ static __device__ __forceinline__ void increment_plan(int w, const int *mask, co
 }
 
 } // namespace physics_constraint_projection::cf_s
-

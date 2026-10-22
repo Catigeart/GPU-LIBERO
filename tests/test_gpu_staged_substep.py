@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from libero.gpu.host.build import substep_native as build
+from libero.gpu.host.runtime.step.staged_motion_plan import build_motion_plan, motion_threads
+import numpy as np
 
 
 class StagedProductTests(unittest.TestCase):
@@ -45,3 +47,31 @@ class StagedProductTests(unittest.TestCase):
             with self.assertRaises(build.MissingCompiledProduct):
                 build.finish(manifest, allow_build=False)
             execute.assert_not_called()
+
+
+class MotionPlanTests(unittest.TestCase):
+    def test_shared_prefix_has_one_public_owner(self):
+        # Paths [1,2,4], [1,3], [5]; body1 is redundantly computed but only
+        # the first path publishes it. Parent IDs need not form DFS intervals.
+        plan = build_motion_plan([0, 0, 1, 1, 2, 0])
+        np.testing.assert_array_equal(plan, [3, 0, 2, 5, 6, 1, 3, 1, 2, 4, 5,
+                                            -1, 0, 1, 0, 1, 2])
+        self.assertEqual(motion_threads(plan, 6), 128)
+
+    def test_large_bodies_have_no_fixed_shared_array_limit(self):
+        parent = [0] + list(range(100))
+        plan = build_motion_plan(parent)
+        self.assertEqual(plan[0], 1)
+        self.assertEqual(motion_threads(plan, len(parent)), 128)
+        plan = build_motion_plan([0] * 40)
+        self.assertEqual(motion_threads(plan, 40), 256)
+
+    def test_expensive_duplicated_prefix_keeps_component_fallback(self):
+        # A deep trunk with many leaves would duplicate substantial work.
+        parent = [0] + list(range(20)) + [20] * 20
+        self.assertEqual(motion_threads(build_motion_plan(parent), len(parent)), 0)
+
+    def test_invalid_dependency_rejected(self):
+        for parent in ([], [1], [0, 1], [0, 2, 0], [0, -1]):
+            with self.subTest(parent=parent), self.assertRaises(ValueError):
+                build_motion_plan(parent)

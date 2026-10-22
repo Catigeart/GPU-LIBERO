@@ -1,73 +1,21 @@
 #pragma once
 // Included in flash_libero's private device namespace; numerical leaves are
 // shared with the retained fused entry. No complete kernel source inclusion.
+#include "substep_velocity.cuh"
+
 // Collective preparation for the current position and velocity. No actuation,
 // Newton, warmstart update, or forward-complete publication occurs here.
 // The returned flag describes same-state numerical reuse for the FP64 path.
-__device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, int world) {
+__device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, int world, const int *motion_reuse = nullptr) {
   const auto &workspace = args.forward_workspace;
   uint64_t *cache = workspace.metadata + size_t(world) * ForwardCacheWords;
   // The Start entry clears validity. Within this physical substep only the
   // controller (ctrl) and Newton/Post (qacc/history) run between forwards.
   // Model/mocap are immutable in this native owner. A reset changes state;
   // a position rebuild changes generation even when state itself is unchanged.
-  const bool reuse = args.state.requested_mask[world] == 1 && args.begin.active[world] == 1 &&
-                     !args.state.first_error[world] && !args.position.work[world] &&
-                     cache[ForwardCacheValid] == 1 &&
-                     cache[ForwardCacheState] == uint64_t(args.state.epoch[world]) &&
-                     cache[ForwardCachePosition] == workspace.position_generation[world];
+  const bool reuse = motion_reuse ? motion_reuse[world] != 0 : forward_reuse(args, world);
   CF_STEP_PROFILE_STAGES(reuse ? CF_STEP_PROFILE_PHASE(VelocityReuse) : CF_STEP_PROFILE_PHASE(VelocityCold));
-  // Velocity and passive forces consume the current, already prepared position.
-  if (args.state.requested_mask[world] != 0) {
-    if (threadIdx.x == 0) {
-      const auto &in = args.velocity_gate;
-      physics_velocity::d_gate(world, in.active, in.error, in.state, in.source, in.epoch, in.valid,
-                               in.written, in.gate, in.require);
-    }
-    __syncthreads();
-    if (!reuse) {
-      {
-        const auto &in = args.transmission;
-        physics_velocity::d_transmission_velocity_block(
-            world, in.moment, in.qvel, in.active, in.position_status, in.nv, in.nu, in.velocity, in.status);
-      }
-      // The collective transmission helper publishes its outputs on every exit.
-      {
-        const auto &in = args.body_velocity;
-        physics_velocity::d_comvel_bias_cached(
-            world, in.active, in.cdof, in.qvel, in.bp, in.ba, in.bn, in.dj, in.jt, in.nb, in.nv, in.cvel,
-            in.cdot, in.status, in.cinert, in.gravity, in.disabled, in.cache_acc, in.cache_force,
-            in.cache_status, in.cache_valid, in.cache_state, in.cache_forward, in.state_epoch, in.forward_epoch,
-            in.level_offsets, in.level_bodies, in.nlevels);
-      }
-      // d_comvel_bias_cached owns its exit synchronization on every path.
-      {
-        const auto &in = args.joint_passive;
-        physics_velocity::d_joint_passive_count(world, in.qpos, in.qvel, in.active, in.jtype, in.qadr, in.dadr,
-                                                in.stiffness, in.spring, in.damping, in.out, in.status, in.nv,
-                                                in.nq, in.njnt, in.joint_disjoint, in.joint_type_offsets,
-                                                in.joint_type_indices);
-      }
-      __syncthreads();
-      {
-        const auto &in = args.fluid_passive;
-        physics_velocity::d_fluid_parallel(world, in, workspace.fluid);
-      }
-      __syncthreads();
-    }
-    if (threadIdx.x == 0) {
-      const auto &in = args.velocity_status;
-      if (!reuse)
-        physics_velocity::d_velocity_status(world, in.a, in.b, in.c, in.out);
-      else
-        // Post still consumes the immutable RNE forward payload. Its numerical
-        // contents stay live; only the current-forward publication changes.
-        args.body_velocity.cache_forward[world] = args.body_velocity.forward_epoch[world];
-      const auto &finish = args.velocity_finish;
-      physics_velocity::d_finish(world, finish.gate, finish.status, finish.epoch, finish.valid,
-                                 finish.written, finish.error, finish.repair, finish.code);
-    }
-  }
+  if (!motion_reuse) prepare_velocity(args, world, reuse);
   // Constraint velocity/reference acceleration.
   CF_STEP_PROFILE_NEXT(reuse ? CF_STEP_PROFILE_PHASE(ReferenceReuse) : CF_STEP_PROFILE_PHASE(ReferenceCold));
   if (threadIdx.x == 0) {

@@ -5,6 +5,18 @@ function(flash_add_staged_substep suffix mathdx_input mathdx_target osc_input os
     return()
   endif()
   set(inputs)
+  # Motion reads NV/NQ/body/joint counts from its admitted device arguments.
+  # It has no shape-sized operator or arena: compile it once for the catalogue.
+  if(NOT TARGET flash_staged_motion)
+    flash_object(flash_staged_motion "${FLASH_STEP}/staged_motion.cu" 64)
+    target_compile_options(flash_staged_motion PRIVATE --split-compile=3)
+    set_target_properties(flash_staged_motion PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    if(FLASH_GLOBAL_DEVICE_LTO)
+      set_target_properties(flash_staged_motion PROPERTIES CUDA_ARCHITECTURES OFF)
+      target_compile_options(flash_staged_motion PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
+    endif()
+  endif()
+  list(APPEND inputs $<TARGET_OBJECTS:flash_staged_motion>)
   foreach(region forward newton post)
     set(object flash_staged_${region}${suffix})
     flash_object(${object} "${FLASH_STEP}/staged_${region}.cu" 64)

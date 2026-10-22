@@ -9,9 +9,12 @@ struct StagedSubstepArguments {
   int *phase;                       // [world], -1 means suspended/completed
   int *smooth_reuse_status;         // [world], dies at position suspension
   real_t *qacc;                     // [world][NV], Newton-private Post input
+  int *motion_reuse;               // [world], produced before reference admission
+  const int *motion_plan;           // immutable branch paths, shared by worlds
 };
-static_assert(sizeof(StagedSubstepArguments) == 4 * sizeof(void *), "staged ABI");
-__global__ void staged_prepare_kernel(const StagedSubstepArguments *, SubstepEntry, int);
+static_assert(sizeof(StagedSubstepArguments) == 6 * sizeof(void *), "staged ABI");
+__global__ void staged_prepare_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool);
+__global__ void staged_motion_kernel(const StagedSubstepArguments *, SubstepEntry, int);
 __global__ void staged_newton_kernel(const StagedSubstepArguments *, int);
 __global__ void staged_post_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool, bool, bool);
 __global__ void staged_reset_tail_kernel(const StagedSubstepArguments *);

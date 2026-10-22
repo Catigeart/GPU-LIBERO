@@ -96,14 +96,16 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
 
 
 def prepare_staged(source, root, sdk, arch, **options):
-    """Explicit coarse FP64 product, sharing the existing CMake build tree."""
+    """Regional FP64 product, sharing the existing CMake build tree."""
     if scalar.bits != 64 or options.get('single_solve') or options.get('profile_newton'):
         raise ValueError('staged substeps require FP64, three solves and no fused profiler')
     manifest = prepare(source, root, sdk, arch, **options)
     if manifest['config']['threads_per_world'] != 64:
         raise ValueError('initial staged baseline requires 64-thread native SDK objects')
-    manifest['config'] = dict(manifest['config'], execution='staged-ABC')
-    manifest['translation_units'] += 2  # prepare/Newton/Post replace one fused object
+    manifest['config'] = dict(manifest['config'], execution='staged-motion-ABC',
+                              motion_organization='branch8-native-fp64',
+                              motion_schedule='entry-first', workspace='regional')
+    manifest['translation_units'] += 3  # motion/prepare/Newton/Post replace one fused object
     manifest['target'] = manifest['target'].replace('flash_substep', 'flash_substep_staged', 1)
     manifest['library'] = str(Path(manifest['library']).with_name(
         Path(manifest['library']).name.replace('substep', 'substep_staged', 1)))
@@ -134,7 +136,7 @@ def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     if staged:
         manifest['libraries'] = [str(Path(p).with_name(Path(p).name.replace('substep', 'substep_staged', 1)))
                                  for p in manifest['libraries']]
-    manifest['translation_units'] = (8 if staged else 4)*len(variants()) + (7 if manifest['config']['atomic_reductions'] else 4)
+    manifest['translation_units'] = (8 if staged else 4)*len(variants()) + int(staged) + (7 if manifest['config']['atomic_reductions'] else 4)
     manifest['identity'] = hashlib.sha256((manifest['identity']+target).encode()).hexdigest()
     manifest_name = 'manifest-all' + ('-fp32' if scalar.bits == 32 else '') + ('-ordered' if ordered else '') + ('-profile' if profiled else '') + '.json'
     if staged:

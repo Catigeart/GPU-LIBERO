@@ -108,7 +108,7 @@ not part of this project. The outer graph owns the substep sequence.
 | --- | --- | --- |
 | Component graph | Non-debug graph-eligible observer, no explicit substep fusion. | `NativeBatchedPhysics.prepare_control_graph` |
 | Single-substep CUDA graph | Explicit fusion API; only completed CMake products are loaded during normal execution. | `host/runtime/step/fused_substep.py::FusedSubstep`; `cuda/step/fused_substep.cu::fused_substep_kernel` |
-| Coarse FP64 staged graph | Explicit `prepare_substep_fusion(..., staged=True)`; optional decomposition baseline, 64 threads per world. | `host/runtime/step/staged_substep.py::StagedSubstep`; `cuda/step/staged_{forward,newton,post}.cu` |
+| Regional FP64 staged graph | Explicit `prepare_substep_fusion(..., staged=True)`; optional branch motion plus native preparation/Newton/Post. Newton and OSC retain 64-thread SDK objects. | `host/runtime/step/staged_substep.py::StagedSubstep`; `cuda/step/staged_{motion,forward,newton,post}.cu` |
 | Host/debug loop | Debug or observer needing host callbacks; captured borrows are discarded. | `NativeBatchedPhysics.enqueue_action`; `host/runtime/step/schedule.py` |
 | Position refresh | State/generation invalidation or suspended prefix; rebuild before resuming. | `FusedSubstep.enqueue_substep`; `cuda/runtime/position_reuse.cuh` |
 | Velocity/reference/bias reuse | Same physical substep, state epoch and position generation. New substep or prefix reentry invalidates readiness. | `cuda/step/fused_substep.cu::forward_dynamics` |
@@ -121,18 +121,36 @@ Normal qualified native fused execution performs 75 Newton solves, 50 factored m
 solves and 3 complete Post evaluations per control step. Recovery and alternative
 observer/debug policies can do additional work.
 
-### Coarse FP64 decomposition
+### Regional FP64 decomposition
 
 The optional staged entry retains the native three-forward schedule. Within
-each forward it launches preparation, complete Newton, then Post/publication
-with the adjacent controller/check/Euler tail. An ordinary substep has nine
-region nodes. Prefix refresh and acceleration-reset continuations retain the
+each forward it launches motion/passive production, preparation, complete
+Newton, then Post/publication with the adjacent controller/check/Euler tail.
+An ordinary substep has ten region nodes, or nine on the component fallback.
+Prefix refresh and acceleration-reset continuations retain the
 existing conditional Graph callbacks, including mixed-world preservation.
 The outer Graph still sequences the physical substeps; this is not a fused
 25-substep kernel.
 
-`staged_forward.cu::staged_prepare_kernel` owns velocity, reference, bias,
-actuation, smooth acceleration and the Newton input bridge.
+`staged_motion.cu::staged_motion_kernel` owns velocity and passive production.
+Eight lanes walk a branch in registers, maintaining parent spatial velocity
+and bias acceleration without a block barrier at every tree level. Shared
+prefixes may be recomputed; one canonical branch publishes each body. The
+immutable host descriptor contains paths and owners, not cached physics.
+The normal path has no dynamically sized shared spatial arrays. A topology
+whose duplicated paths exceed four times its non-world body count retains the
+original level traversal. Exceptional inputs retain the native producer's
+stage-specific status and clearing behavior.
+
+`staged_forward.cu::staged_prepare_kernel` owns constraint reference, reverse
+bias accumulation/publication, actuation, smooth acceleration and the Newton
+input bridge. On the component fallback it also produces velocity/passive.
+Only the first phase of each entry launches a separate motion producer. Later
+forward reuse/publication stays in preparation; a prefix continuation admits
+a new first producer. An unexpected later miss retains the original producer
+inside preparation, so this scheduling choice is not a cache-validity assumption.
+Velocity and bias share the original cache-validity publication after reference
+admission; computing the private RNE prefix does not publish a complete bias.
 `staged_newton.cu::staged_newton_kernel` calls the unchanged separately compiled
 `newton_solver.cu::solve_newton`. Its Hessian, factors, reductions, line search
 and warmstart stay within that kernel and keep the CPU2.3.7 mathematics.
@@ -146,15 +164,26 @@ in `substep_forward_math.cuh`, `substep_euler_math.cuh` and the
 their common controller/check/reset/integration logic. None includes another
 kernel `.cu`, generates CUDA text at runtime or duplicates the numerical math.
 
-The private handoff uses two integers and NV FP64 values per world, allocated
+Each region requests its own dynamic shared-memory budget. Preparation uses
+`SmoothLayout`, Newton uses `NewtonLayout`, and reset/integration uses
+`EulerLayout`. Post has a compact qacc vector followed by three spatial body
+arrays and six sensor outputs. Once Post completes, the controller and Euler
+reuse that allocation. `staged_workspace.cuh` defines this lifetime; it does
+not reserve a Hessian for Post or apply a task-specific body limit.
+The motion launch uses 128 or 256 threads based on branch count; preparation,
+Newton and Post retain 64 threads because their vendor objects have that ABI.
+
+The private handoff uses three integers and NV FP64 values per world, allocated
 before capture and retained by `StagedSubstep`. Existing smooth force and
 acceleration owners bridge preparation to Newton. The private Newton qacc
 view is explicitly carried to Post because rejected/held solves need not
 publish canonical qacc. No Hessian or iterative solver state is spilled.
 The existing substep/Newton argument ABIs remain unchanged.
 
-All catalogue shapes have explicit CMake targets. Build the optional products
-offline in the existing build tree, together with their canonical fused binding
+All catalogue shapes have explicit CMake targets. The optional products combine
+one shared, runtime-dimensioned motion object with shape-specific
+preparation/Newton/Post objects. No per-task motion specialization is generated.
+Build them offline in the existing build tree, together with their canonical fused binding
 and selector products:
 
 ```bash

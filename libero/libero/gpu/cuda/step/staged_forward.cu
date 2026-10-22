@@ -19,31 +19,21 @@ using flash_libero::SubstepShape;
 
 namespace flash_libero {
 namespace {
+#include "staged_phase.cuh"
 #include "substep_forward_prepare.cuh"
 }
 
 // A: existing velocity/reference/bias/actuation/smooth mathematics and bridge.
 // No Newton state, factor or matrix is spilled across this boundary.
 __global__ void staged_prepare_kernel(const StagedSubstepArguments *request,
-                                     SubstepEntry entry, int phase) {
+                                     SubstepEntry entry, int phase, bool motion_prepared) {
   const auto &s = *request;
   const auto &args = *s.arguments;
   const int w = blockIdx.y;
-  const int first = entry == SubstepEntry::Start ? 0 :
-                    entry == SubstepEntry::ControllerPosition ? 1 : 2;
-  if (phase == first) {
-    if (threadIdx.x == 0) {
-      s.phase[w] = entry == SubstepEntry::Start || args.continuation[w] == int(entry) ? phase : -1;
-      s.smooth_reuse_status[w] = -1;
-      if (entry == SubstepEntry::Start) {
-        args.continuation[w] = int(SubstepEntry::Complete);
-        args.forward_workspace.metadata[size_t(w) * ForwardCacheWords + ForwardCacheValid] = 0;
-      }
-    }
-    __syncthreads();
-  }
-  if (s.phase[w] != phase) return;
-  const bool reuse = prepare_dynamics(args, w);
+  if (!motion_prepared) {
+    if (!staged_enter(s, args, w, entry, phase)) return;
+  } else if (s.phase[w] != phase) return;
+  const bool reuse = prepare_dynamics(args, w, motion_prepared ? s.motion_reuse : nullptr);
   CF_STEP_PROFILE_STAGES(CF_STEP_PROFILE_PHASE(Actuation));
   prepare_solver_inputs(args, w, substep_shared_data(), reuse,
       phase == 1 ? s.smooth_reuse_status[w] : -1
