@@ -50,7 +50,7 @@ class StagedProductTests(unittest.TestCase):
                 runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv,nq=65,nm=212,nj=18))
                 physics.bundle = SimpleNamespace(runtime=runtime, stream=object())
                 fusion = SimpleNamespace(resources={}, enqueue_substep=MagicMock())
-                with patch('libero.gpu.host.runtime.step.aligned_substep.EulerAlignedSubstep',
+                with patch('libero.gpu.host.runtime.step.aligned_substep.ControllerAlignedSubstep',
                            return_value=fusion) as aligned, patch(
                            'libero.gpu.host.runtime.step.peeled_force.PeeledForceSubstep',
                            return_value=fusion) as force, patch.object(wp, 'ScopedCapture') as scope:

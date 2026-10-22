@@ -1222,3 +1222,12 @@ state as well as the final state: a converged frictionless final solution does
 not establish that warmstart candidates needed no cone factorization. Nested
 profile scopes overlap their parent phases and must not be added as independent
 percentages. Fixed-QP timing is a regional measurement, not task throughput.
+
+`fp64-motion --controller-split --euler-split --newton-split --producer force`
+selects the separate controller/checks entry after Post. A frozen accepted
+Euler baseline uses `--baseline-aligned --baseline-euler`. The public NV39
+staged/force selector retains the measured neutral controller separation.
+`cuda/step/aligned_controller.cu` consumes phase4, calls the shared
+`controller_pipeline.cu`, then performs the original checks and next-forward
+admission through `substep_controller_tail.cuh`. FP32 and FP64 continue to use
+one `osc_solver.cu` numerical source. There is no new controller algorithm.

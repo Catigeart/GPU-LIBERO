@@ -27,12 +27,13 @@ namespace flash_libero {
 namespace {
 #include "substep_forward_post.cuh"
 #include "substep_tail.cuh"
+#include "substep_controller_tail.cuh"
 }
 
 // C: actual Post/publication, then the same adjacent control/check/Euler tail.
 // A position miss suspends only that world; the existing Graph callback owns
 // its multi-CTA rebuild and mixed-world preservation before the next entry.
-template<bool SeparateEuler>
+template<bool SeparateEuler, bool SeparateController = false>
 __device__ __forceinline__ void staged_post_body(const StagedSubstepArguments *request,
     SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
   const auto &s = *request;
@@ -76,18 +77,10 @@ __device__ __forceinline__ void staged_post_body(const StagedSubstepArguments *r
       } else s.phase[w] = 1;
     }
   } else if (phase == 1) {
-    run_controller(args, w, policy_step);
-    if (threadIdx.x == 0)
-      cf_recovery::admit(w, args.state.intent, args.state.first_error, args.recovery.active);
-    __syncthreads();
-    check_and_reset(args, w, args.state.qpos, args.state.nq, 4);
-    check_and_reset(args, w, args.state.qvel, args.state.nv, 5);
-    begin_forward(args, w, args.state.intent);
-    if (threadIdx.x == 0) {
-      if (args.position.work[w]) {
-        args.continuation[w] = int(SubstepEntry::PhysicsPosition);
-        s.phase[w] = -1;
-      } else s.phase[w] = 2;
+    if constexpr (SeparateController) {
+      if (threadIdx.x == 0) s.phase[w] = staged_controller_ready;
+    } else {
+      controller_tail(s, w, policy_step);
     }
   } else {
     if constexpr (SeparateEuler) {
@@ -108,6 +101,11 @@ __global__ void staged_post_kernel(const StagedSubstepArguments *request,
 __global__ void staged_post_euler_kernel(const StagedSubstepArguments *request,
     SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
   staged_post_body<true>(request, entry, phase, policy_step, publish_post, run_tail);
+}
+
+__global__ void staged_post_controller_kernel(const StagedSubstepArguments *request,
+    SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
+  staged_post_body<true, true>(request, entry, phase, policy_step, publish_post, run_tail);
 }
 
 __global__ void staged_reset_tail_kernel(const StagedSubstepArguments *request) {

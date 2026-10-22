@@ -2,6 +2,7 @@
 #include "substep_kernel.cuh"
 
 namespace flash_libero {
+constexpr int staged_controller_ready = 4; // Post published; controller/checks still pending
 constexpr int staged_euler_ready = 3; // checks completed; Euler still owns its publication gate
 // Private handoff, allocated once before capture. The public substep/Newton
 // argument layouts and numerical workspaces retain their existing ABI.
@@ -19,6 +20,8 @@ __global__ void staged_motion_kernel(const StagedSubstepArguments *, SubstepEntr
 __global__ void staged_newton_kernel(const StagedSubstepArguments *, int);
 __global__ void staged_post_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool, bool, bool);
 __global__ void staged_post_euler_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool, bool, bool);
+__global__ void staged_post_controller_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool, bool, bool);
+__global__ void aligned_controller_kernel(const StagedSubstepArguments *, bool);
 __global__ void aligned_euler_kernel(const StagedSubstepArguments *);
 __global__ void staged_reset_tail_kernel(const StagedSubstepArguments *);
 } // namespace flash_libero

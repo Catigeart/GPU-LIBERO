@@ -116,3 +116,23 @@ class EulerAlignedSubstep(AlignedSubstep):
             euler_resources={name:dict(registers=values[4*i],static_shared_bytes=values[4*i+1],
                 local_bytes_per_thread=values[4*i+2],dynamic_shared_bytes=values[4*i+3])
                 for i,name in enumerate(('euler','deferred_post_tail'))})
+
+
+class ControllerAlignedSubstep(EulerAlignedSubstep):
+    """Separate controller and checks for the admitted staged/force chain."""
+    def __init__(self, runtime, build_root, **options):
+        super().__init__(runtime, build_root, **options)
+        configure = self.library.flash_libero_aligned_controller_configure
+        configure.argtypes = [ct.POINTER(ct.c_int), ct.c_int]
+        configure.restype = ct.c_int
+        values = (ct.c_int * 8)()
+        with wp.ScopedDevice(self.stream.device):
+            self._check(configure(values, self.arguments.body_velocity.nb), 'configure aligned controller')
+        self.aligned_launch = self.library.flash_libero_launch_aligned_controller_substep
+        self.aligned_launch.argtypes = [ct.c_void_p]+[ct.c_int]*8+[ct.c_void_p]
+        self.aligned_launch.restype = ct.c_int
+        self.resources = dict(self.resources, execution='motion-force-init-resume-post-controller-euler',
+            controller_split=True, controller_threads=64,
+            controller_resources={name:dict(registers=values[4*i],static_shared_bytes=values[4*i+1],
+                local_bytes_per_thread=values[4*i+2],dynamic_shared_bytes=values[4*i+3])
+                for i,name in enumerate(('controller','post_tail'))})

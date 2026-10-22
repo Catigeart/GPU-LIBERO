@@ -46,7 +46,7 @@ extern "C" int flash_libero_aligned_configure(int *regs, int *shared, int *local
 }
 // Motion/entry-force are enqueued by the existing accepted host owner before
 // this chain. Same-stream Graph ordering is the only inter-kernel publication.
-template<bool SeparateEuler>
+template<bool SeparateEuler, bool SeparateController = false>
 static int launch_aligned(const AlignedSubstepArguments *args,
     int worlds, int policy, int entry_value, int post, int motion_enabled, int force_enabled,
     int initial_threads, int post_bytes, void *stream) {
@@ -71,7 +71,15 @@ static int launch_aligned(const AlignedSubstepArguments *args,
     aligned_newton_resume_kernel<<<grid,64,NewtonLayout::bytes,s>>>(args,phase);
     error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
     if constexpr (SeparateEuler) {
-      staged_post_euler_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
+      if constexpr (SeparateController) {
+        staged_post_controller_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
+        error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
+        if (phase == 1) {
+          aligned_controller_kernel<<<grid,64,OscLayout::bytes,s>>>(stages,policy != 0);
+        }
+      } else {
+        staged_post_euler_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
+      }
       error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
       if (phase == 2) {
         aligned_euler_kernel<<<grid,64,flash_libero_aligned_euler_shared_bytes(),s>>>(stages);
@@ -98,5 +106,30 @@ extern "C" int flash_libero_launch_aligned_euler_substep(const AlignedSubstepArg
       SubstepShape::packed_mass > 212 || SubstepShape::njnt > 18)
     return int(cudaErrorInvalidValue);
   return launch_aligned<true>(args, worlds, policy, entry, post, motion, force,
+      initial_threads, post_bytes, stream);
+}
+
+extern "C" int flash_libero_controller_kernel_configure(int *);
+extern "C" int flash_libero_aligned_controller_configure(int *resources, int bodies) {
+  auto status = flash_libero_controller_kernel_configure(resources);
+  if (status) return status;
+  const auto bytes = staged_post_bytes(bodies);
+  auto error = cudaFuncSetAttribute(staged_post_controller_kernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+  if (error != cudaSuccess) return int(error);
+  cudaFuncAttributes a;
+  error = cudaFuncGetAttributes(&a, staged_post_controller_kernel);
+  if (error != cudaSuccess) return int(error);
+  resources[4] = a.numRegs; resources[5] = a.sharedSizeBytes;
+  resources[6] = a.localSizeBytes; resources[7] = bytes;
+  return 0;
+}
+extern "C" int flash_libero_launch_aligned_controller_substep(const AlignedSubstepArguments *args,
+    int worlds, int policy, int entry, int post, int motion, int force,
+    int initial_threads, int post_bytes, void *stream) {
+  if (SubstepShape::nv > 57 || SubstepShape::nq > 65 ||
+      SubstepShape::packed_mass > 212 || SubstepShape::njnt > 18)
+    return int(cudaErrorInvalidValue);
+  return launch_aligned<true, true>(args, worlds, policy, entry, post, motion, force,
       initial_threads, post_bytes, stream);
 }

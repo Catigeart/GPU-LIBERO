@@ -112,11 +112,11 @@ class NativeBatchedPhysics:
         aligned = False
         if staged and actuation_solve:
             from libero.gpu.host.runtime.step.aligned_substep import (
-                AlignedSubstep, EulerAlignedSubstep, selected_for_control)
+                AlignedSubstep, ControllerAlignedSubstep, selected_for_control)
             aligned = selected_for_control(self.bundle.runtime.euler.nv, atomic_reductions)
             if aligned:
-                FusedSubstep = (EulerAlignedSubstep if
-                    EulerAlignedSubstep.supports(self.bundle.runtime.euler) else AlignedSubstep)
+                FusedSubstep = (ControllerAlignedSubstep if
+                    ControllerAlignedSubstep.supports(self.bundle.runtime.euler) else AlignedSubstep)
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,
