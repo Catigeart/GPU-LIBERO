@@ -14,7 +14,7 @@ class RawPackInputs(ct.Structure):
 
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
-    names=('cuda/fp32/fused_observations.cu','cuda/fp32/fused_observations.cuh','cmake/FP32Observations.cmake')
+    names=('cuda/fp32/fused_observations.cu','cuda/fp32/fused_observations.cuh','cmake/fp32/FP32Observations.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/name).read_bytes()).hexdigest()
                                  for name in names).encode()).hexdigest()
 

@@ -11,7 +11,7 @@ def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names=('cuda/fp32/fused_euler_step.cu','cuda/fp32/fused_tail.cuh',
            'cuda/dynamics/mjwarp_euler.cuh','cuda/dynamics/mjwarp_publication.cuh',
-           'cuda/dynamics/mjwarp_mass_factor.cuh','cmake/FP32EulerStep.cmake')
+           'cuda/dynamics/mjwarp_mass_factor.cuh','cmake/fp32/FP32EulerStep.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest()
                                   for n in names).encode()).hexdigest()
 

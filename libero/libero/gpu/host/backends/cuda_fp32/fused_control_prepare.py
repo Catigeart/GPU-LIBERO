@@ -14,7 +14,7 @@ class ControlPrepareInputs(ct.Structure):
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names=('cuda/fp32/fused_control_prepare.cu','cuda/fp32/fused_control_prepare.cuh',
-           'cuda/runtime/bridge_types.cuh','cuda/dynamics/mjwarp_queries.cuh','cmake/FP32ControlPrepare.cmake')
+           'cuda/runtime/bridge_types.cuh','cuda/dynamics/mjwarp_queries.cuh','cmake/fp32/FP32ControlPrepare.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/name).read_bytes()).hexdigest() for name in names).encode()).hexdigest()
 
 

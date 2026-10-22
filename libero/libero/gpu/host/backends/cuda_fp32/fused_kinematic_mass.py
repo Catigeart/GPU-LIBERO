@@ -12,7 +12,7 @@ from libero.gpu.host.runtime.dynamics.mjwarp_motion import reject_output_overlap
 
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
-    names=('cuda/fp32/fused_kinematic_mass.cu', 'cuda/dynamics/mjwarp_kinematics.cuh', 'cuda/dynamics/mjwarp_camlight.cuh', 'cuda/dynamics/mjwarp_com_pos.cuh', 'cuda/dynamics/mjwarp_mass_matrix.cuh', 'cmake/FP32KinematicMass.cmake')
+    names=('cuda/fp32/fused_kinematic_mass.cu', 'cuda/dynamics/mjwarp_kinematics.cuh', 'cuda/dynamics/mjwarp_camlight.cuh', 'cuda/dynamics/mjwarp_com_pos.cuh', 'cuda/dynamics/mjwarp_mass_matrix.cuh', 'cmake/fp32/FP32KinematicMass.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest()
                                   for n in names).encode()).hexdigest()
 

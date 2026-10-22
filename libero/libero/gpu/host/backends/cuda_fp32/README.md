@@ -141,7 +141,8 @@ pooled publication boundaries.
 
 ### Build and binding boundaries
 
-[FP32Fusion.cmake](../../../cmake/FP32Fusion.cmake) includes separate targets for
+[FP32Fusion.cmake](../../../cmake/FP32Fusion.cmake) includes separate recipes
+from [cmake/fp32/](../../../cmake/fp32/) for
 tail, observations, centered mass, motion, preparation, motion/passive,
 controller, kinematic mass, actuation/solve, Euler step and control/force/solve.
 Editing one source rebuilds its own target and required device link, rather than

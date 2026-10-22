@@ -14,7 +14,7 @@ def source_id():
     names=('cuda/fp32/fused_motion_passive.cu','cuda/dynamics/mjwarp_velocity.cuh',
            'cuda/dynamics/mjwarp_bias.cuh','cuda/dynamics/mjwarp_fluid.cuh',
            'cuda/dynamics/mjwarp_passive.cuh','cuda/dynamics/mjwarp_passive_math.cuh',
-           'cmake/FP32MotionPassive.cmake')
+           'cmake/fp32/FP32MotionPassive.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/name).read_bytes()).hexdigest()
                                   for name in names).encode()).hexdigest()
 

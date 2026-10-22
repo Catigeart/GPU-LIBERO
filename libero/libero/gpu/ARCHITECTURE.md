@@ -157,7 +157,9 @@ use CPU integration checks rather than an automatic full physics sweep.
 
 The independent backend retains the component graph. Readable CUDA translation
 units in `cuda/fp32/` fuse only world-owned producers and consumers. Their
-CMake recipes are independent and their loaders verify source, ABI and GPU
+CMake recipes live in [cmake/fp32/](cmake/fp32/), included by
+[FP32Fusion.cmake](cmake/FP32Fusion.cmake). Each remains an independent target;
+its loader verifies source, ABI and GPU
 architecture before capture; normal execution never compiles them.
 
 `Physics.integrate` uses `FusedAdvance` in `host/backends/cuda_fp32/fused_tail.py`
@@ -291,7 +293,8 @@ N=128 local comparisons additionally qualify the branch-warp organization.
 
 The independent default combines these accepted velocity/bias leaves through
 `Physics.velocity_stage -> FusedMotion.enqueue -> motion_bias` in
-`cuda/fp32/fused_motion.cu`, built by the independent `FP32Motion.cmake` recipe.
+`cuda/fp32/fused_motion.cu`, built by the independent
+[FP32Motion.cmake](cmake/fp32/FP32Motion.cmake) recipe.
 Canonical branch warps compute spatial velocity, every public motion derivative
 and bias acceleration together, retaining each DOF's accumulation and the
 BALL/FREE pre-rotation convention. Private noncanonical prefixes recompute

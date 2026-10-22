@@ -50,6 +50,23 @@ see [the test index](tests/README.md).
 Use the [stable validation entry](tools/validation/README.md) instead of creating
 another dated copy of actions, reference comparison or timing calculations.
 
+## Source layout
+
+| Location | Maintained content |
+| --- | --- |
+| `libero/libero/gpu/host/backends/cuda_fp32/` | FP32 lifecycle, graph scheduling and load-only fusion bindings. |
+| `libero/libero/gpu/cuda/fp32/` | Readable world-local fused CUDA kernels. Shared numerical components remain in `cuda/dynamics/`, `cuda/newton/`, `cuda/collision/` and `cuda/control/`. |
+| `libero/libero/gpu/cmake/fp32/` | Independent fusion target recipes, included by `cmake/FP32Fusion.cmake`. |
+| `tests/` | Maintained regression tests and small reference fixtures. |
+| `tools/validation/` | Reusable regional and task validation tools. |
+| `benchmark_scripts/`, `media/benchmarks/` | Public benchmark entry points and published performance data. |
+
+Keep temporary experiment drivers and raw timing, profile, compiler and failure
+evidence in a separate development workspace, outside this checkout. The local
+workspace uses sibling `work/` and `results/` directories. Those historical
+records are not runtime dependencies; reusable validation tools belong here.
+Build products and Python caches also stay outside the source tree.
+
 ## Releases
 
 Build one wheel and one source archive from the current source:

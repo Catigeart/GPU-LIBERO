@@ -21,7 +21,7 @@ def source_id():
         'cuda/step/forward_workspace.cuh','cuda/step/substep_shape.cuh',
         'cuda/step/substep_parameters.cuh','cuda/step/substep_types.cuh',
         'cuda/common/precision.cuh','cuda/common/vector.cuh',
-        'cuda/step/instantiations/osc_mathdx.cu','cmake/FP32ControlDrive.cmake')
+        'cuda/step/instantiations/osc_mathdx.cu','cmake/fp32/FP32ControlDrive.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest()
                                   for n in names).encode()).hexdigest()
 

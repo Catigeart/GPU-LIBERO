@@ -20,7 +20,7 @@ class ReleaseInputTests(unittest.TestCase):
         selected = set(builder.selected_files())
         self.assertIn(ROOT / "CMakeLists.txt", selected)
         self.assertIn(ROOT / "libero/libero/gpu/CMakeLists.txt", selected)
-        for path in (ROOT / "libero/libero/gpu/cmake").iterdir():
+        for path in (ROOT / "libero/libero/gpu/cmake").rglob("*"):
             if path.name == "CMakeLists.txt" or path.suffix == ".cmake":
                 self.assertIn(path, selected)
 

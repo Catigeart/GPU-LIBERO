@@ -15,7 +15,7 @@ class TailInputs(ct.Structure):
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     sources=('cuda/fp32/fused_tail.cu','cuda/fp32/fused_tail.cuh','cuda/dynamics/mjwarp_euler.cuh',
-             'cuda/dynamics/mjwarp_publication.cuh','cmake/FP32Tail.cmake')
+             'cuda/dynamics/mjwarp_publication.cuh','cmake/fp32/FP32Tail.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/name).read_bytes()).hexdigest()
                                  for name in sources).encode()).hexdigest()
 

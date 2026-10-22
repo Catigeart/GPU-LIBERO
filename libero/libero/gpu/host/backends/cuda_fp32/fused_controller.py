@@ -9,7 +9,7 @@ from libero.gpu.host.runtime.dynamics.mjwarp_motion import bind_array,reject_out
 
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
-    names=('cuda/fp32/fused_controller.cu', 'cuda/fp32/fused_control_prepare.cuh', 'cuda/runtime/bridge_types.cuh', 'cuda/dynamics/mjwarp_queries.cuh', 'cuda/control/osc_solver.cu', 'cuda/control/osc_solver.cuh', 'cuda/control/osc_profile.cuh', 'cuda/step/substep_shared_layout.cuh', 'cuda/step/substep_shared.cuh', 'cuda/step/forward_workspace.cuh', 'cuda/step/substep_shape.cuh', 'cuda/step/substep_parameters.cuh', 'cuda/step/substep_types.cuh', 'cuda/common/precision.cuh', 'cuda/common/vector.cuh', 'cuda/step/instantiations/osc_mathdx.cu', 'cmake/FP32Controller.cmake')
+    names=('cuda/fp32/fused_controller.cu', 'cuda/fp32/fused_control_prepare.cuh', 'cuda/runtime/bridge_types.cuh', 'cuda/dynamics/mjwarp_queries.cuh', 'cuda/control/osc_solver.cu', 'cuda/control/osc_solver.cuh', 'cuda/control/osc_profile.cuh', 'cuda/step/substep_shared_layout.cuh', 'cuda/step/substep_shared.cuh', 'cuda/step/forward_workspace.cuh', 'cuda/step/substep_shape.cuh', 'cuda/step/substep_parameters.cuh', 'cuda/step/substep_types.cuh', 'cuda/common/precision.cuh', 'cuda/common/vector.cuh', 'cuda/step/instantiations/osc_mathdx.cu', 'cmake/fp32/FP32Controller.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest()
                                   for n in names).encode()).hexdigest()
 

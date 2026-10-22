@@ -13,7 +13,7 @@ def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names=('cuda/fp32/fused_actuation_solve.cu','cuda/dynamics/mjwarp_actuation.cuh',
            'cuda/dynamics/mjwarp_smooth_force.cuh','cuda/dynamics/mjwarp_mass_solve.cuh',
-           'cmake/FP32ActuationSolve.cmake')
+           'cmake/fp32/FP32ActuationSolve.cmake')
     return hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/n).read_bytes()).hexdigest()
                                   for n in names).encode()).hexdigest()
 
