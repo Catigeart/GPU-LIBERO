@@ -47,10 +47,10 @@ class StagedProductTests(unittest.TestCase):
             with self.subTest(nv=nv, atomic=atomic):
                 physics = NativeBatchedPhysics.__new__(NativeBatchedPhysics)
                 physics.debug, physics._observer = False, None
-                runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv))
+                runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv,nq=65,nm=212,nj=18))
                 physics.bundle = SimpleNamespace(runtime=runtime, stream=object())
                 fusion = SimpleNamespace(resources={}, enqueue_substep=MagicMock())
-                with patch('libero.gpu.host.runtime.step.aligned_substep.AlignedSubstep',
+                with patch('libero.gpu.host.runtime.step.aligned_substep.EulerAlignedSubstep',
                            return_value=fusion) as aligned, patch(
                            'libero.gpu.host.runtime.step.peeled_force.PeeledForceSubstep',
                            return_value=fusion) as force, patch.object(wp, 'ScopedCapture') as scope:
@@ -66,6 +66,15 @@ class StagedProductTests(unittest.TestCase):
                 self.assertIs(physics._control_graph, capture.graph)
                 factory = aligned if selected else force
                 self.assertFalse(factory.call_args.kwargs['allow_build'])
+
+    def test_euler_arena_admission_preserves_unsupported_shape_fallback(self):
+        from types import SimpleNamespace
+        from libero.gpu.host.runtime.step.aligned_substep import EulerAlignedSubstep
+        shape = dict(nv=57,nq=65,nm=212,nj=18)
+        self.assertTrue(EulerAlignedSubstep.supports(SimpleNamespace(**shape)))
+        for name, value in shape.items():
+            self.assertFalse(EulerAlignedSubstep.supports(
+                SimpleNamespace(**dict(shape, **{name:value+1}))))
 
     def test_motion_product_keeps_the_native_schedule_and_independent_target(self):
         with tempfile.TemporaryDirectory() as directory:

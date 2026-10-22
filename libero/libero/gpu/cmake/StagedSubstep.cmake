@@ -29,6 +29,18 @@ function(flash_add_staged_substep suffix mathdx_input mathdx_target osc_input os
     endif()
     list(APPEND inputs $<TARGET_OBJECTS:${object}>)
   endforeach()
+  # Independent Euler uses runtime model widths and one catalogue-sized arena.
+  if(NOT TARGET flash_aligned_euler)
+    flash_object(flash_aligned_euler "${FLASH_STEP}/aligned_euler.cu" 64)
+    target_compile_definitions(flash_aligned_euler PRIVATE FLASH_SUBSTEP_NV=57
+      FLASH_SUBSTEP_NQ=65 FLASH_SUBSTEP_NM=212 FLASH_SUBSTEP_NJ=18
+      FLASH_SUBSTEP_NU=9 FLASH_SUBSTEP_CONTACTS=5000)
+    set_target_properties(flash_aligned_euler PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    if(FLASH_GLOBAL_DEVICE_LTO)
+      set_target_properties(flash_aligned_euler PROPERTIES CUDA_ARCHITECTURES OFF)
+      target_compile_options(flash_aligned_euler PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
+    endif()
+  endif()
   set(aligned_object flash_aligned_substep${suffix})
   flash_object(${aligned_object} "${FLASH_STEP}/aligned_substep.cu" 64)
   target_compile_definitions(${aligned_object} PRIVATE ${ARGN})
@@ -56,7 +68,7 @@ function(flash_add_staged_substep suffix mathdx_input mathdx_target osc_input os
     set(aligned_inputs)
     if(mode STREQUAL normal)
       set(aligned_inputs "${FLASH_STEP}/aligned_launch.cu" $<TARGET_OBJECTS:${aligned_object}>
-        $<TARGET_OBJECTS:flash_fp64_actuation_solve>)
+        $<TARGET_OBJECTS:flash_fp64_actuation_solve> $<TARGET_OBJECTS:flash_aligned_euler>)
     endif()
     set(target flash_${product})
     add_library(${target} SHARED EXCLUDE_FROM_ALL "${FLASH_STEP}/staged_launch.cu" ${inputs} ${aligned_inputs}

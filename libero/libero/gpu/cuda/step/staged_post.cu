@@ -32,7 +32,8 @@ namespace {
 // C: actual Post/publication, then the same adjacent control/check/Euler tail.
 // A position miss suspends only that world; the existing Graph callback owns
 // its multi-CTA rebuild and mixed-world preservation before the next entry.
-__global__ void staged_post_kernel(const StagedSubstepArguments *request,
+template<bool SeparateEuler>
+__device__ __forceinline__ void staged_post_body(const StagedSubstepArguments *request,
     SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
   const auto &s = *request;
   const auto &args = *s.arguments;
@@ -89,9 +90,24 @@ __global__ void staged_post_kernel(const StagedSubstepArguments *request,
       } else s.phase[w] = 2;
     }
   } else {
-    finish_substep(args, w, entry);
-    if (threadIdx.x == 0) s.phase[w] = -1;
+    if constexpr (SeparateEuler) {
+      const bool ready = prepare_integrate(args, w, entry);
+      if (threadIdx.x == 0) s.phase[w] = ready ? staged_euler_ready : -1;
+    } else {
+      finish_substep(args, w, entry);
+      if (threadIdx.x == 0) s.phase[w] = -1;
+    }
   }
+}
+
+__global__ void staged_post_kernel(const StagedSubstepArguments *request,
+    SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
+  staged_post_body<false>(request, entry, phase, policy_step, publish_post, run_tail);
+}
+
+__global__ void staged_post_euler_kernel(const StagedSubstepArguments *request,
+    SubstepEntry entry, int phase, bool policy_step, bool publish_post, bool run_tail) {
+  staged_post_body<true>(request, entry, phase, policy_step, publish_post, run_tail);
 }
 
 __global__ void staged_reset_tail_kernel(const StagedSubstepArguments *request) {

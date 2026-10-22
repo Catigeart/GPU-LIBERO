@@ -4,6 +4,22 @@
 #include "newton_workspace.cuh"
 #include "staged_workspace.cuh"
 using namespace flash_libero;
+extern "C" size_t flash_libero_aligned_euler_shared_bytes();
+extern "C" int flash_libero_euler_kernel_configure(int *);
+extern "C" int flash_libero_aligned_euler_configure(int *resources, int bodies) {
+  auto status = flash_libero_euler_kernel_configure(resources);
+  if (status) return status;
+  const auto bytes = staged_post_bytes(bodies);
+  auto error = cudaFuncSetAttribute(staged_post_euler_kernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+  if (error != cudaSuccess) return int(error);
+  cudaFuncAttributes a;
+  error = cudaFuncGetAttributes(&a, staged_post_euler_kernel);
+  if (error != cudaSuccess) return int(error);
+  resources[4] = a.numRegs; resources[5] = a.sharedSizeBytes;
+  resources[6] = a.localSizeBytes; resources[7] = bytes;
+  return 0;
+}
 extern "C" size_t flash_libero_aligned_arguments_size() { return sizeof(AlignedSubstepArguments); }
 extern "C" size_t flash_libero_aligned_checkpoint_bytes() { return physics_newton::NewtonInitialLayout::bytes; }
 extern "C" int flash_libero_aligned_initial_thread_limit() {
@@ -30,7 +46,8 @@ extern "C" int flash_libero_aligned_configure(int *regs, int *shared, int *local
 }
 // Motion/entry-force are enqueued by the existing accepted host owner before
 // this chain. Same-stream Graph ordering is the only inter-kernel publication.
-extern "C" int flash_libero_launch_aligned_substep(const AlignedSubstepArguments *args,
+template<bool SeparateEuler>
+static int launch_aligned(const AlignedSubstepArguments *args,
     int worlds, int policy, int entry_value, int post, int motion_enabled, int force_enabled,
     int initial_threads, int post_bytes, void *stream) {
   if (worlds <= 0 || entry_value < 0 || entry_value > 3 || post_bytes <= 0 ||
@@ -53,8 +70,33 @@ extern "C" int flash_libero_launch_aligned_substep(const AlignedSubstepArguments
     error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
     aligned_newton_resume_kernel<<<grid,64,NewtonLayout::bytes,s>>>(args,phase);
     error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
-    staged_post_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
-    error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
+    if constexpr (SeparateEuler) {
+      staged_post_euler_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
+      error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
+      if (phase == 2) {
+        aligned_euler_kernel<<<grid,64,flash_libero_aligned_euler_shared_bytes(),s>>>(stages);
+        error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
+      }
+    } else {
+      staged_post_kernel<<<grid,64,post_bytes,s>>>(stages,entry,phase,policy != 0,post != 0,true);
+      error = cudaGetLastError(); if (error != cudaSuccess) return int(error);
+    }
   }
   return 0;
+}
+
+extern "C" int flash_libero_launch_aligned_substep(const AlignedSubstepArguments *args,
+    int worlds, int policy, int entry, int post, int motion, int force,
+    int initial_threads, int post_bytes, void *stream) {
+  return launch_aligned<false>(args, worlds, policy, entry, post, motion, force,
+      initial_threads, post_bytes, stream);
+}
+extern "C" int flash_libero_launch_aligned_euler_substep(const AlignedSubstepArguments *args,
+    int worlds, int policy, int entry, int post, int motion, int force,
+    int initial_threads, int post_bytes, void *stream) {
+  if (SubstepShape::nv > 57 || SubstepShape::nq > 65 ||
+      SubstepShape::packed_mass > 212 || SubstepShape::njnt > 18)
+    return int(cudaErrorInvalidValue);
+  return launch_aligned<true>(args, worlds, policy, entry, post, motion, force,
+      initial_threads, post_bytes, stream);
 }

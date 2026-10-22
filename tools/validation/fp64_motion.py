@@ -28,6 +28,8 @@ def add_arguments(p):
     p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
     p.add_argument('--newton-split', action='store_true',
                    help='evaluate independent Newton init/resume with accepted motion/force producers')
+    p.add_argument('--euler-split', action='store_true',
+                   help='evaluate independent Euler after the explicit init/resume chain')
     p.add_argument('--verify-native-workspace', action='store_true',
                    help='also check native Full-Newton/Post workspace reuse, without timing it')
     p.add_argument('--prior-force', type=Path,
@@ -165,6 +167,8 @@ def main(args):
     from libero.gpu.host.runtime.step.physics import _reference_mask
     if sum((args.baseline_motion, args.baseline_force, args.baseline_aligned)) > 1:
         raise ValueError('select one frozen baseline kind')
+    if args.euler_split and not args.newton_split:
+        raise ValueError('--euler-split requires --newton-split')
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
     path=args.output/f'task{args.task:02d}.json'
@@ -251,6 +255,9 @@ def main(args):
                 if args.producer != 'force': raise ValueError('--newton-split requires --producer force')
                 from libero.gpu.host.runtime.step.aligned_substep import AlignedSubstep
                 candidate_class=AlignedSubstep
+                if args.euler_split:
+                    from libero.gpu.host.runtime.step.aligned_substep import EulerAlignedSubstep
+                    candidate_class=EulerAlignedSubstep
             candidate=candidate_class(env.runtime,args.build_root/'cmake-control',
                 allow_build=False,fast_compile=True,motion_threads=512)
             assert candidate.eligible,candidate.resources

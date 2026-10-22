@@ -155,6 +155,56 @@ static __device__ __forceinline__ bool solve_inplace(real_t *x, const real_t *ld
   return !bad;
 }
 
+// Cooperative CPU-order packed factor for a nine-DOF component.
+// All lanes of warp 0 participate. Other warps may factor disjoint components.
+// Existing entry copies qm -> ld and publishes it before calling this body.
+template<bool Checked>
+__device__ __forceinline__ bool factor_nine_warp(real_t *ld, real_t *inv,
+    real_t *sqrt_inv, int *pivot, int &count, int &smallest,
+    int begin, int end, int nv, int nm, const int *madr, const int *parent) {
+  const int lane = threadIdx.x & 31;
+  bool bad = false;
+  for (int k = end - 1; k >= begin; --k) {
+    const int kk = madr[k];
+    if (lane == 0 && ld[kk] < REAL_C(1.0e-15)) {
+      ld[kk] = REAL_C(1.0e-15);
+      pivot[k] = 1;
+      ++count;
+      smallest = k < smallest ? k : smallest;
+    }
+    __syncwarp();
+    int ancestor = parent[k];
+    for (int step = 0; step < lane && ancestor >= begin; ++step)
+      ancestor = parent[ancestor];
+    real_t multiplier = REAL_C(0.0);
+    const int ki = kk + 1 + lane;
+    if (ancestor >= begin) {
+      multiplier = ld[ki] / ld[kk];
+      if constexpr (Checked) bad |= !isfinite(multiplier);
+      const int length = (ancestor < nv-1 ? madr[ancestor+1] : nm) - madr[ancestor];
+      for (int a = 0; a < length; ++a) {
+        const int dest = madr[ancestor] + a;
+        ld[dest] += ld[ki+a] * (-multiplier);
+        if constexpr (Checked) bad |= !isfinite(ld[dest]);
+      }
+    }
+    // Every ancestor row reads the UNNORMALIZED pivot row. Delay writes to
+    // its coefficients until the last such read; this barrier is essential.
+    __syncwarp();
+    if (ancestor >= begin) ld[ki] = multiplier;
+    __syncwarp();
+  }
+  if (lane < end - begin) {
+    const int j = begin + lane;
+    const real_t diagonal = ld[madr[j]];
+    inv[j] = REAL_C(1.0) / diagonal;
+    if (sqrt_inv) sqrt_inv[j] = REAL_C(1.0) / sqrt(diagonal);
+    if constexpr (Checked)
+      bad |= !isfinite(inv[j]) || (sqrt_inv && !isfinite(sqrt_inv[j]));
+  }
+  return !bad;
+}
+
 // All block threads enter. Each component has exactly one owner. Within a
 // component the pivot, ancestor, and packed-row operation order is identical
 // to factor(); different components never read or write one another's rows.
@@ -184,9 +234,27 @@ factor_block(const real_t *qm, real_t *ld, real_t *inv, real_t *sqrt_inv, int *p
   __syncthreads();
   bool bad = false;
   int count = 0, smallest = nv;
-  for (int root = threadIdx.x; root < plan.roots; root += blockDim.x) {
+  // One warp owns the nine-DOF robot block; other threads retain scalar
+  // ownership of the small independent components. No task-ID selector.
+  const bool cooperative_nine = FLASH_REAL_BITS == 64 && !reciprocal_pivot && blockDim.x >= 64;
+  if (cooperative_nine && threadIdx.x < 32) {
+    // Walk the root boundaries once. Repeated forest_range(root) scans made
+    // this warp do quadratic metadata work on models with many free bodies.
+    for (int begin = 0; begin < nv;) {
+      int end = begin + 1;
+      while (end < nv && parent[end] != -1) ++end;
+      if (end - begin == 9)
+        bad |= !factor_nine_warp<Checked>(ld, inv, sqrt_inv, pivot, count,
+            smallest, begin, end, nv, nm, madr, parent);
+      begin = end;
+    }
+  }
+  const int first = cooperative_nine ? int(threadIdx.x)-32 : int(threadIdx.x);
+  const int stride = cooperative_nine ? int(blockDim.x)-32 : int(blockDim.x);
+  for (int root = first; root >= 0 && root < plan.roots; root += stride) {
     int begin, end;
     forest_range(plan, root, nv, parent, begin, end);
+    if (cooperative_nine && end - begin == 9) continue;
     for (int k = end - 1; k >= begin; --k) {
       const int kk = madr[k];
       if (ld[kk] < REAL_C(1.0e-15)) {
@@ -434,8 +502,14 @@ static __device__ void integrate_joint_core(int joint, const int *type, const in
   real_t c = REAL_C(1.0), s = REAL_C(0.0);
   if (angle != REAL_C(0.0)) {
     const real_t half = REAL_C(0.5) * angle;
+#if FLASH_REAL_BITS == 64
+    // CPU mju_axisAngle2Quat uses library sin/cos; preserve its zero-angle
+    // branch above and share range reduction for the two FP64 outputs.
+    sincos(half, &s, &c);
+#else
     s = fabs(half) <= 4 ? trig(half, true) : sin(half);
     c = fabs(half) <= 4 ? trig(half, false) : cos(half);
+#endif
   }
   real_t b[4] = {c, x * s, y * s, z * s};
   if (angle == REAL_C(0.0))

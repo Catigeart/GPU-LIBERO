@@ -1194,6 +1194,15 @@ Full-Newton force path in the same composition cases, reusing the environment;
 that third implementation is never included in the performance comparison.
 Use this when a shared-arena change affects both the split and fused callers.
 
+`--euler-split` (with `--newton-split`) evaluates the standalone Euler entry.
+The measured NV39 public staged/force selector includes this entry when the
+model fits its offline arena; larger arenas retain the original aligned tail.
+Other NV families retain force fusion. Ordinary backend selection is unchanged.
+`cuda/step/aligned_euler.cu` consumes the ready phase only after acceleration
+checks. The reset-forward continuation retains its native tail. Both paths
+share `substep_integrate.cuh` and `substep_euler_math.cuh`; cooperative FP64
+packed LDL retains CPU pivot warnings and publishes the original factor format.
+
 Optional CMake targets `flash_post_replay_probe` and `flash_euler_replay_probe`
 expose the production mathematical regions to fixed-input diagnostic drivers.
 Post accepts the Newton-private acceleration and an optional qualified subtree

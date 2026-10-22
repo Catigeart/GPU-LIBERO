@@ -111,10 +111,12 @@ class NativeBatchedPhysics:
             extra['force_threads'] = force_threads
         aligned = False
         if staged and actuation_solve:
-            from libero.gpu.host.runtime.step.aligned_substep import AlignedSubstep, selected_for_control
+            from libero.gpu.host.runtime.step.aligned_substep import (
+                AlignedSubstep, EulerAlignedSubstep, selected_for_control)
             aligned = selected_for_control(self.bundle.runtime.euler.nv, atomic_reductions)
             if aligned:
-                FusedSubstep = AlignedSubstep
+                FusedSubstep = (EulerAlignedSubstep if
+                    EulerAlignedSubstep.supports(self.bundle.runtime.euler) else AlignedSubstep)
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,

@@ -88,3 +88,31 @@ class AlignedSubstep(PeeledForceSubstep):
             int(policy_step), entry, int(publish_post), int(produce),
             int(produce and bool(self.force_threads)), self.initial_threads,
             self.post_shared_bytes, self.stream.cuda_stream), 'launch aligned substep')
+
+
+class EulerAlignedSubstep(AlignedSubstep):
+    """Separate Euler for admitted shapes, with the original reset continuation."""
+    @staticmethod
+    def supports(euler):
+        return (0 < euler.nv <= 57 and 0 < euler.nq <= 65 and
+                0 < euler.nm <= 212 and 0 <= euler.nj <= 18)
+
+    def __init__(self, runtime, build_root, **options):
+        super().__init__(runtime, build_root, **options)
+        e = self.arguments.euler
+        if not self.supports(e):
+            raise ValueError('Euler experiment exceeds the offline catalogue arena')
+        configure = self.library.flash_libero_aligned_euler_configure
+        configure.argtypes = [ct.POINTER(ct.c_int), ct.c_int]
+        configure.restype = ct.c_int
+        values = (ct.c_int * 8)()
+        with wp.ScopedDevice(self.stream.device):
+            self._check(configure(values, self.arguments.body_velocity.nb), 'configure aligned Euler')
+        self.aligned_launch = self.library.flash_libero_launch_aligned_euler_substep
+        self.aligned_launch.argtypes = [ct.c_void_p]+[ct.c_int]*8+[ct.c_void_p]
+        self.aligned_launch.restype = ct.c_int
+        self.resources = dict(self.resources, execution='motion-force-init-resume-post-euler',
+            euler_split=True, euler_threads=64,
+            euler_resources={name:dict(registers=values[4*i],static_shared_bytes=values[4*i+1],
+                local_bytes_per_thread=values[4*i+2],dynamic_shared_bytes=values[4*i+3])
+                for i,name in enumerate(('euler','deferred_post_tail'))})
