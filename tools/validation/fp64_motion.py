@@ -23,9 +23,13 @@ def add_arguments(p):
                    help='compare force replacement against a frozen motion product')
     p.add_argument('--baseline-force', action='store_true',
                    help='compare against a frozen accepted force product')
+    p.add_argument('--baseline-aligned', action='store_true',
+                   help='compare against a frozen accepted init/resume product')
     p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
     p.add_argument('--newton-split', action='store_true',
                    help='evaluate independent Newton init/resume with accepted motion/force producers')
+    p.add_argument('--verify-native-workspace', action='store_true',
+                   help='also check native Full-Newton/Post workspace reuse, without timing it')
     p.add_argument('--prior-force', type=Path,
                    help='optional frozen producer for same-input local tuning')
     p.add_argument('--threads', type=int, nargs='+',
@@ -159,7 +163,7 @@ def main(args):
     from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
     from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
     from libero.gpu.host.runtime.step.physics import _reference_mask
-    if args.baseline_motion and args.baseline_force:
+    if sum((args.baseline_motion, args.baseline_force, args.baseline_aligned)) > 1:
         raise ValueError('select one frozen baseline kind')
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
@@ -191,19 +195,35 @@ def main(args):
             env._physics.stage_action(np.tile([.02,-.015,.01,.005,-.003,.002,.1],(2,1)))
             baseline_class=PeeledForceSubstep if args.baseline_force else (
                 PeeledMotionSubstep if args.baseline_motion else FusedSubstep)
+            if args.baseline_aligned:
+                from libero.gpu.host.runtime.step.aligned_substep import AlignedSubstep
+                baseline_class=AlignedSubstep
             base=baseline_class(env.runtime,args.build_root/'cmake-control',allow_build=False,fast_compile=True)
             if args.baseline_force:base.force_threads=args.baseline_force_threads
             old=ct.CDLL(str(args.baseline.resolve()))
-            prefix='force' if args.baseline_force else 'motion' if args.baseline_motion else 'substep'
+            prefix='aligned' if args.baseline_aligned else 'force' if args.baseline_force else 'motion' if args.baseline_motion else 'substep'
             size=getattr(old,'flash_libero_'+prefix+'_arguments_size');size.restype=ct.c_size_t
-            assert size()==ct.sizeof(base.arguments)
+            assert size()==ct.sizeof(base.aligned_arguments if args.baseline_aligned else base.arguments)
             if prefix in ('motion','force'):
                 if getattr(old,'flash_libero_'+prefix+'_nv')()!=base.variant.nv:
+                    raise ValueError('frozen baseline NV differs')
+            elif args.baseline_aligned:
+                if old.flash_libero_staged_nv()!=base.variant.nv:
                     raise ValueError('frozen baseline NV differs')
             elif old.flash_libero_substep_dimension(0)!=base.variant.nv:
                 raise ValueError('frozen baseline NV differs')
             base.library=old
-            if args.baseline_force:
+            if args.baseline_aligned:
+                configure=old.flash_libero_aligned_configure
+                configure.argtypes=[ct.c_void_p]*4+[ct.c_int]; configure.restype=ct.c_int
+                values=[(ct.c_int*5)() for _ in range(4)]
+                with wp.ScopedDevice(env.stream.device):
+                    assert configure(*values,base.arguments.body_velocity.nb)==0
+                base.post_shared_bytes=values[3][3]
+                base.aligned_launch=old.flash_libero_launch_aligned_substep
+                base.aligned_launch.argtypes=[ct.c_void_p]+[ct.c_int]*8+[ct.c_void_p]
+                base.aligned_launch.restype=ct.c_int
+            elif args.baseline_force:
                 configure=old.flash_libero_force_configure;configure.argtypes=[ct.c_void_p]*3
                 values=[(ct.c_int*2)() for _ in range(3)]
                 with wp.ScopedDevice(env.stream.device):assert configure(*values)==0
@@ -235,6 +255,15 @@ def main(args):
                 allow_build=False,fast_compile=True,motion_threads=512)
             assert candidate.eligible,candidate.resources
             report['resources']=candidate.resources
+            implementations=[('baseline',base),('candidate',candidate)]
+            if args.verify_native_workspace:
+                if not args.newton_split:
+                    raise ValueError('--verify-native-workspace requires --newton-split')
+                native=PeeledForceSubstep(env.runtime,args.build_root/'cmake-control',
+                    allow_build=False,fast_compile=True,motion_threads=512)
+                assert native.eligible,native.resources
+                implementations.append(('native_workspace',native))
+                report['native_workspace_resources']=native.resources
             prior_force=None
             if args.prior_force:
                 if args.producer!='force':raise ValueError('--prior-force requires --producer force')
@@ -248,7 +277,7 @@ def main(args):
                 for name,p in (('baseline',args.baseline),('candidate',Path(candidate.library._name)))}
             f=env.runtime.forward;d=f.d
             force_cached=wp.array(np.array([1,0],np.int32),dtype=wp.int32,device=env.stream.device)
-            arrays=arrays_of(env._physics.bundle,base,candidate,force_cached)
+            arrays=arrays_of(env._physics.bundle,*(x for _,x in implementations),force_cached)
             # Borrow the already admitted scalar owner, including plans whose
             # closure retains it outside the ordinary object inventory.
             factor_reuse=wp.array(ptr=base.arguments.smooth_acceleration.factor_reuse_count,
@@ -390,13 +419,13 @@ def main(args):
                         report['force_inputs'][case]=dict(checks=checks,passed=all(x['passed'] for x in checks))
                         assert all(x['passed'] for x in checks),checks
                     save(path,report);event('force_input_passed',case=case)
-            original={name:bytes(x.arguments) for name,x in (('baseline',base),('candidate',candidate))}
+            original={name:bytes(x.arguments) for name,x in implementations}
             cases=[('ordinary',False,False,20),('policy_post',True,True,1)]
             if args.task==4:cases.append(('mixed_cache_miss',False,True,5))
             if args.producer=='force':cases.append(('badctrl',False,False,1))
             for case,policy,post,steps in cases:
                 end={};counts={}
-                for name,x in (('baseline',base),('candidate',candidate)):
+                for name,x in implementations:
                     restore(seed);x.arguments=type(x.arguments).from_buffer_copy(original[name])
                     if case=='badctrl':
                         control=f.ctrl.numpy();control[:,0]=np.nan;f.ctrl.assign(control)
@@ -415,6 +444,12 @@ def main(args):
                 # Numerical stopping choices can change, but invocation count
                 # and physical flow remain exact for these replay cases.
                 assert counts['baseline']==counts['candidate'],counts
+                if args.verify_native_workspace:
+                    native_checks=compare(end['baseline'],end['native_workspace'])
+                    report['cases'][case]['native_workspace_checks']=native_checks
+                    save(path,report)
+                    assert all(x['passed'] for x in native_checks),native_checks
+                    assert counts['baseline']==counts['native_workspace'],counts
                 event('substeps_passed',case=case,max_abs=max(x['max_abs'] for x in checks))
             if args.performance:
                 restore(seed);graphs={};device_states={};initial_counts=counters()

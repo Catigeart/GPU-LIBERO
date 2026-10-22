@@ -3,11 +3,11 @@
 #include "substep_shared_layout.cuh"
 
 // Private Newton storage and the host launch capacity. The outer device kernel
-// also uses qacc/mathdx offsets when handing the completed solve to Post.
+// also retains qacc when handing the completed solve to Post.
 namespace flash_libero {
 // Vector pitches and compact matrices are derived from the selected model.
-// These regions coexist throughout a solve. Post retains qacc while reusing
-// mathdx; its final acceleration publication ends the Newton lifetime.
+// These regions coexist throughout a solve. Once it completes, Post retains
+// only qacc and reuses the following dead search/Hessian/control arena.
 struct NewtonLayout {
   static constexpr int hessian_tile_rows = SubstepShape::newton_hessian_tile_rows;
   static constexpr int mathdx_cells = SubstepShape::newton_mathdx_cells;

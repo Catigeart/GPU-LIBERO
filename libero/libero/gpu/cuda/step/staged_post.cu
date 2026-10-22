@@ -44,10 +44,18 @@ __global__ void staged_post_kernel(const StagedSubstepArguments *request,
     qacc[j] = s.qacc[size_t(w) * SubstepShape::nv + j];
   __syncthreads();
   CF_STEP_PROFILE_STAGES(CF_STEP_PROFILE_PHASE(Post));
+  // Use the same admitted immutable motion topology as the independent
+  // producer. Its final plane contains contiguous-subtree sizes.
+  const int *plan = s.motion_plan;
+  const int branches = plan ? plan[0] : 0;
+  const int bodies = args.body_velocity.nb;
+  const int *subtrees = branches > 0 && bodies <= 64
+      ? plan + branches + 2 + plan[branches + 1] + bodies : nullptr;
   publish_forward<StagedPostLayout>(args, w, shared, phase < 2 ? policy_step : publish_post
 #if defined(FLASH_SUBSTEP_PROFILE)
       , step_profile_stages
 #endif
+      , subtrees
   );
   if (!run_tail) return; // explicit regional forward diagnostic only
   if (phase == 0) {

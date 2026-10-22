@@ -60,7 +60,7 @@ int main() {
     post.external_g_g = flags + 6;
     post.external_r_status = flags + 8;
     post.external_s_status = flags + 10;
-    exercise<<<dim3(1, 2), threads, (nv + 18 * 2 + 6) * sizeof(double)>>>(post, flags + 12);
+    exercise<<<dim3(1, 2), threads, (nv + 18 * 2 + 6 + 288) * sizeof(double)>>>(post, flags + 12);
     check(cudaGetLastError()); check(cudaDeviceSynchronize());
     bool passed = flags[0] == 0 && flags[1] == 0 && written[0] == 41 && written[1] == 73 &&
                   flags[12] == int(stale) && flags[13] == 1 && flags[4] == 0 && flags[5] == 0;

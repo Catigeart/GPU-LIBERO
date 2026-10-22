@@ -140,6 +140,37 @@ function(flash_add_substep_tests precision_bits osc_input osc_target)
       CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real")
   endif()
 
+  # Optional diagnostics: actual production Post and Euler mathematical bodies.
+  # Normal products do not depend on these targets. No runtime code generation.
+  if(precision_bits STREQUAL "64" AND EXISTS "${FLASH_GPU}/../../../tests/cuda/post_replay_probe.cu")
+    add_library(flash_post_replay_probe SHARED EXCLUDE_FROM_ALL
+      "${FLASH_GPU}/../../../tests/cuda/post_replay_probe.cu"
+      $<TARGET_OBJECTS:flash_post_solver>)
+    target_include_directories(flash_post_replay_probe PRIVATE "${FLASH_STEP}"
+      "${FLASH_GPU}/cuda/postprocess")
+    target_link_libraries(flash_post_replay_probe PRIVATE flash_cuda_options)
+    set_target_properties(flash_post_replay_probe PROPERTIES
+      CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
+      CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+      JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
+    if(FLASH_GLOBAL_DEVICE_LTO)
+      target_link_options(flash_post_replay_probe PRIVATE "$<DEVICE_LINK:-dlto>")
+    endif()
+  endif()
+  if(precision_bits STREQUAL "64" AND EXISTS "${FLASH_GPU}/../../../tests/cuda/euler_replay_probe.cu")
+    add_library(flash_euler_replay_probe SHARED EXCLUDE_FROM_ALL
+      "${FLASH_GPU}/../../../tests/cuda/euler_replay_probe.cu")
+    target_include_directories(flash_euler_replay_probe PRIVATE "${FLASH_STEP}")
+    # Runtime widths select actual model inputs; this is only the arena ceiling.
+    target_compile_definitions(flash_euler_replay_probe PRIVATE FLASH_SUBSTEP_NV=57
+      FLASH_SUBSTEP_NQ=65 FLASH_SUBSTEP_NM=212 FLASH_SUBSTEP_NJ=18
+      FLASH_SUBSTEP_NU=9 FLASH_SUBSTEP_CONTACTS=5000)
+    target_link_libraries(flash_euler_replay_probe PRIVATE flash_cuda_options)
+    set_target_properties(flash_euler_replay_probe PROPERTIES
+      CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
+      JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
+  endif()
+
   if(IS_DIRECTORY "${FLASH_GPU}/../../../tests/cuda")
   # GEMV owns precision-generic inputs and independent rounding-depth bounds.
   if(EXISTS "${FLASH_GPU}/../../../tests/cuda/newton_gemv_test.cu")

@@ -6,11 +6,15 @@ __device__ __forceinline__ void publish_forward(const SubstepArguments &args,
 #if defined(FLASH_SUBSTEP_PROFILE)
     , substep_profile::Stages &step_profile_stages
 #endif
+    , const int *subtree_sizes = nullptr
 ) {
   const auto &request = *args.newton.parameters;
   const bool post_evaluated = physics_post::run(request.post, world,
                     flash_libero::shared_at<real_t>(shared, Layout::qacc),
-                    flash_libero::shared_at<real_t>(shared, Layout::mathdx), post_outputs);
+                    // Only qacc survives the completed solve. Post may reuse the entire
+                    // following arena, including the dead search/Hessian vectors.
+                    flash_libero::shared_at<real_t>(shared,
+                        Layout::qacc + flash_libero::shared_vector_bytes), post_outputs, subtree_sizes);
   __syncthreads();
   CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(ForwardPublish));
   if (threadIdx.x == 0) {

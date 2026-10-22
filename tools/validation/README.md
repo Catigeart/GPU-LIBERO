@@ -1188,6 +1188,22 @@ export is outside all numerical/timing gates and reports export failures
 separately. Its diagnostic Full-Newton entry is configured before capture,
 including the wide shape's dynamic shared-memory opt-in.
 
+`--baseline-aligned` binds a frozen accepted init/resume product for incremental
+comparison instead. `--verify-native-workspace` additionally checks the current
+Full-Newton force path in the same composition cases, reusing the environment;
+that third implementation is never included in the performance comparison.
+Use this when a shared-arena change affects both the split and fused callers.
+
+Optional CMake targets `flash_post_replay_probe` and `flash_euler_replay_probe`
+expose the production mathematical regions to fixed-input diagnostic drivers.
+Post accepts the Newton-private acceleration and an optional qualified subtree
+descriptor; its scratch includes the shared contact-tile/raw-force lifetime.
+Euler accepts runtime widths within the catalogue ceiling and executes the
+same damped integration body as the native substep. These targets are excluded
+from ordinary builds, contain no alternate reference mathematics, and do not
+construct environments or compile at runtime. Independent reference inputs and
+experiment reports belong outside the source repository.
+
 Optional CMake targets `flash_newton_replay_probe_profile[_nv21|_nv57]` call
 the actual independently compiled instrumented Newton with a fixed QP. They
 reuse vendor and reduction objects, omit the forward body, and export the

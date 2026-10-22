@@ -488,7 +488,7 @@ static __device__ inline void rne_body_ordered(
     int *body_offsets, int *body_counts, const int *level_offsets, const int *level_bodies, int nlevels,
     const int *children_offsets, const int *children_indices, int *event_ping = nullptr,
     int *event_pong = nullptr, int contact_index_mode = 0, int radix_min_contacts = 256,
-    int *cached_event_body = nullptr, int *cached_contact_meta = nullptr, int topology_cache = 0) {
+    int *cached_event_body = nullptr, int *cached_contact_meta = nullptr, int topology_cache = 0, const int *subtree_sizes = nullptr, real_t *subtree_force = nullptr) {
   CF_POST_PROFILE_STAGES(Index);
   qv += w * v;
   if (qacc_world_stride)
@@ -518,7 +518,12 @@ static __device__ inline void rne_body_ordered(
   CF_POST_PROFILE_NEXT(Contacts);
   // Bounded contact tile replaces repeated per-incidence wrench decoding.
   // Every body keeps its stable CSR cursor; tile progression cannot reorder sides.
-  __shared__ real_t contact_tile[9 * 32];
+  // Contact decoding and raw subtree forces have disjoint lifetimes. Their
+  // common arena is supplied by the caller; no large static shared object is
+  // linked into every kernel that shares this independently compiled function.
+  real_t *contact_tile = subtree_force;
+  const bool independent_subtrees = subtree_sizes && b <= 64;
+  real_t *raw_internal = independent_subtrees ? subtree_force : intr;
   // Supported body levels fit one block in the qualified path. For larger body
   // sets the body owner loops below use the existing per-body path instead.
   if (b - 1 <= int(blockDim.x)) {
@@ -641,6 +646,8 @@ static __device__ inline void rne_body_ordered(
     bias_acc += w * 6 * b;
     bias_force += w * 6 * b;
   }
+  if (independent_subtrees && threadIdx.x < 6)
+    raw_internal[int(threadIdx.x) * b] = REAL_C(0.0);
   for (int j = 1 + threadIdx.x; j < b; j += blockDim.x) {
     real_t f[6], a_body[6];
     for (int k = 0; k < 6; k++)
@@ -648,7 +655,7 @@ static __device__ inline void rne_body_ordered(
     inert(ci + 10 * j, a_body, f);
     if (cache_ok) {
       for (int k = 0; k < 6; k++)
-        intr[k * b + j] = (bias_force[k * b + j] + f[k]) - ext[k * b + j];
+        raw_internal[k * b + j] = (bias_force[k * b + j] + f[k]) - ext[k * b + j];
     } else {
       const real_t *c = cv + 6 * j;
       real_t r[6], x[6];
@@ -663,7 +670,7 @@ static __device__ inline void rne_body_ordered(
       x[1] += c[5] * r[3] - c[3] * r[5];
       x[2] += -c[4] * r[3] + c[3] * r[4];
       for (int k = 0; k < 6; k++)
-        intr[k * b + j] = (f[k] + x[k]) - ext[k * b + j];
+        raw_internal[k * b + j] = (f[k] + x[k]) - ext[k * b + j];
     }
   }
   // All body owners must finish inert(acc) before lanes add cached acceleration.
@@ -673,6 +680,20 @@ static __device__ inline void rne_body_ordered(
       acc[k] += bias_acc[k];
   __syncthreads();
   CF_POST_PROFILE_NEXT(Reverse);
+  if (independent_subtrees) {
+    // Parent-before-child and contiguous subtrees were proved by the retained
+    // motion descriptor. Each component now owns its whole subtree sum. This
+    // replaces the descending-level barriers; only addition association changes.
+    for (int i = threadIdx.x; i < 6 * b; i += blockDim.x) {
+      const int component = i / b, body = i % b;
+      real_t value = REAL_C(0.0);
+      for (int node = body; node < body + subtree_sizes[body]; ++node)
+        value += raw_internal[component * b + node];
+      intr[i] = value;
+    }
+    __syncthreads(); // output validation and sensors consume complete subtrees
+    return;
+  }
   for (int level = nlevels - 1; level >= 0; level--) {
     const int first = level_offsets[level], count = level_offsets[level + 1] - first;
     // Six components have independent accumulation chains. Keep each child's
@@ -710,7 +731,7 @@ rne_shared(int w, const int *active, const real_t *qv, const real_t *qa, const r
            const int *children_offsets = nullptr, const int *children_indices = nullptr,
            int *event_ping = nullptr, int *event_pong = nullptr, int contact_index_mode = 0,
            int radix_min_contacts = 256, int *cached_event_body = nullptr, int *cached_contact_meta = nullptr,
-           int topology_cache = 0) {
+           int topology_cache = 0, const int *subtree_sizes = nullptr, real_t *subtree_force = nullptr) {
 
   real_t *wa = acc + (local_outputs ? 0 : w * b * 6);
   real_t *we = ext + (local_outputs ? 0 : w * b * 6);
@@ -795,7 +816,7 @@ rne_shared(int w, const int *active, const real_t *qv, const real_t *qa, const r
                      qacc_world_stride, bias_acc, bias_force, cache_ok, body_index, body_offsets, body_counts,
                      level_offsets, level_bodies, nlevels, children_offsets, children_indices, event_ping,
                      event_pong, contact_index_mode, radix_min_contacts, cached_event_body,
-                     cached_contact_meta, topology_cache);
+                     cached_contact_meta, topology_cache, subtree_sizes, subtree_force);
   } else if (threadIdx.x == 0)
     rne_shared_scalar(w, active, qv, qa, ci, cv, cd, cdd, xi, com, sp, sm, xf, ef, nc, ne, neq, dim, adr, g1,
                       g2, frame, pos, parent, da, dn, root, gb, grav, cc, ec, acc, ext, intr, decoded, status,
@@ -882,7 +903,7 @@ static __device__ __forceinline__ void run_workspace(
     const int *level_bodies = nullptr, int nlevels = 0, const int *children_offsets = nullptr,
     const int *children_indices = nullptr, int *event_ping = nullptr, int *event_pong = nullptr,
     int contact_index_mode = 0, int radix_min_contacts = 256, int *cached_event_body = nullptr,
-    int *cached_contact_meta = nullptr, int topology_cache = 0) {
+    int *cached_contact_meta = nullptr, int topology_cache = 0, const int *subtree_sizes = nullptr) {
   const bool work_planes = body_index && body_offsets && body_counts && level_offsets && level_bodies &&
                            children_offsets && children_indices;
   real_t *work_acc = workspace;
@@ -901,7 +922,8 @@ static __device__ __forceinline__ void run_workspace(
              true, diagnostics != 0, qacc_world_stride, bias_acc, bias_force, cache_ok, body_index,
              body_offsets, body_counts, level_offsets, level_bodies, nlevels, children_offsets,
              children_indices, event_ping, event_pong, contact_index_mode, radix_min_contacts,
-             cached_event_body, cached_contact_meta, topology_cache);
+             cached_event_body, cached_contact_meta, topology_cache, subtree_sizes,
+             workspace + 18 * r_b + 6);
   {
     CF_POST_PROFILE_STAGES(Sensor);
     // All lanes remain live through publication. Only sensor math and state decisions
@@ -977,7 +999,7 @@ static __device__ __forceinline__ void post_private(
     int nlevels = 0, const int *children_offsets = nullptr, const int *children_indices = nullptr,
     int *event_ping = nullptr, int *event_pong = nullptr, int contact_index_mode = 0,
     int radix_min_contacts = 256, int *cached_event_body = nullptr, int *cached_contact_meta = nullptr,
-    int topology_cache = 0) {
+    int topology_cache = 0, const int *subtree_sizes = nullptr) {
 
   libero_post::run_workspace(
       w, g_active, g_first, g_dv, g_nv, g_ne, g_nw, g_na, g_expected, g_state, g_consumed, g_forward, g_cf,
@@ -992,7 +1014,7 @@ static __device__ __forceinline__ void post_private(
           cache_state[w] == g_state[w] && cache_forward[w] == g_forward[w],
       body_index, body_offsets, body_counts, level_offsets, level_bodies, nlevels, children_offsets,
       children_indices, event_ping, event_pong, contact_index_mode, radix_min_contacts, cached_event_body,
-      cached_contact_meta, topology_cache);
+      cached_contact_meta, topology_cache, subtree_sizes);
 }
 
 } // namespace libero_tail
@@ -1000,7 +1022,7 @@ static __device__ __forceinline__ void post_private(
 // Post is a forward stage, separate from the Newton numerical solve. Its
 // scratch lifetime starts after the final Newton reader has rendezvoused.
 __device__ __noinline__ bool run(const physics_newton::NewtonPostData &post, int w,
-                                real_t *shared_qacc, real_t *shared_mathdx, bool outputs_required) {
+                                real_t *shared_qacc, real_t *shared_mathdx, bool outputs_required, const int *subtree_sizes) {
   if (!outputs_required && !post.diagnostics) {
     // Keep the complete Newton/D/state/forward lineage check even when no
     // force consumer is present. A failed admission follows the original full
@@ -1047,7 +1069,7 @@ __device__ __noinline__ bool run(const physics_newton::NewtonPostData &post, int
       post.external_level_bodies, post.nlevels, post.external_children_offsets,
       post.external_children_indices, post.external_event_ping, post.external_event_pong,
       post.contact_index_mode, post.radix_min_contacts, post.external_cached_event_body,
-      post.external_cached_contact_meta, post.topology_cache);
+      post.external_cached_contact_meta, post.topology_cache, subtree_sizes);
   __syncthreads();
   for (int i = threadIdx.x; i < post.r_v; i += blockDim.x)
     post.published_work_acceleration[w * post.r_v + i] = shared_qacc[i];
