@@ -260,7 +260,10 @@ with GpuBatchEnv(
 Observations are dictionaries with a leading environment axis. `step` advances
 all worlds; `reset` and `set_init_state` accept selected IDs in caller order.
 There is no automatic reset. `set_init_state` preserves controller history,
-whereas `reset` clears episode/controller/observation state. Fixture poses are
+whereas `reset` clears episode/controller/observation state. Reset also hides the
+original auxiliary visualizations and publishes each selected world's site
+visibility before returning camera images, matching the CPU reset lifecycle.
+Fixture poses are
 sampled once at construction and shared; reset selects movable/robot states
 from the supplied bank. If no bank is supplied, the corresponding official
 `.pruned_init` file is loaded. Different fixture layouts or tasks require

@@ -79,6 +79,9 @@ class BatchEnvTests(unittest.TestCase):
             shell = SimpleNamespace(timestep=0, cur_time=0., done=False, control_timestep=.05)
             shell._post_action = lambda a: (float(a[0]), False, {})
             shell._check_success = lambda i=i: i == 2
+            shell._visualizations = ('robots',)
+            shell.visualize = lambda **kwargs: None
+            shell.sim = SimpleNamespace(flush_public_arrays=lambda: None)
             env.shells.append(shell)
         return env
 
@@ -96,6 +99,43 @@ class BatchEnvTests(unittest.TestCase):
         self.assertEqual([i['env_id'] for i in infos], [0, 1, 2, 3])
         self.assertTrue(all(s.timestep == 1 and s.cur_time == .05 for s in env.shells))
         self.assertIsNone(env._snapshot_cache)
+
+    def test_reset_publishes_selected_world_visibility_before_observation(self):
+        env = self.environment()
+        env._nq = env._nv = 1
+        env.initial_states = np.zeros((1, 3))
+        env.seed(0)
+        env._restore = lambda *args, **kwargs: None
+        visible = np.ones(4, dtype=bool)
+        published = visible.copy()
+        for world, shell in enumerate(env.shells):
+            def visualize(vis_settings, world=world):
+                self.assertEqual(vis_settings, {'robots': False})
+                visible[world] = False
+            def flush(world=world):
+                published[world] = visible[world]
+            shell.visualize = visualize
+            shell.sim.flush_public_arrays = flush
+        env._observations = lambda ids: published[list(ids)].copy()
+        np.testing.assert_array_equal(env.reset(id=[3, 1]), [False, False])
+        np.testing.assert_array_equal(published, [True, False, True, False])
+        np.testing.assert_array_equal(env.reset(id=[3, 1]), [False, False])
+        env.set_init_state(np.zeros((1, 3)), id=[0])
+        self.assertTrue(published[0])
+        np.testing.assert_array_equal(env.reset(), [False]*4)
+
+    def test_reset_visibility_failure_quarantines_the_owner(self):
+        env = self.environment()
+        env._nq = env._nv = 1
+        env.initial_states = np.zeros((1, 3))
+        env.seed(0)
+        env._restore = lambda *args, **kwargs: None
+        def fail():
+            raise RuntimeError('visual upload failed')
+        env.shells[1].sim.flush_public_arrays = fail
+        with self.assertRaisesRegex(RuntimeError, 'visual upload failed'):
+            env.reset(id=[1])
+        self.assertTrue(env._failed)
 
     def test_invalid_action_cannot_advance_any_world(self):
         env = self.environment()

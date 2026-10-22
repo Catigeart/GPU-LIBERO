@@ -479,6 +479,9 @@ class GpuBatchEnv:
                     shell = self.shells[i]
                     shell.timestep, shell.cur_time, shell.done = 0, 0.0, False
                     shell._obs_cache = {}
+                    # Match the original reset lifecycle before the first image.
+                    shell.visualize(vis_settings={vis: False for vis in shell._visualizations})
+                    shell.sim.flush_public_arrays()
                 self._initialized = True
                 return self._observations(ids)
 
