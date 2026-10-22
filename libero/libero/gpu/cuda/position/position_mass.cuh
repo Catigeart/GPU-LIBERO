@@ -21,7 +21,8 @@
 #include <math.h>
 
 // Handwritten MuJoCo spatial-inertia and tree-sparse mass stages. These are
-// tree recurrences retain their order; compos/crb are whole-block entries.
+// tree recurrences retain their order unless qualified subtree intervals are
+// explicitly supplied; compos/crb are whole-block entries.
 namespace cf_pm {
 // Private component planes replace shared AoS storage, never add a mirror.
 __device__ __forceinline__ int slot(int item,int component,int count,int width,bool planes) {
@@ -117,7 +118,7 @@ __device__ LIBERO_POSITION_MASS_INLINE void compos(int w,const int* active,const
     const real_t* mass,const real_t* subtree_mass,const real_t* inertia,
     const int* parent,const int* root,const int* type,const int* body,const int* dof,
     int nb,int nj,int nv,real_t* com,real_t* ci,real_t* cv,int* status,
-    const int* joint_offsets=nullptr,const int* joint_indices=nullptr,const int* level_offsets=nullptr,const int* level_bodies=nullptr,int level_count=0,const int* children_offsets=nullptr,const int* children_indices=nullptr,bool component_planes=false) {
+    const int* joint_offsets=nullptr,const int* joint_indices=nullptr,const int* level_offsets=nullptr,const int* level_bodies=nullptr,int level_count=0,const int* children_offsets=nullptr,const int* children_indices=nullptr,bool component_planes=false,const int* subtree_sizes=nullptr) {
     xipos+=w*nb*3; ximat+=w*nb*9; anchor+=w*nj*3;
     xmat+=w*nb*9; axis+=w*nj*3;
     com+=w*nb*3;ci+=w*nb*10;cv+=w*nv*6;
@@ -129,7 +130,18 @@ __device__ LIBERO_POSITION_MASS_INLINE void compos(int w,const int* active,const
     const bool bad_input=!finite_lane_known<CF_PM_STATIC_NBODY*3>(xipos,nb*3)|!finite_lane_known<CF_PM_STATIC_NBODY*9>(ximat,nb*9)|
         !finite_lane_known<CF_PM_STATIC_NBODY*9>(xmat,nb*9)|!finite_lane_known<CF_PM_STATIC_NJNT*3>(anchor,nj*3)|!finite_lane_known<CF_PM_STATIC_NJNT*3>(axis,nj*3);
     if(invalid_block(bad_input)){if(threadIdx.x==0)status[w]=2;__syncthreads();return;}
-    if(level_offsets)compos_tree(xipos,mass,subtree_mass,nb,com,level_offsets,level_bodies,level_count,children_offsets,children_indices,component_planes);
+    if(subtree_sizes){
+        // FP32 organization: each body/component owns its complete subtree sum.
+        // Read original weighted positions; no parent depends on a child's output.
+        for(int cell=threadIdx.x;cell<3*nb;cell+=blockDim.x){
+            const int b=cell%nb,c=cell/nb;
+            real_t sum=REAL_C(0.0);
+            for(int j=b+subtree_sizes[b]-1;j>=b;--j)sum+=mass[j]*xipos[3*j+c];
+            com[slot(b,c,nb,3,component_planes)]=subtree_mass[b]<REAL_C(1e-15)
+                ?xipos[3*b+c]:sum/subtree_mass[b];
+        }
+    }
+    else if(level_offsets)compos_tree(xipos,mass,subtree_mass,nb,com,level_offsets,level_bodies,level_count,children_offsets,children_indices,component_planes);
     else if(threadIdx.x==0)for(int i=nb-1;i>=0;--i){
         for(int c=0;c<3;++c)com[slot(i,c,nb,3,component_planes)]+=mass[i]*xipos[3*i+c];
         if(i)for(int c=0;c<3;++c)com[slot(parent[i],c,nb,3,component_planes)]+=com[slot(i,c,nb,3,component_planes)];
@@ -185,7 +197,7 @@ __device__ LIBERO_POSITION_MASS_INLINE void compos(int w,const int* active,const
 __device__ LIBERO_POSITION_MASS_INLINE void crb(int w,const int* active,const real_t* ci,const real_t* cv,
     const int* bp,const int* db,const int* dp,const int* ma,const int* simple,
     const real_t* m0,const real_t* arm,int nb,int nv,int nm,real_t* cr,real_t* qm,int* status,
-    const int* chain_offsets=nullptr,const int* chain_indices=nullptr,const int* chain_packed=nullptr,const int* simple_offsets=nullptr,const int* simple_indices=nullptr,const int* level_offsets=nullptr,const int* level_bodies=nullptr,int level_count=0,const int* children_offsets=nullptr,const int* children_indices=nullptr,bool component_planes=false){
+    const int* chain_offsets=nullptr,const int* chain_indices=nullptr,const int* chain_packed=nullptr,const int* simple_offsets=nullptr,const int* simple_indices=nullptr,const int* level_offsets=nullptr,const int* level_bodies=nullptr,int level_count=0,const int* children_offsets=nullptr,const int* children_indices=nullptr,bool component_planes=false,const int* subtree_sizes=nullptr){
     ci+=w*nb*10;cv+=w*nv*6;cr+=w*nb*10;qm+=w*nm;
     if(threadIdx.x==0)status[w]=0;
     zero_block(cr,nb*10);zero_block(qm,nm);__syncthreads();
@@ -196,7 +208,17 @@ __device__ LIBERO_POSITION_MASS_INLINE void crb(int w,const int* active,const re
     }
     libero_vec::copy_block(ci,cr,nb*10);
     __syncthreads();
-    if(level_offsets){
+    if(subtree_sizes){
+     // CPU CRB deliberately excludes accumulation into world body zero.
+     // cinert is immutable for this phase, so all components can proceed alone.
+     for(int cell=threadIdx.x;cell<10*(nb-1);cell+=blockDim.x){
+      const int b=1+cell%(nb-1),c=cell/(nb-1);
+      real_t sum=REAL_C(0.0);
+      for(int j=b+subtree_sizes[b]-1;j>=b;--j)sum+=ci[slot(j,c,nb,10,component_planes)];
+      cr[slot(b,c,nb,10,component_planes)]=sum;
+     }
+    }
+    else if(level_offsets){
      for(int level=level_count-1;level>=0;--level){
       for(int at=level_offsets[level]+threadIdx.x;at<level_offsets[level+1];at+=blockDim.x){const int b=level_bodies[at];
        for(int child=children_offsets[b];child<children_offsets[b+1];++child)for(int k=0;k<10;++k)cr[slot(b,k,nb,10,component_planes)]+=cr[slot(children_indices[child],k,nb,10,component_planes)];

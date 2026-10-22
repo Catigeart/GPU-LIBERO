@@ -213,7 +213,7 @@ def _dataflow_stages(d):
     return stages
 
 
-def _dataflow_source(d,*,bounds_cache=None):
+def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
     """Bind world slices into one handwritten block dataflow orchestrator.
 
     The generator performs no mathematical rewriting. It substitutes shared
@@ -224,6 +224,10 @@ def _dataflow_source(d,*,bounds_cache=None):
     p=d.position;b=p.body;f=p.frames;m=p.factor
     nq,nb,nj,nm=b.static.nq,b.static.nb,b.static.nj,b.static.nm
     nv,nM=m.nv,m.nM
+    intervals=None
+    if subtree_mass and _topology(p)['qualified']:
+        from libero.gpu.model.topology import contiguous_subtree_sizes
+        intervals=contiguous_subtree_sizes(p.compos.parent.numpy())
     geom_shared=3*f.ngeom if bounds_cache else 0
     fixed=21*nb+6*nj+geom_shared  # body matrix, joint frames, inertial + geom positions
     body_phase=7*nb+nq+4*nm+12
@@ -263,6 +267,8 @@ def _dataflow_source(d,*,bounds_cache=None):
             defaults[-3]='0'
             args.extend(defaults[supplied:])
             args.append('true')
+            if intervals is not None:
+                args.append('libero_position::mass_subtree_sizes')
         if key=='cf_bounds_prepare_cached_block':args.append('true')
         return '%s(%s, %s);'%(function or name,world,', '.join(args))
     def lane(statement):return '    if(threadIdx.x==0) { '+statement+' }'
@@ -348,8 +354,13 @@ def _dataflow_source(d,*,bounds_cache=None):
         code.append('    '+call(key,'w',{bounds_cache['geom_position_arg']:'s_geom_positions'}))
         code.append('    __syncthreads();')
     signature=', '.join('%s a%d'%(kind,index) for index,kind in enumerate(specs))
-    source='namespace libero_position {\n__device__ __forceinline__ void dataflow(int w, '+signature+') {\n'+'\n'.join(code)+'\n}\n}\n'
+    # Only immutable model integers are embedded. The CUDA mathematical bodies
+    # remain in position_mass.cuh; no arithmetic is generated here.
+    constants=('__device__ __constant__ int mass_subtree_sizes[%d] = {%s};\n' %
+        (nb,','.join(map(str,intervals)))) if intervals is not None else ''
+    source='namespace libero_position {\n'+constants+'__device__ __forceinline__ void dataflow(int w, '+signature+') {\n'+'\n'.join(code)+'\n}\n}\n'
     return source,values,specs,dict(shared_bytes=8*shared_doubles,
+        subtree_mass=intervals is not None,
         phase_barriers=sum(statement.count('__syncthreads()') for statement in code),
         legacy_phase_barriers=len(_dataflow_stages(d)),fixed_shared_doubles=fixed,
         geometry_shared_doubles=geom_shared,bounds_cache=bool(bounds_cache),
@@ -358,13 +369,18 @@ def _dataflow_source(d,*,bounds_cache=None):
         native_dimensions=dict(nq=nq,nbody=nb,njnt=nj,nmocap=nm,nv=nv,nM=nM))
 
 
-def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cache=None):
+def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cache=None,subtree_mass=None):
     if dataflow_profile not in ('compatible','fast'):
         raise ValueError('position dataflow profile must be compatible or fast')
-    source,values,specs,workspace=_dataflow_source(d,bounds_cache=bounds_cache)
+    if subtree_mass is None:
+        subtree_mass=dataflow_profile=='fast' and scalar.bits==64
+    if type(subtree_mass) is not bool or subtree_mass and scalar.bits!=64:
+        raise ValueError('subtree_mass must be bool and requires FP64 when enabled')
+    source,values,specs,workspace=_dataflow_source(d,bounds_cache=bounds_cache,subtree_mass=subtree_mass)
     # Geometry frames and durable publication have independent owners. More
     # warps hide their memory latency; small/compatible cases keep the default.
-    threads=128 if dataflow_profile=='fast' and d.position.frames.ngeom>=128 else 64
+    original_threads=128 if dataflow_profile=='fast' and d.position.frames.ngeom>=128 else 64
+    threads=256 if workspace['subtree_mass'] else original_threads
     plan=NativePlan('position_dataflow_'+dataflow_profile,
         [(GPU_ROOT / 'cuda/common/packed_mass.cuh'),(GPU_ROOT / 'cuda/position/position.cuh'),(GPU_ROOT / 'cuda/position/position_mass.cuh'),
          *(bounds_cache.get('sources',[]) if bounds_cache else []),source],
@@ -375,6 +391,7 @@ def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cac
         dynamic_shared_bytes=workspace['shared_bytes'])
     plan.manifest.update(dataflow_profile=dataflow_profile,workspace=workspace,
         body_diagnostics=dataflow_profile!='fast',threads_per_world=threads,
+        original_threads_per_world=original_threads,
         normalization_policy=('component_divisions' if dataflow_profile!='fast' or int(d.position.factor.nv) in (21,27)
                               else 'reciprocal_multiply'),
         execution='one block/world; shared body/frame/mass dataflow; explicit phase barriers',
@@ -384,7 +401,7 @@ def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cac
     return plan
 
 
-def install_dataflow(bundle,build_root,*,dataflow_profile='compatible'):
+def install_dataflow(bundle,build_root,*,dataflow_profile='compatible',subtree_mass=None):
     """Explicit dataflow candidate; legacy install remains the comparison route."""
     d=bundle.dynamics
     bounds_cache=None
@@ -402,7 +419,8 @@ def install_dataflow(bundle,build_root,*,dataflow_profile='compatible'):
         else:
             from .collision import prepare_bounds_cache
             bounds_cache=prepare_bounds_cache(ws,d)
-    plan=create_dataflow_plan(d,build_root,dataflow_profile=dataflow_profile,bounds_cache=bounds_cache)
+    plan=create_dataflow_plan(d,build_root,dataflow_profile=dataflow_profile,bounds_cache=bounds_cache,
+                              subtree_mass=subtree_mass)
     position_hold,snapshot=_create_position_snapshot_plan(d,Path(build_root)/'snapshot')
     if temporal_bounds:
         plan.manifest['geometry_consumer']='fresh geom pose -> C temporal bounds; F PCA bounds producer omitted after cold admission'

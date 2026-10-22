@@ -171,6 +171,16 @@ function(flash_add_substep_tests precision_bits osc_input osc_target)
       JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
   endif()
 
+  if(precision_bits STREQUAL "64" AND EXISTS "${FLASH_GPU}/../../../tests/cuda/position_mass_replay_probe.cu")
+    add_library(flash_position_mass_replay_probe SHARED EXCLUDE_FROM_ALL
+      "${FLASH_GPU}/../../../tests/cuda/position_mass_replay_probe.cu")
+    target_include_directories(flash_position_mass_replay_probe PRIVATE "${FLASH_STEP}")
+    target_link_libraries(flash_position_mass_replay_probe PRIVATE flash_cuda_options)
+    set_target_properties(flash_position_mass_replay_probe PROPERTIES
+      CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
+      JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
+  endif()
+
   if(IS_DIRECTORY "${FLASH_GPU}/../../../tests/cuda")
   # GEMV owns precision-generic inputs and independent rounding-depth bounds.
   if(EXISTS "${FLASH_GPU}/../../../tests/cuda/newton_gemv_test.cu")

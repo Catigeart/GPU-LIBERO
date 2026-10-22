@@ -23,6 +23,7 @@ def add_arguments(p):
                    help='compare force replacement against a frozen motion product')
     p.add_argument('--baseline-force', action='store_true',
                    help='compare against a frozen accepted force product')
+    p.add_argument('--baseline-prefix', type=Path, help='frozen complete position-prefix catalogue for paired capture')
     p.add_argument('--baseline-aligned', action='store_true',
                    help='compare against a frozen accepted init/resume product')
     p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
@@ -286,6 +287,13 @@ def main(args):
                 allow_build=False,fast_compile=True,motion_threads=512)
             assert candidate.eligible,candidate.resources
             report['resources']=candidate.resources
+            prefix_versions=None
+            if args.baseline_prefix:
+                from .fp64_prefix import PrefixVersions
+                prefix_versions=PrefixVersions(env.runtime,args.baseline_prefix)
+                report['prefix_versions']=prefix_versions.report
+            def select_prefix(name):
+                if prefix_versions is not None:prefix_versions.activate(name)
             implementations=[('baseline',base),('candidate',candidate)]
             if args.verify_native_workspace:
                 if not args.newton_split:
@@ -457,6 +465,7 @@ def main(args):
             for case,policy,post,steps in cases:
                 end={};counts={}
                 for name,x in implementations:
+                    select_prefix(name)
                     restore(seed);x.arguments=type(x.arguments).from_buffer_copy(original[name])
                     if case=='badctrl':
                         control=f.ctrl.numpy();control[:,0]=np.nan;f.ctrl.assign(control)
@@ -485,6 +494,7 @@ def main(args):
             if args.performance:
                 restore(seed);graphs={};device_states={};initial_counts=counters()
                 for name,x in (('baseline',base),('candidate',candidate)):
+                    select_prefix(name)
                     x.arguments=type(x.arguments).from_buffer_copy(original[name])
                     x.device_arguments.assign(np.frombuffer(bytes(x.arguments),np.uint8).copy())
                     with wp.ScopedCapture(stream=env.stream) as cap:
@@ -541,6 +551,7 @@ def main(args):
                 report['control_speedup']=a/b;event('performance',speedup=a/b,baseline_ms=a,candidate_ms=b)
             assert not [x for x in scope['events']+env.build_report['events'] if x.get('commands_executed')]
             report.update(passed=True,runtime_compilations=0);save(path,report)
+            select_prefix('candidate')
             if args.newton_split:
                 # Save reusable regional inputs while this costly environment
                 # is alive. The export is outside all correctness/timing gates.

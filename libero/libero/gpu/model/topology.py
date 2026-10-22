@@ -44,6 +44,27 @@ def _immutable(values, dtype=np.int32):
     a = np.asarray(values, dtype=dtype)
     return np.frombuffer(a.tobytes(), dtype=dtype).reshape(a.shape)
 
+def contiguous_subtree_sizes(parent):
+    """Qualify contiguous descendant intervals, without assuming DFS numbering.
+
+    A preceding parent alone is insufficient: an unrelated body can sit inside
+    a descendant's ID range. Count and maximum ID together prove no holes.
+    Return None for such trees so callers retain their generic recurrence.
+    """
+    parent = _ints(parent, 'body_parentid').reshape(-1)
+    count = len(parent)
+    if not count or parent[0] != 0 or any(not 0 <= parent[b] < b for b in range(1, count)):
+        raise ValueError('body parents must precede children and root at zero')
+    sizes = np.ones(count, np.int32)
+    maximum = np.arange(count, dtype=np.int32)
+    for body in range(count - 1, 0, -1):
+        p = parent[body]
+        sizes[p] += sizes[body]
+        maximum[p] = max(maximum[p], maximum[body])
+    if np.any(maximum != np.arange(count) + sizes - 1):
+        return None
+    return _immutable(sizes)
+
 def _csr(rows):
     offsets = [0]; indices = []
     for row in rows:
