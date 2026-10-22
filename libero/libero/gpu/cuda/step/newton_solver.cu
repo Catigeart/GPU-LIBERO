@@ -3783,9 +3783,12 @@ static __device__ void constraint_transpose_blas_dx(int w, int *active, int *cou
       if (method == TransposeMethod::Shared32) selected = transpose_reduction::Method::Shared32;
       else if (method == TransposeMethod::Shared16) selected = transpose_reduction::Method::Shared16;
       else if (method == TransposeMethod::Shared8) selected = transpose_reduction::Method::Shared8;
-      else if (method == TransposeMethod::Auto && blockDim.x >= 128 && count[0] >= 128)
-        selected = transpose_reduction::Method::Shared16;
-      transpose_reduction::dense(J, force, count[0], SubstepShape::nv, qfrc, workspace, selected);
+      else if (method == TransposeMethod::Auto)
+        selected = transpose_reduction::select_auto(SubstepShape::nv, count[0], int(blockDim.x));
+      if (selected == transpose_reduction::Method::Subwarp4)
+        transpose_reduction::subwarp4(J, force, count[0], SubstepShape::nv, qfrc);
+      else
+        transpose_reduction::dense(J, force, count[0], SubstepShape::nv, qfrc, workspace, selected);
     }
     if (threadIdx.x == 0) ++diagnostic[4];
   }

@@ -130,6 +130,14 @@ function(flash_add_substep_tests precision_bits osc_input osc_target)
   set_target_properties(flash_newton_jacobian_cache_test${precision_suffix} PROPERTIES
     CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON JOB_POOL_LINK flash_cuda_link)
+  add_executable(flash_newton_transpose_test EXCLUDE_FROM_ALL
+    "${FLASH_GPU}/../../../tests/cuda/newton_transpose_test.cu"
+    $<TARGET_OBJECTS:flash_newton_transpose>)
+  target_include_directories(flash_newton_transpose_test PRIVATE "${FLASH_STEP}")
+  target_link_libraries(flash_newton_transpose_test PRIVATE flash_cuda_options)
+  set_target_properties(flash_newton_transpose_test PROPERTIES
+    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
   add_executable(flash_collision_tree_test${precision_suffix} EXCLUDE_FROM_ALL
     "${FLASH_GPU}/../../../tests/cuda/collision_tree_parallel_test.cu")
   target_include_directories(flash_collision_tree_test${precision_suffix} PRIVATE "${FLASH_GPU}/cuda")

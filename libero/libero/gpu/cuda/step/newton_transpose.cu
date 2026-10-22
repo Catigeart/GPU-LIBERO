@@ -49,6 +49,29 @@ template<int Lanes> static __device__ void partitioned(const real_t *J, const re
   }
 }
 
+// Four lanes own one DOF. Each traverses a disjoint row subsequence and keeps
+// its sum in a register. The exchange names only that four-lane subgroup;
+// unequal column tails therefore need neither a block barrier nor shared data.
+// Match direct ownership's zero-force masking, including unread NaN J rows.
+__device__ __noinline__ void subwarp4(const real_t *J, const real_t *force,
+    int rows, int nv, real_t *out) {
+  const int tid = int(threadIdx.x), lane = tid & 3, group = tid / 4;
+  const int groups = int(blockDim.x) / 4;
+  const unsigned mask = 15u << ((tid & 31) / 4 * 4);
+  for (int j = group; j < nv; j += groups) {
+    real_t value = REAL_C(0.0);
+    for (int r = lane; r < rows; r += 4) {
+      const real_t f = force[r];
+      if (f != REAL_C(0.0))
+        value += J[size_t(r) * nv + j] * f;
+    }
+    value += __shfl_down_sync(mask, value, 2, 4);
+    value += __shfl_down_sync(mask, value, 1, 4);
+    if (!lane)
+      out[j] = value;
+  }
+}
+
 __device__ __noinline__ void dense(const real_t *J, const real_t *force,
     int rows, int nv, real_t *out, real_t *shared, Method method) {
   if (nv <= 64 && method != Method::Direct) {
