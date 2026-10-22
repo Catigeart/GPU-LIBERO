@@ -28,6 +28,7 @@ def add_arguments(p):
     p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
     p.add_argument('--newton-split', action='store_true',
                    help='evaluate independent Newton init/resume with accepted motion/force producers')
+    p.add_argument('--baseline-controller', action='store_true', help='frozen Euler baseline also uses separate controller')
     p.add_argument('--baseline-euler', action='store_true', help='frozen aligned baseline uses its separate Euler entry')
     p.add_argument('--controller-split', action='store_true', help='separate controller from Post/tail')
     p.add_argument('--euler-split', action='store_true',
@@ -173,6 +174,8 @@ def main(args):
         raise ValueError('--euler-split requires --newton-split')
     if args.baseline_euler and not args.baseline_aligned:
         raise ValueError('--baseline-euler requires --baseline-aligned')
+    if args.baseline_controller and not args.baseline_euler:
+        raise ValueError('--baseline-controller requires --baseline-euler')
     if args.controller_split and not args.euler_split:
         raise ValueError('--controller-split requires --euler-split')
     install_warp_guard();wp.init()
@@ -237,6 +240,12 @@ def main(args):
                     with wp.ScopedDevice(env.stream.device):
                         assert configure_euler((ct.c_int*8)(),base.arguments.body_velocity.nb)==0
                     base.aligned_launch=old.flash_libero_launch_aligned_euler_substep
+                if args.baseline_controller:
+                    configure_controller=old.flash_libero_aligned_controller_configure
+                    configure_controller.argtypes=[ct.POINTER(ct.c_int),ct.c_int]
+                    with wp.ScopedDevice(env.stream.device):
+                        assert configure_controller((ct.c_int*8)(),base.arguments.body_velocity.nb)==0
+                    base.aligned_launch=old.flash_libero_launch_aligned_controller_substep
                 base.aligned_launch.argtypes=[ct.c_void_p]+[ct.c_int]*8+[ct.c_void_p]
                 base.aligned_launch.restype=ct.c_int
             elif args.baseline_force:

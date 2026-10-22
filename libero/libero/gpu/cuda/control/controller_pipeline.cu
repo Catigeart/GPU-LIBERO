@@ -207,8 +207,23 @@ static __device__ void selected(int w, const real_t *qpos, const real_t *qvel, c
   }
   libero_vec::copy_lane(pos + w * 3, ee_pos + w * 3, 3, lane, 32);
   libero_vec::copy_lane(rot + w * 9, ee_mat + w * 9, 9, lane, 32);
-  // Six independent serial dots: preserve full-NV order within each output.
+  // Six four-lane groups cover the spatial components within the gather warp.
+  // The other warp concurrently seeds controller channels; do not borrow it.
   if (parallel_velocity) {
+#if FLASH_REAL_BITS == 64
+    if (lane < 24) {
+      const int component = lane / 4, part = lane & 3, r = component % 3;
+      const real_t *jac = component < 3 ? jp : jr;
+      real_t value = 0;
+      for (int k = part; k < nv; k += 4)
+        value += jac[(w * 3 + r) * nv + k] * qvel[w * nv + k];
+      const unsigned mask = 0xfu << (4 * component);
+      value += __shfl_down_sync(mask, value, 2, 4);
+      value += __shfl_down_sync(mask, value, 1, 4);
+      if (part == 0)
+        (component < 3 ? vp : vo)[w * 3 + r] = value;
+    }
+#else
     if (lane < 6) {
       const int r = lane % 3;
       const real_t *jac = lane < 3 ? jp : jr;
@@ -217,6 +232,7 @@ static __device__ void selected(int w, const real_t *qpos, const real_t *qvel, c
         value += jac[(w * 3 + r) * nv + k] * qvel[w * nv + k];
       (lane < 3 ? vp : vo)[w * 3 + r] = value;
     }
+#endif
   } else {
     if (lane == 0)
       for (int r = 0; r < 3; r++) {
