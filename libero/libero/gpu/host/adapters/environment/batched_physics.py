@@ -82,7 +82,8 @@ class NativeBatchedPhysics:
     def prepare_fused_substep_graph(self, build_root, *, allow_compile=False,
                                     fast_compile=False, device_lto=False, profile_newton=False,
                                     atomic_reductions=None, defer_post=True, single_solve=False, staged=False,
-                               motion_passive=False, motion_threads=512):
+                                    motion_passive=False, motion_threads=512,
+                                    actuation_solve=False, force_threads=256):
         """Capture one readable fusion kernel per physical substep.
 
         Offline callers may permit compilation; ordinary execution loads only
@@ -92,18 +93,22 @@ class NativeBatchedPhysics:
         if self.debug or not self._graph_eligible():
             raise ValueError('substep fusion requires device-only sampling')
         from libero.gpu.host.runtime.step.fused_substep import FusedSubstep
-        if type(staged) is not bool or type(motion_passive) is not bool:
-            raise TypeError('staged and motion_passive must be bools')
-        if staged and motion_passive:
-            raise ValueError('select staged or motion_passive, not both')
+        if any(type(x) is not bool for x in (staged,motion_passive,actuation_solve)):
+            raise TypeError('staged, motion_passive and actuation_solve must be bools')
+        if staged and (motion_passive or actuation_solve):
+            raise ValueError('select staged or standalone producers, not both')
         if staged:
             from libero.gpu.host.runtime.step.staged_substep import StagedSubstep
             FusedSubstep = StagedSubstep
         extra = {}
-        if motion_passive:
+        if motion_passive or actuation_solve:
             from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
             FusedSubstep = PeeledMotionSubstep
             extra['motion_threads'] = motion_threads
+        if actuation_solve:
+            from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
+            FusedSubstep = PeeledForceSubstep
+            extra['force_threads'] = force_threads
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,

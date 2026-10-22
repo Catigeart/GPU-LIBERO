@@ -131,6 +131,31 @@ substep body with `FLASH_FP64_MOTION_PASSIVE`. It retains all three forward call
 sites, Newton/warmstart semantics, control, Post, checks and Euler integration.
 This path does not use the A/B/C decomposition below.
 
+`prepare_substep_fusion(..., actuation_solve=True, force_threads=256)` also
+selects the entry force producer in `cuda/step/fp64_actuation_solve.cu`.
+The ordinary chain becomes position prefix -> motion/passive ->
+actuation/smooth/mass solve -> `fused_substep.cu::force_residual_kernel`.
+Actuators and DOFs own independent calculations, external wrenches use a
+world-local activity mask, and the existing CPU2.3.7 packed LDL factors remain
+the mass owner. Affine terms with zero velocity coefficient need no private
+duplicate transmission dot; original transmission admission still runs.
+
+The first forward admits the private force outputs at the original point.
+The next forward may reuse the successful producer while ctrl is unchanged;
+the existing public smooth cache retains precedence and factor-reuse counts.
+After the controller changes ctrl, the final forward still uses native force
+preparation. Every Newton call and warmstart update remains. BADCTRL and other
+exceptions use the native implementation with its per-invocation warnings.
+`force_threads` accepts 64/128/256 or 0 to disable force production; disabling
+motion also disables this dependent producer. Unsupported extents and unusual
+output aliases retain native calculation. The additional handoff is four
+bytes/world, with no persistent force mirror.
+
+`host/runtime/step/peeled_force.py::PeeledForceSubstep` owns this load-only
+selection. `flash_substep_force[_nvN]` builds individual residual families;
+`flash_force_substeps_all` builds the complete catalogue in the existing tree.
+Both producers are dimension-general objects shared across NV families.
+
 The new producer follows `cuda/fp32/fused_motion_passive.cu`: one world block,
 one warp per branch (eight spatial lanes), independent body force production,
 contiguous-subtree bias reduction and DOF projection. Two fixed 384-double

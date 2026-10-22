@@ -16,6 +16,9 @@
 #if defined(FLASH_FP64_MOTION_PASSIVE)
 #include "fp64_motion_passive.cuh"
 #endif
+#if defined(FLASH_FP64_ACTUATION_SOLVE)
+#include "fp64_actuation_solve.cuh"
+#endif
 #include "substep_shared_layout.cuh"
 #include "newton_solver.cuh"
 #include "newton_shared_layout.cuh"
@@ -47,12 +50,14 @@ namespace {
 
 // Complete collective suffix, retained for the original fused entry.
 __device__ __forceinline__ void solve_dynamics(const SubstepArguments &args, int world,
-    unsigned char *shared, bool post_outputs, bool reuse, int smooth_reuse_status = -1) {
+    unsigned char *shared, bool post_outputs, bool reuse, int smooth_reuse_status = -1,
+    const int *force_prepared = nullptr) {
   CF_STEP_PROFILE_STAGES(CF_STEP_PROFILE_PHASE(Actuation));
   prepare_solver_inputs(args, world, shared, reuse, smooth_reuse_status
 #if defined(FLASH_SUBSTEP_PROFILE)
       , step_profile_stages
 #endif
+      , force_prepared
   );
   CF_STEP_PROFILE_NEXT(CF_STEP_PROFILE_PHASE(Newton));
   run_forward_newton(args, world, shared);
@@ -68,10 +73,11 @@ __device__ __forceinline__ void solve_dynamics(const SubstepArguments &args, int
 // write; only the FP32 substep entry separates these two physical stages.
 __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, int world,
                                                  unsigned char *shared, bool post_outputs,
-                                                 int smooth_reuse_status = -1, const int *motion_prepared = nullptr) {
+                                                 int smooth_reuse_status = -1, const int *motion_prepared = nullptr,
+                                                 const int *force_prepared = nullptr) {
   CF_STEP_PROFILE_SCOPE(Forward);
   const bool reuse = prepare_dynamics(args, world, nullptr, motion_prepared);
-  solve_dynamics(args, world, shared, post_outputs, reuse, smooth_reuse_status);
+  solve_dynamics(args, world, shared, post_outputs, reuse, smooth_reuse_status, force_prepared);
 }
 
 #include "substep_tail.cuh"
@@ -80,13 +86,18 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
 // This is the complete world-local substep body. Normal execution enters once.
 // Continuations exist only across the original parallel-prefix/reset boundaries.
 // A block-wide return always occurs after a barrier and a world-uniform predicate.
-#if defined(FLASH_FP64_MOTION_PASSIVE)
+#if defined(FLASH_FP64_ACTUATION_SOLVE)
+__global__ void force_residual_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
+    SubstepEntry entry, bool publish_post, const int *motion_prepared, const int *force_prepared) {
+#elif defined(FLASH_FP64_MOTION_PASSIVE)
 __global__ void motion_residual_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
                                        SubstepEntry entry, bool publish_post, const int *motion_prepared) {
+  const int *force_prepared = nullptr;
 #else
 __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
                                      SubstepEntry entry, bool publish_post) {
   const int *motion_prepared = nullptr;
+  const int *force_prepared = nullptr;
 #endif
   const auto &args = *arguments;
   auto *shared = substep_shared_data();
@@ -108,7 +119,7 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // force/torque history); other substeps have no force consumer before the
     // final forward. Newton and warmstart still execute at all three points.
     // Admission and the parallel position prefix were launched by the caller.
-    forward_dynamics(args, world, shared, policy_step, -1, motion_prepared);
+    forward_dynamics(args, world, shared, policy_step, -1, motion_prepared, force_prepared);
     // This register value dies at a position suspension. The next entry starts
     // with -1; it cannot reuse a payload produced before a prefix refresh.
     const auto &smooth = args.smooth_commit;
@@ -132,7 +143,11 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
   if (entry == SubstepEntry::Start || entry == SubstepEntry::ControllerPosition) {
     // Controller.update requests its own forward, including its Newton/warmstart.
     forward_dynamics(args, world, shared, policy_step, smooth_reuse_status,
-        entry == SubstepEntry::ControllerPosition ? motion_prepared : nullptr);
+        entry == SubstepEntry::ControllerPosition ? motion_prepared : nullptr,
+        // The first force producer remains live until run_controller changes ctrl.
+        // A successful first forward proves the unchanged actuator outputs;
+        // exceptional controls retain the original per-invocation warning path.
+        entry == SubstepEntry::ControllerPosition || smooth_reuse_status >= 0 ? force_prepared : nullptr);
     run_controller(args, world, policy_step);
 
     // MuJoCo mj_step: checkPos -> checkVel -> forward -> checkAcc -> Euler.
@@ -155,7 +170,8 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // substeps. The final substep keeps Post here, before Euler, exactly as in
     // mj_forward/mj_step. Every forward still solves Newton and publishes qacc.
     forward_dynamics(args, world, shared, publish_post, -1,
-        entry == SubstepEntry::PhysicsPosition ? motion_prepared : nullptr);
+        entry == SubstepEntry::PhysicsPosition ? motion_prepared : nullptr,
+        entry == SubstepEntry::PhysicsPosition ? force_prepared : nullptr);
   }
   finish_substep(args, world, entry);
 }

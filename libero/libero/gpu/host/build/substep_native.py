@@ -136,6 +136,22 @@ def prepare_motion(source, root, sdk, arch, **options):
     return manifest
 
 
+def prepare_force(source, root, sdk, arch, **options):
+    """Motion plus the first-entry FP64 actuation/smooth producer."""
+    manifest = prepare_motion(source, root, sdk, arch, **options)
+    manifest['config'] = dict(manifest['config'], execution='force-residual',
+        force_organization='fp32-dof-owned-fp64', force_schedule='entry-first')
+    manifest['translation_units'] += 1
+    manifest['target'] = manifest['target'].replace('flash_substep_motion', 'flash_substep_force', 1)
+    manifest['library'] = str(Path(manifest['library']).with_name(
+        Path(manifest['library']).name.replace('substep_motion', 'substep_force', 1)))
+    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
+    name = Path(manifest['library']).stem.replace('substep_force', 'manifest-force', 1) + '.json'
+    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    return manifest
+
+
 def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     """One offline target for the entire task catalogue; no per-task builds."""
     from .substep_catalog import variants

@@ -11,6 +11,32 @@ import numpy as np
 
 
 class StagedProductTests(unittest.TestCase):
+    def test_force_selection_retains_the_native_substep_graph_owners(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        import warp as wp
+        from libero.gpu.host.adapters.environment.batched_physics import NativeBatchedPhysics
+        physics = NativeBatchedPhysics.__new__(NativeBatchedPhysics)
+        physics.debug = False
+        physics._observer = None
+        runtime = SimpleNamespace(substeps=3)
+        physics.bundle = SimpleNamespace(runtime=runtime, stream=object())
+        capture = SimpleNamespace(graph=object())
+        fusion = MagicMock()
+        with patch('libero.gpu.host.runtime.step.peeled_force.PeeledForceSubstep',
+                   return_value=fusion) as factory, patch.object(wp, 'ScopedCapture') as scope:
+            scope.return_value.__enter__.return_value = capture
+            result = physics.prepare_fused_substep_graph('offline',actuation_solve=True)
+        self.assertIs(result,fusion)
+        self.assertIs(physics._substep_fusion,fusion)
+        self.assertIs(physics._control_graph,capture.graph)
+        self.assertEqual(factory.call_args.kwargs['force_threads'],256)
+        self.assertEqual(factory.call_args.kwargs['motion_threads'],512)
+        self.assertFalse(factory.call_args.kwargs['allow_build'])
+        self.assertEqual(fusion.enqueue_substep.call_count,3)
+        with self.assertRaisesRegex(ValueError,'select staged'):
+            physics.prepare_fused_substep_graph('offline',staged=True,actuation_solve=True)
+
     def test_motion_product_keeps_the_native_schedule_and_independent_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -21,11 +47,17 @@ class StagedProductTests(unittest.TestCase):
             with patch.object(build.scalar, 'bits', 64), patch.object(build, 'nvcc_path', return_value=str(root/'nvcc')):
                 fused = build.prepare(source, root/'cache', root/'sdk', 80, nv=57)
                 motion = build.prepare_motion(source, root/'cache', root/'sdk', 80, nv=57)
+                force = build.prepare_force(source, root/'cache', root/'sdk', 80, nv=57)
             self.assertEqual(motion['folder'], fused['folder'])
             self.assertNotEqual(motion['identity'], fused['identity'])
             self.assertEqual(motion['target'], 'flash_substep_motion_nv57')
             self.assertEqual(Path(motion['library']).name, 'substep_motion_nv57.so')
             self.assertEqual(motion['config']['solves_per_substep'], 3)
+            self.assertEqual(force['folder'], fused['folder'])
+            self.assertEqual(force['target'], 'flash_substep_force_nv57')
+            self.assertEqual(force['config']['solves_per_substep'], 3)
+            self.assertEqual(force['config']['force_schedule'], 'entry-first')
+            self.assertFalse(force['source_generation'])
 
     def test_staged_product_has_its_own_identity_and_reuses_build_tree(self):
         with tempfile.TemporaryDirectory() as directory:

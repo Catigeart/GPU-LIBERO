@@ -1155,3 +1155,13 @@ interleaved with separate resident state snapshots; restore/save copies are
 outside CUDA events. Construction, reset, capture and transfers are excluded.
 GPU co-tenant snapshots and individual samples are retained. No runtime build,
 clock change, renderer or other-process intervention is permitted.
+
+`--producer force --baseline-motion` instead checks the entry actuation/smooth
+producer and compares the complete chain against a frozen motion-replacement
+product. Local checks include object/robot external wrenches, control limits
+and BADCTRL fallback; composition checks include persistent control warnings.
+Mass-factor reuse counters must match, and the final healthy candidate must
+have produced both worlds' force handoffs. `--threads` limits variants when
+producer mathematics is unchanged. `--prior-force SO` optionally compares a
+frozen producer on the same held inputs for local tuning. These options retain
+the same no-runtime-compilation and N=2-first policy.

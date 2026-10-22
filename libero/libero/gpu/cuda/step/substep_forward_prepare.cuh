@@ -122,6 +122,7 @@ __device__ __forceinline__ void prepare_solver_inputs(const SubstepArguments &ar
 #if defined(FLASH_SUBSTEP_PROFILE)
     , substep_profile::Stages &step_profile_stages
 #endif
+    , const int *force_prepared = nullptr
 ) {
   const auto &workspace = args.forward_workspace;
   if (args.state.requested_mask[world] != 0) {
@@ -138,7 +139,10 @@ __device__ __forceinline__ void prepare_solver_inputs(const SubstepArguments &ar
       physics_force::d_copy_admitted_block(world, in.gate, in.source, in.target, in.width);
     }
     __syncthreads();
-    {
+    const bool prepared_force = force_prepared && force_prepared[world] == 1 &&
+        args.actuation_gate.gate[world] == 1 && args.actuation.active[world] == 1 &&
+        args.actuation.vel_status[world] == 0;
+    if (!prepared_force) {
       const auto &in = args.actuation;
       physics_force::d_actuation_count(
           world, in.length, in.moment, in.velocity, in.ctrl, in.active, in.vel_status, in.gain, in.bias0,
@@ -171,6 +175,14 @@ __device__ __forceinline__ void prepare_solver_inputs(const SubstepArguments &ar
           acc[i] = args.smooth_commit.pa[size_t(world) * in.nv + i];
         }
         if (threadIdx.x == 0) in.status[world] = smooth_reuse_status;
+      } else if (prepared_force && in.active[world] == 1 && args.smooth_gate.gate[world] == 1) {
+        real_t *force = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force);
+        real_t *acc = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration);
+        for (int i = threadIdx.x; i < in.nv; i += blockDim.x) {
+          force[i] = in.qfrc[size_t(world) * in.nv + i];
+          acc[i] = in.qacc_smooth[size_t(world) * in.nv + i];
+        }
+        if (threadIdx.x == 0) ++in.factor_reuse_count[world];
       } else {
         physics_force::d_smooth_chain(
             world, in.passive, in.bias, in.applied, in.actuator, in.active, in.entry_status, in.smooth, in.seed,

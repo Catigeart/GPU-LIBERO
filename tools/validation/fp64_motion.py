@@ -16,6 +16,13 @@ def add_arguments(p):
     p.add_argument('--task', type=int, default=4)
     p.add_argument('--state', type=Path, help='optional previously recorded FP64 endpoint')
     p.add_argument('--performance', action='store_true')
+    p.add_argument('--producer', choices=('motion', 'force'), default='motion')
+    p.add_argument('--baseline-motion', action='store_true',
+                   help='compare force replacement against a frozen motion product')
+    p.add_argument('--prior-force', type=Path,
+                   help='optional frozen producer for same-input local tuning')
+    p.add_argument('--threads', type=int, nargs='+',
+                   help='limit producer variants when its mathematics is unchanged')
 
 
 def gpu_sample():
@@ -69,11 +76,12 @@ def main(args):
     from libero.gpu.host.build.compilation import compilation_scope,install_warp_guard
     from libero.gpu.host.runtime.step.fused_substep import FusedSubstep
     from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
+    from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
     from libero.gpu.host.runtime.step.physics import _reference_mask
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
     path=args.output/f'task{args.task:02d}.json'
-    report=dict(task=args.task,worlds=2,region={},cases={},performance={},passed=False)
+    report=dict(task=args.task,worlds=2,producer=args.producer,region={},cases={},performance={},passed=False)
     def event(name,**kw):print(json.dumps(dict(event=name,**kw)),flush=True)
     with compilation_scope(False) as scope:
         task=next(t for t in json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
@@ -98,28 +106,54 @@ def main(args):
                 env.runtime.euler.qacc_warmstart.assign(ep['qacc_warmstart'])
             else:env.reset(seed=0)
             env._physics.stage_action(np.tile([.02,-.015,.01,.005,-.003,.002,.1],(2,1)))
-            base=FusedSubstep(env.runtime,args.build_root/'cmake-control',allow_build=False,fast_compile=True)
+            baseline_class=PeeledMotionSubstep if args.baseline_motion else FusedSubstep
+            base=baseline_class(env.runtime,args.build_root/'cmake-control',allow_build=False,fast_compile=True)
             old=ct.CDLL(str(args.baseline.resolve()))
-            size=old.flash_libero_substep_arguments_size;size.restype=ct.c_size_t
+            size=getattr(old,'flash_libero_motion_arguments_size' if args.baseline_motion
+                         else 'flash_libero_substep_arguments_size');size.restype=ct.c_size_t
             assert size()==ct.sizeof(base.arguments)
-            configure=old.flash_libero_substep_configure;configure.argtypes=[ct.c_void_p]*2
-            with wp.ScopedDevice(env.stream.device):assert configure(ct.byref(ct.c_int()),ct.byref(ct.c_int()))==0
             base.library=old
-            base.launch_post_entry=old.flash_libero_launch_substep_with_post
-            base.launch_post_entry.argtypes=[ct.c_void_p]+[ct.c_int]*4+[ct.c_void_p]
-            base.launch_entry=old.flash_libero_launch_substep
-            base.launch_entry.argtypes=[ct.c_void_p]+[ct.c_int]*3+[ct.c_void_p]
-            base.select_entry=old.flash_libero_select_substep_continuation
-            base.select_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p,ct.c_void_p]
-            candidate=PeeledMotionSubstep(env.runtime,args.build_root/'cmake-control',
+            if args.baseline_motion:
+                configure=old.flash_libero_motion_configure;configure.argtypes=[ct.c_void_p]*3
+                values=[(ct.c_int*2)() for _ in range(3)]
+                with wp.ScopedDevice(env.stream.device):assert configure(*values)==0
+                base.launch_peeled=old.flash_libero_launch_motion_substep
+                base.launch_peeled.argtypes=[ct.c_void_p]*3+[ct.c_int]*5+[ct.c_void_p]
+                base.launch_peeled.restype=ct.c_int
+            else:
+                configure=old.flash_libero_substep_configure;configure.argtypes=[ct.c_void_p]*2
+                with wp.ScopedDevice(env.stream.device):assert configure(ct.byref(ct.c_int()),ct.byref(ct.c_int()))==0
+                base.launch_post_entry=old.flash_libero_launch_substep_with_post
+                base.launch_post_entry.argtypes=[ct.c_void_p]+[ct.c_int]*4+[ct.c_void_p]
+                base.launch_entry=old.flash_libero_launch_substep
+                base.launch_entry.argtypes=[ct.c_void_p]+[ct.c_int]*3+[ct.c_void_p]
+                base.select_entry=old.flash_libero_select_substep_continuation
+                base.select_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p,ct.c_void_p]
+            candidate_class=PeeledForceSubstep if args.producer=='force' else PeeledMotionSubstep
+            candidate=candidate_class(env.runtime,args.build_root/'cmake-control',
                 allow_build=False,fast_compile=True,motion_threads=512)
             assert candidate.eligible,candidate.resources
             report['resources']=candidate.resources
+            prior_force=None
+            if args.prior_force:
+                if args.producer!='force':raise ValueError('--prior-force requires --producer force')
+                prior_library=ct.CDLL(str(args.prior_force.resolve()))
+                size=prior_library.flash_libero_force_arguments_size;size.restype=ct.c_size_t
+                if size()!=ct.sizeof(candidate.arguments) or prior_library.flash_libero_force_nv()!=candidate.variant.nv:
+                    raise ValueError('prior force ABI/shape differs')
+                prior_force=prior_library.flash_libero_launch_force
+                prior_force.argtypes=candidate.launch_force.argtypes;prior_force.restype=ct.c_int
             report['libraries']={name:dict(path=str(p),sha256=hashlib.sha256(p.read_bytes()).hexdigest())
                 for name,p in (('baseline',args.baseline),('candidate',Path(candidate.library._name)))}
             f=env.runtime.forward;d=f.d
             force_cached=wp.array(np.array([1,0],np.int32),dtype=wp.int32,device=env.stream.device)
             arrays=arrays_of(env._physics.bundle,base,candidate,force_cached)
+            # Borrow the already admitted scalar owner, including plans whose
+            # closure retains it outside the ordinary object inventory.
+            factor_reuse=wp.array(ptr=base.arguments.smooth_acceleration.factor_reuse_count,
+                dtype=wp.int64,shape=(2,),device=env.stream.device,deleter=None)
+            if not any(a.ptr==factor_reuse.ptr and a.dtype==wp.int64 and a.shape==(2,) for a in arrays):
+                arrays.append(factor_reuse)
             def snapshot():
                 wp.synchronize_stream(env.stream)
                 return [a.numpy().copy() for a in arrays]
@@ -128,6 +162,12 @@ def main(args):
                     for a,v in zip(arrays,values):a.assign(v)
                 wp.synchronize_stream(env.stream)
             def region():
+                if args.producer=='force':
+                    result={'actuation.'+k:getattr(d.actuation,k).numpy().copy() for k in
+                        ('force','force_pre','ctrl_used','ctrl_route','force_route','qfrc_actuator')}
+                    result.update({'smooth.'+k:getattr(d.acceleration,k).numpy().copy() for k in
+                        ('smooth','seed','scratch','qfrc','qacc_smooth')})
+                    return result
                 result={name:getattr(d,name).numpy().copy() for name in ('cvel','cdof_dot','cacc','frc','qfrc_bias')}
                 result['passive']=d.passive.qfrc.numpy().copy();return result
             def endpoint():
@@ -136,11 +176,15 @@ def main(args):
                      ('qpos','qvel','time','qacc','qacc_warmstart','qfrc_constraint')}
                 out.update({'dynamics.'+k:v.numpy().copy() for k,v in d.public.items()})
                 out.update({'post.'+k:v.numpy().copy() for k,v in env._physics.bundle.post.public.items()})
+                if args.producer=='force':
+                    out.update({'warning.'+k:getattr(d.actuation,k).numpy().copy() for k in
+                                ('warning_number','warning_lastinfo')})
                 return out
             def counters():
                 r=env.runtime
                 return {k:a.numpy().copy() for k,a in dict(integrated=r.integration_count,
-                    newton=f.n.n_attempt,position=f._dataflow_reuse.math,reset=r.reset_events,error=r.first_error).items()}
+                    newton=f.n.n_attempt,position=f._dataflow_reuse.math,mass_reuse=factor_reuse,
+                    reset=r.reset_events,error=r.first_error).items()}
             seed=snapshot();event('ready',resources=report['resources'])
             with wp.ScopedCapture(stream=env.stream) as cap:
                 wp.copy(f.mask,env.runtime.intent,stream=env.stream)
@@ -157,15 +201,33 @@ def main(args):
                 sw=f.s.workspace
                 d.launch_bias(reference_done=sw.reference_ready,reference_error=sw.status,
                     reference_written=sw.ref_epoch,reference_expected=f.expected_forward,stream=env.stream)
-            wp.capture_launch(cap.graph,stream=env.stream);wp.synchronize_stream(env.stream)
+                if args.producer=='force':
+                    d.launch_force(ctrl=f.ctrl,ctrl_valid=f.ctrl_valid,stream=env.stream)
+            reference_graph=cap.graph
+            wp.capture_launch(reference_graph,stream=env.stream);wp.synchronize_stream(env.stream)
             expected=region();assert not np.any(counters()['error'])
             np.savez(args.output/f'task{args.task:02d}-region-reference.npz',
-                **expected, qpos=d.qpos.numpy(), qvel=d.qvel.numpy(), model_path=str(Path(task['directory'])/'model.mjb'))
-            for threads in (512,256,128):
-                restore(prepared);candidate.motion_threads=threads
-                with wp.ScopedCapture(stream=env.stream) as cap:candidate.enqueue_motion()
+                **expected, qpos=d.qpos.numpy(), qvel=d.qvel.numpy(), ctrl=f.ctrl.numpy(),
+                applied=d.acceleration.applied.numpy(), xfrc=d.acceleration.xfrc.numpy(),
+                model_path=str(Path(task['directory'])/'model.mjb'))
+            choices=(64,128,256) if args.producer=='force' else (512,256,128)
+            if args.threads:
+                if any(n not in choices for n in args.threads):raise ValueError('unsupported producer thread count')
+                choices=tuple(dict.fromkeys(args.threads))
+            for threads in choices:
+                restore(prepared)
+                if args.producer=='force':
+                    candidate.force_threads=threads
+                    with wp.ScopedCapture(stream=env.stream) as motion_capture:candidate.enqueue_motion()
+                    wp.capture_launch(motion_capture.graph,stream=env.stream)
+                    wp.synchronize_stream(env.stream)
+                    with wp.ScopedCapture(stream=env.stream) as cap:candidate.enqueue_force()
+                else:
+                    candidate.motion_threads=threads
+                    with wp.ScopedCapture(stream=env.stream) as cap:candidate.enqueue_motion()
                 wp.capture_launch(cap.graph,stream=env.stream);wp.synchronize_stream(env.stream)
-                assert candidate.ready.numpy().tolist()==[1,1],candidate.ready.numpy()
+                readiness=candidate.force_ready if args.producer=='force' else candidate.ready
+                assert readiness.numpy().tolist()==[1,1],readiness.numpy()
                 checks=compare(expected,region());report['region'][str(threads)]=checks;save(path,report)
                 assert all(x['passed'] for x in checks),checks
                 event('region_passed',threads=threads,max_abs=max(x['max_abs'] for x in checks))
@@ -177,17 +239,66 @@ def main(args):
                         env.stream.record_event(start);wp.capture_launch(cap.graph,stream=env.stream);env.stream.record_event(stop)
                     wp.synchronize_stream(env.stream)
                     us=[1000*wp.get_event_elapsed_time(x,y,synchronize=False) for x,y in zip(starts,stops)]
-                    report['performance']['motion_'+str(threads)]=dict(us=us,mean_us=float(np.mean(us)),median_us=float(np.median(us)))
-            selected=min((128,256,512),key=lambda n:report['performance']['motion_'+str(n)]['median_us']) if args.performance else 512
-            candidate.motion_threads=selected;report['selected_threads']=selected
-            report['resources']['motion_threads']=selected
+                    report['performance'][args.producer+'_'+str(threads)]=dict(us=us,mean_us=float(np.mean(us)),median_us=float(np.median(us)))
+                    if prior_force:
+                        with wp.ScopedCapture(stream=env.stream) as prior_capture:
+                            candidate._check(prior_force(candidate.device_arguments.ptr,candidate.ready.ptr,
+                                candidate.force_ready.ptr,candidate.worlds,candidate.START,threads,
+                                env.stream.cuda_stream),'prior force replay')
+                        for _ in range(5):wp.capture_launch(prior_capture.graph,stream=env.stream)
+                        starts=[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)]
+                        stops=[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)]
+                        for start,stop in zip(starts,stops):
+                            env.stream.record_event(start);wp.capture_launch(prior_capture.graph,stream=env.stream)
+                            env.stream.record_event(stop)
+                        wp.synchronize_stream(env.stream)
+                        us=[1000*wp.get_event_elapsed_time(x,y,synchronize=False) for x,y in zip(starts,stops)]
+                        report['performance']['prior_force_'+str(threads)]=dict(us=us,mean_us=float(np.mean(us)),median_us=float(np.median(us)))
+            selected=min(choices,key=lambda n:report['performance'][args.producer+'_'+str(n)]['median_us']) if args.performance else choices[0]
+            setattr(candidate,args.producer+'_threads',selected);report['selected_threads']=selected
+            report['resources'][args.producer+'_threads']=selected
+            if args.producer=='force':
+                report['force_inputs']={}
+                for case in ('external_wrench','control_limits','badctrl_fallback'):
+                    restore(prepared)
+                    if case=='external_wrench':
+                        wrench=np.zeros_like(d.acceleration.xfrc.numpy())
+                        wrench[0,-1]=[.7,-.3,.4,.05,-.02,.03]
+                        wrench[0,5]=[-.15,.2,.3,.04,.01,-.03]
+                        wrench[1,-2]=[-.2,.6,-.1,-.03,.04,-.01]
+                        wrench[1,9]=[.25,-.1,.2,-.02,.03,.01]
+                        d.acceleration.xfrc.assign(wrench)
+                    else:
+                        control=f.ctrl.numpy()
+                        control[:,0]=1.e6 if case=='control_limits' else np.nan
+                        f.ctrl.assign(control)
+                    local_seed=snapshot()
+                    if case!='badctrl_fallback':
+                        wp.capture_launch(reference_graph,stream=env.stream)
+                        wp.synchronize_stream(env.stream);reference=region()
+                    restore(local_seed)
+                    with wp.ScopedCapture(stream=env.stream) as cap:
+                        candidate.enqueue_motion();candidate.enqueue_force()
+                    wp.capture_launch(cap.graph,stream=env.stream);wp.synchronize_stream(env.stream)
+                    if case=='badctrl_fallback':
+                        assert candidate.force_ready.numpy().tolist()==[0,0]
+                        report['force_inputs'][case]=dict(ready=[0,0],passed=True)
+                    else:
+                        assert candidate.force_ready.numpy().tolist()==[1,1]
+                        checks=compare(reference,region())
+                        report['force_inputs'][case]=dict(checks=checks,passed=all(x['passed'] for x in checks))
+                        assert all(x['passed'] for x in checks),checks
+                    save(path,report);event('force_input_passed',case=case)
             original={name:bytes(x.arguments) for name,x in (('baseline',base),('candidate',candidate))}
             cases=[('ordinary',False,False,20),('policy_post',True,True,1)]
             if args.task==4:cases.append(('mixed_cache_miss',False,True,5))
+            if args.producer=='force':cases.append(('badctrl',False,False,1))
             for case,policy,post,steps in cases:
                 end={};counts={}
                 for name,x in (('baseline',base),('candidate',candidate)):
                     restore(seed);x.arguments=type(x.arguments).from_buffer_copy(original[name])
+                    if case=='badctrl':
+                        control=f.ctrl.numpy();control[:,0]=np.nan;f.ctrl.assign(control)
                     if case=='mixed_cache_miss':x.arguments.position.cached=force_cached.ptr
                     x.device_arguments.assign(np.frombuffer(bytes(x.arguments),np.uint8).copy())
                     with wp.ScopedCapture(stream=env.stream) as cap:x._enqueue(policy,post)
@@ -240,7 +351,12 @@ def main(args):
                     for a,s in zip(arrays,device_states[name]):wp.copy(a,s,stream=env.stream)
                     wp.synchronize_stream(env.stream);final_counts=counters()
                     work={k:(final_counts[k]-initial_counts[k]).tolist() for k in final_counts if k!='error'}
-                    work['final_error']=final_counts['error'].tolist();report['performance_work'][name]=work
+                    work['final_error']=final_counts['error'].tolist()
+                    if args.producer=='force':
+                        work['force_ready']=candidate.force_ready.numpy().tolist()
+                        if name=='candidate' and candidate.force_threads:
+                            assert work['force_ready']==[1,1],work
+                    report['performance_work'][name]=work
                     assert work['integrated']==[25*env.runtime.substeps]*2,work
                     assert not np.any(final_counts['error']),work
                 a=report['performance']['control_baseline']['mean_ms'];b=report['performance']['control_candidate']['mean_ms']
