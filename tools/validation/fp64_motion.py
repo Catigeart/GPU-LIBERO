@@ -20,6 +20,10 @@ def add_arguments(p):
     p.add_argument('--performance', action='store_true')
     p.add_argument('--host-state', action='store_true',
                    help='hold timed versions on the host; transfers stay outside CUDA events')
+    p.add_argument('--memory-reserve-mib', type=int, default=512,
+                   help='extra device headroom beyond estimated pending allocations')
+    p.add_argument('--memory-safety-fraction', type=float, default=.10,
+                   help='fractional headroom; the larger of this and the fixed reserve applies')
     p.add_argument('--producer', choices=('motion', 'force'), default='motion')
     p.add_argument('--baseline-motion', action='store_true',
                    help='compare force replacement against a frozen motion product')
@@ -171,6 +175,10 @@ def main(args):
     from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
     from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
     from libero.gpu.host.runtime.step.physics import _reference_mask
+    from libero.gpu.host.runtime.core.memory_budget import MemoryBudget
+    from dataclasses import asdict
+    memory_policy=MemoryBudget(reserve_bytes=args.memory_reserve_mib*1024**2,
+                               safety_fraction=args.memory_safety_fraction)
     if sum((args.baseline_motion, args.baseline_force, args.baseline_aligned)) > 1:
         raise ValueError('select one frozen baseline kind')
     if args.euler_split and not args.newton_split:
@@ -184,7 +192,8 @@ def main(args):
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
     path=args.output/f'task{args.task:02d}.json'
-    report=dict(task=args.task,suite=args.suite,worlds=2,producer=args.producer,region={},cases={},performance={},passed=False)
+    report=dict(task=args.task,suite=args.suite,worlds=2,producer=args.producer,region={},cases={},performance={},passed=False,
+                memory_budget_policy=asdict(memory_policy))
     def event(name,**kw):print(json.dumps(dict(event=name,**kw)),flush=True)
     with compilation_scope(False) as scope:
         task=next(t for t in json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
@@ -195,11 +204,18 @@ def main(args):
             action=[.02,-.015,.01,.005,-.003,.002,.1])
         tick=time.perf_counter();event('constructing',task=args.task)
         faulthandler.dump_traceback_later(180,repeat=True)
-        env=GpuBatchEnv(Path(get_libero_path('bddl_files'))/task['key'],2,
-            init_states=np.load(Path(task['directory'])/'initial_states.npy'), initialize=False,
-            allow_compile=False,build_root=args.build_root,debug=False,precision='fp64',
-            physics_engine='native',use_camera_obs=False,ignore_done=True)
-        faulthandler.cancel_dump_traceback_later()
+        try:
+            env=GpuBatchEnv(Path(get_libero_path('bddl_files'))/task['key'],2,
+                init_states=np.load(Path(task['directory'])/'initial_states.npy'), initialize=False,
+                allow_compile=False,build_root=args.build_root,debug=False,precision='fp64',
+                physics_engine='native',use_camera_obs=False,ignore_done=True,
+                memory_budget=memory_policy)
+        except Exception as error:
+            report.update(construction_s=time.perf_counter()-tick,construction_error=repr(error))
+            save(path,report)
+            raise
+        finally:
+            faulthandler.cancel_dump_traceback_later()
         report['construction_s']=time.perf_counter()-tick
         try:
             reset_tick=time.perf_counter()

@@ -1162,6 +1162,13 @@ stream as the Graph and remain outside the CUDA event interval; both versions
 use the same storage mode and the report records it. Numerical input and
 work-counter checks are unchanged.
 
+`--memory-reserve-mib` and `--memory-safety-fraction` expose the existing
+environment memory policy for an explicitly constrained validation run. Defaults
+remain 512 MiB and 0.10. The larger headroom is reserved in addition to estimated
+pending allocations; collision capacities and admission checks remain intact.
+The report records this policy and any construction failure. These options do
+not change the production defaults or numerical workload.
+
 `--producer force --baseline-motion` instead checks the entry actuation/smooth
 producer and compares the complete chain against a frozen motion-replacement
 product. Local checks include object/robot external wrenches, control limits
