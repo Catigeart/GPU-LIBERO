@@ -192,6 +192,9 @@ class ModelTransportTests(unittest.TestCase):
             mujoco.mj_saveModel(model, str(path), None)
             expected = path.read_bytes()
         self.assertEqual(model_bytes(model), expected)
+        if hasattr(os, 'memfd_create'):
+            with patch('os.memfd_create', side_effect=OSError('unavailable')):
+                self.assertEqual(model_bytes(model), expected)
         clone = copy.copy(model)
         self.assertIsNot(clone, model)
         self.assertEqual(model_bytes(clone), expected)
@@ -199,6 +202,24 @@ class ModelTransportTests(unittest.TestCase):
         clone.body_pos[1, 0] += .1
         with self.assertRaises(ValueError):
             model_bytes(clone, hashlib.sha256(expected).hexdigest())
+
+    @unittest.skipUnless(hasattr(os, 'memfd_create') and importlib.util.find_spec('mujoco'),
+                         'requires anonymous memory files and MuJoCo')
+    def test_model_serialization_releases_anonymous_file_on_error(self):
+        import mujoco
+        descriptors = []
+        def fail(model, filename, buffer):
+            self.assertIsNone(buffer)
+            fd = int(filename.rsplit('/', 1)[-1])
+            os.fstat(fd)
+            descriptors.append(fd)
+            raise RuntimeError('serialization failed')
+        with patch.object(mujoco, 'mj_saveModel', side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, 'serialization failed'):
+                model_bytes(object())
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
 
     @unittest.skipUnless(importlib.util.find_spec('mujoco'), 'requires MuJoCo model binding')
     def test_newton_consumers_accept_memory_owners_before_gpu_preparation(self):

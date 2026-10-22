@@ -1,14 +1,30 @@
 """Native model and metadata transport in memory; source files stay file-backed."""
 import hashlib
+import os
 from pathlib import Path
 
 
 def model_bytes(model, expected_sha256=None):
     import mujoco
     import numpy as np
-    buffer = np.empty(mujoco.mj_sizeModel(model), dtype=np.uint8)
-    mujoco.mj_saveModel(model, None, buffer)
-    raw = buffer.tobytes()
+    # MuJoCo 2.3.7's file writer is substantially faster on large models than
+    # its memory-buffer writer. A private anonymous RAM file uses that writer
+    # without creating a disk path, cache, or persistent environment resource.
+    # Serialize the live model every time: source-drift checks remain intact.
+    fd = None
+    if hasattr(os, 'memfd_create') and os.path.isdir('/proc/self/fd'):
+        try:
+            fd = os.memfd_create('libero-model', os.MFD_CLOEXEC)
+        except OSError:
+            pass  # Restricted/non-Linux runtimes keep the existing buffer API.
+    if fd is None:
+        buffer = np.empty(mujoco.mj_sizeModel(model), dtype=np.uint8)
+        mujoco.mj_saveModel(model, None, buffer)
+        raw = buffer.tobytes()
+    else:
+        with os.fdopen(fd, 'rb') as source:
+            mujoco.mj_saveModel(model, f'/proc/self/fd/{source.fileno()}', None)
+            raw = source.read()
     if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise ValueError('actual native model bytes differ from declared identity')
     return raw
