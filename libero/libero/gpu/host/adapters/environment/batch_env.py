@@ -328,6 +328,9 @@ class GpuBatchEnv:
         reuses healthy unchanged-control force outputs before the controller.
         force_threads configures that producer (64, 128 or 256; 0 disables it).
         staged selects the optional FP64 prepare/Newton/Post-tail decomposition.
+        Combined with actuation_solve, it selects the measured NV39 normal
+        Init256/Resume64 chain; other shapes and ordered reductions retain the
+        force-fused path. This does not change ordinary backend selection.
         It retains three complete solves and the original prefix/recovery paths;
         it is load-only unless offline compilation is explicitly permitted.
         """

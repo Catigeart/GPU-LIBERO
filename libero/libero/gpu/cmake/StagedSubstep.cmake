@@ -29,6 +29,15 @@ function(flash_add_staged_substep suffix mathdx_input mathdx_target osc_input os
     endif()
     list(APPEND inputs $<TARGET_OBJECTS:${object}>)
   endforeach()
+  set(aligned_object flash_aligned_substep${suffix})
+  flash_object(${aligned_object} "${FLASH_STEP}/aligned_substep.cu" 64)
+  target_compile_definitions(${aligned_object} PRIVATE ${ARGN})
+  target_compile_options(${aligned_object} PRIVATE --split-compile=3)
+  set_target_properties(${aligned_object} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  if(FLASH_GLOBAL_DEVICE_LTO)
+    set_target_properties(${aligned_object} PROPERTIES CUDA_ARCHITECTURES OFF)
+    target_compile_options(${aligned_object} PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
+  endif()
   set(modes normal ordered)
   foreach(mode IN LISTS modes)
     set(product substep_staged${suffix})
@@ -44,8 +53,13 @@ function(flash_add_staged_substep suffix mathdx_input mathdx_target osc_input os
       set(reduction_inputs $<TARGET_OBJECTS:flash_newton_atomic>
         $<TARGET_OBJECTS:flash_newton_transpose> $<TARGET_OBJECTS:flash_newton_jacobian_cache>)
     endif()
+    set(aligned_inputs)
+    if(mode STREQUAL normal)
+      set(aligned_inputs "${FLASH_STEP}/aligned_launch.cu" $<TARGET_OBJECTS:${aligned_object}>
+        $<TARGET_OBJECTS:flash_fp64_actuation_solve>)
+    endif()
     set(target flash_${product})
-    add_library(${target} SHARED EXCLUDE_FROM_ALL "${FLASH_STEP}/staged_launch.cu" ${inputs}
+    add_library(${target} SHARED EXCLUDE_FROM_ALL "${FLASH_STEP}/staged_launch.cu" ${inputs} ${aligned_inputs}
       $<TARGET_OBJECTS:${solver}> $<TARGET_OBJECTS:flash_post_solver>
       $<TARGET_OBJECTS:flash_osc_solver> $<TARGET_OBJECTS:flash_controller_pipeline>
       ${reduction_inputs} ${mathdx_input} ${osc_input})

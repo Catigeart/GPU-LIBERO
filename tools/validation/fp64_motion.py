@@ -24,6 +24,8 @@ def add_arguments(p):
     p.add_argument('--baseline-force', action='store_true',
                    help='compare against a frozen accepted force product')
     p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
+    p.add_argument('--newton-split', action='store_true',
+                   help='evaluate independent Newton init/resume with accepted motion/force producers')
     p.add_argument('--prior-force', type=Path,
                    help='optional frozen producer for same-input local tuning')
     p.add_argument('--threads', type=int, nargs='+',
@@ -68,6 +70,80 @@ def compare(ref, out):
         rows.append(dict(field=key,max_abs=error,scale=scale,limit=limit,
             passed=bool(np.isfinite(a).all() and np.isfinite(b).all() and error<=limit)))
     return rows
+
+
+def export_stage_fixture(path, env, candidate, arrays):
+    """Freeze actual Post/Euler inputs after one forward, before integration.
+
+    Byte owners retain pointer aliases and element representation. Replayers
+    allocate each owner once and patch field offsets; recorded addresses are
+    never dereferenced by a later process. No extra timed control is run.
+    """
+    import numpy as np
+    import warp as wp
+    from libero.gpu.host.runtime.step.newton_binding import NewtonArguments
+    forward = env.runtime.forward
+    # AlignedSubstep configures Init/Resume, not the diagnostic Full-Newton
+    # kernel below. Wide shapes exceed CUDA's default dynamic shared limit;
+    # opt this separate entry in before capture, exactly as StagedSubstep does.
+    configure = candidate.library.flash_libero_staged_configure
+    configure.argtypes = [ct.c_void_p]*4+[ct.c_int]
+    configure.restype = ct.c_int
+    resources = [(ct.c_int*5)() for _ in range(4)]
+    candidate._check(configure(*resources, candidate.arguments.body_velocity.nb),
+                     'configure fixture forward')
+    launch = candidate.library.flash_libero_launch_staged_forward
+    launch.argtypes = [ct.c_void_p]+[ct.c_int]*4+[ct.c_void_p]
+    launch.restype = ct.c_int
+    with wp.ScopedCapture(stream=env.stream) as capture:
+        wp.copy(forward.mask, env.runtime.intent, stream=env.stream)
+        forward.f.begin_forward_with_plan(forward.mask, stream=env.stream,
+                                          plan=forward.expected_forward)
+        forward._dataflow_reuse.enqueue()
+        candidate._check(launch(candidate.aligned_device_arguments.ptr, candidate.worlds,
+            1, 0, candidate.post_shared_bytes, env.stream.cuda_stream), 'fixture forward')
+    wp.capture_launch(capture.graph, stream=env.stream)
+    wp.synchronize_stream(env.stream)
+    def read_bytes(pointer, size):
+        return wp.array(ptr=pointer, shape=(size,), dtype=wp.uint8,
+                        device=env.stream.device, deleter=None).numpy()
+    request = NewtonArguments.from_buffer_copy(read_bytes(candidate.arguments.newton.parameters,
+                                                          ct.sizeof(NewtonArguments)).tobytes())
+    owners = [(a, int(a.ptr), int(a.ptr)+a.size*wp.types.type_size_in_bytes(a.dtype))
+              for a in arrays if a.is_contiguous]
+    payload, descriptors, owner_keys = {}, {}, {}
+    def record(structure):
+        fields = {}
+        for name, kind in structure._fields_:
+            value = getattr(structure, name)
+            if kind is not ct.c_void_p:
+                fields[name] = dict(value=value)
+                continue
+            if not value:
+                fields[name] = dict(pointer=None)
+                continue
+            matches = [(hi-lo, lo, a) for a, lo, hi in owners if lo <= value < hi]
+            if not matches:
+                raise ValueError('fixture owner not retained: '+name)
+            # A retained one-world view may alias a full batched owner. Keep
+            # the widest containing allocation so later worlds remain valid.
+            size, lo, owner = max(matches, key=lambda row: row[0])
+            key = owner_keys.get((lo, size))
+            if key is None:
+                key = 'owner_'+str(len(owner_keys))
+                owner_keys[lo, size] = key
+                payload[key] = read_bytes(lo, size)
+                descriptors[key] = dict(bytes=size, shape=list(owner.shape), dtype=str(owner.dtype))
+            fields[name] = dict(owner=key, offset=int(value)-lo)
+        return dict(bytes=ct.sizeof(structure), fields=fields)
+    schema = dict(worlds=candidate.worlds, scalar_bytes=8,
+        phase='one actual standalone forward; no controller or Euler',
+        post=record(request.post), euler=record(candidate.arguments.euler),
+        state=record(candidate.arguments.state), owners=descriptors)
+    payload['private_qacc'] = candidate.qacc_handoff.numpy()
+    payload['schema'] = np.array(json.dumps(schema))
+    np.savez_compressed(path, **payload)
+    return dict(path=str(path), owners=len(descriptors), bytes=path.stat().st_size)
 
 
 def main(args):
@@ -151,6 +227,10 @@ def main(args):
                 base.select_entry=old.flash_libero_select_substep_continuation
                 base.select_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_int,ct.c_void_p,ct.c_void_p]
             candidate_class=PeeledForceSubstep if args.producer=='force' else PeeledMotionSubstep
+            if args.newton_split:
+                if args.producer != 'force': raise ValueError('--newton-split requires --producer force')
+                from libero.gpu.host.runtime.step.aligned_substep import AlignedSubstep
+                candidate_class=AlignedSubstep
             candidate=candidate_class(env.runtime,args.build_root/'cmake-control',
                 allow_build=False,fast_compile=True,motion_threads=512)
             assert candidate.eligible,candidate.resources
@@ -395,5 +475,18 @@ def main(args):
                 report['control_speedup']=a/b;event('performance',speedup=a/b,baseline_ms=a,candidate_ms=b)
             assert not [x for x in scope['events']+env.build_report['events'] if x.get('commands_executed')]
             report.update(passed=True,runtime_compilations=0);save(path,report)
+            if args.newton_split:
+                # Save reusable regional inputs while this costly environment
+                # is alive. The export is outside all correctness/timing gates.
+                restore(seed)
+                candidate.arguments=type(candidate.arguments).from_buffer_copy(original['candidate'])
+                candidate.device_arguments.assign(np.frombuffer(bytes(candidate.arguments),np.uint8).copy())
+                try:
+                    report['stage_fixture']=export_stage_fixture(
+                        args.output/f'task{args.task:02d}-stage-inputs.npz',env,candidate,arrays)
+                except Exception as error:
+                    report['stage_fixture']=dict(exported=False,error=repr(error))
+                save(path,report)
+
             event('passed',task=args.task,output=str(path));return 0
         finally:env.close()

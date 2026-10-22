@@ -10,14 +10,17 @@ using namespace physics_newton;
 using flash_libero::NewtonLayout;
 using flash_libero::SubstepShape;
 constexpr int info_count = 8, real_count = 3;
+template<NewtonPhase Phase = NewtonPhase::Full>
 __global__ void replay(const NewtonArguments *request, const int *upstream, const int *enabled,
                        const int *publication, const int64_t *plan, int *info, real_t *values,
-                       int initial_gradient_stop) {
+                       int initial_gradient_stop, unsigned char *checkpoint) {
   unsigned char *shared = flash_libero::substep_shared_data();
   const int w = blockIdx.y;
   NewtonOptions options{};
   options.initial_gradient_stop = initial_gradient_stop != 0;
-  solve_newton(shared, request->model, request->worlds[w], upstream, enabled, publication, plan, options);
+  solve_newton<Phase>(shared, request->model, request->worlds[w], upstream, enabled, publication, plan,
+      options, checkpoint ? checkpoint + w * NewtonInitialLayout::bytes : nullptr);
+  if constexpr (Phase == NewtonPhase::Initialize) return;
   __syncthreads();
   auto &c = *flash_libero::shared_at<NewtonControl>(shared, NewtonLayout::control);
   if (threadIdx.x == 0) {
@@ -45,22 +48,68 @@ extern "C" int flash_newton_replay_launch(const physics_newton::NewtonArguments 
     const int *upstream, const int *enabled, const int *publication, const int64_t *plan,
     int *info, real_t *values, int worlds, cudaStream_t stream) {
   const auto bytes=flash_libero::substep_shared_bytes;
-  cudaError_t error=cudaFuncSetAttribute(replay,cudaFuncAttributeMaxDynamicSharedMemorySize,bytes);
+  cudaError_t error=cudaFuncSetAttribute(replay<>,cudaFuncAttributeMaxDynamicSharedMemorySize,bytes);
   if(error!=cudaSuccess)return int(error);
-  replay<<<dim3(1,worlds),flash_libero::SubstepShape::threads,bytes,stream>>>(
-      request,upstream,enabled,publication,plan,info,values,FLASH_REAL_BITS==32);
+  replay<><<<dim3(1,worlds),flash_libero::SubstepShape::threads,bytes,stream>>>(
+      request,upstream,enabled,publication,plan,info,values,FLASH_REAL_BITS==32,nullptr);
   return int(cudaGetLastError());
 }
 extern "C" int flash_newton_replay_launch_entry_policy(const physics_newton::NewtonArguments *request,
     const int *upstream, const int *enabled, const int *publication, const int64_t *plan,
     int *info, real_t *values, int worlds, int initial_gradient_stop, cudaStream_t stream) {
   const auto bytes=flash_libero::substep_shared_bytes;
-  cudaError_t error=cudaFuncSetAttribute(replay,cudaFuncAttributeMaxDynamicSharedMemorySize,bytes);
+  cudaError_t error=cudaFuncSetAttribute(replay<>,cudaFuncAttributeMaxDynamicSharedMemorySize,bytes);
   if(error!=cudaSuccess)return int(error);
-  replay<<<dim3(1,worlds),flash_libero::SubstepShape::threads,bytes,stream>>>(
-      request,upstream,enabled,publication,plan,info,values,initial_gradient_stop);
+  replay<><<<dim3(1,worlds),flash_libero::SubstepShape::threads,bytes,stream>>>(
+      request,upstream,enabled,publication,plan,info,values,initial_gradient_stop,nullptr);
   return int(cudaGetLastError());
 }
+
+#if defined(FLASH_NEWTON_SPLIT_PROBE)
+extern "C" std::size_t flash_newton_replay_checkpoint_bytes() {
+  return physics_newton::NewtonInitialLayout::bytes;
+}
+extern "C" std::size_t flash_newton_replay_initial_shared_bytes() {
+  return physics_newton::NewtonInitialSharedLayout::bytes;
+}
+extern "C" int flash_newton_replay_split_resources(int *registers, int *shared, int *local) {
+  const void *kernels[] = {reinterpret_cast<const void *>(replay<physics_newton::NewtonPhase::Initialize>),
+                           reinterpret_cast<const void *>(replay<physics_newton::NewtonPhase::Resume>)};
+  for (int i = 0; i < 2; ++i) {
+    cudaFuncAttributes attributes;
+    auto error = cudaFuncGetAttributes(&attributes, kernels[i]);
+    if (error != cudaSuccess) return int(error);
+    registers[i] = attributes.numRegs;
+    shared[i] = attributes.sharedSizeBytes;
+    local[i] = attributes.localSizeBytes;
+  }
+  return 0;
+}
+extern "C" int flash_newton_replay_launch_split(const physics_newton::NewtonArguments *request,
+    const int *upstream, const int *enabled, const int *publication, const int64_t *plan,
+    int *info, real_t *values, int worlds, int initial_gradient_stop,
+    unsigned char *checkpoint, int initial_threads, cudaStream_t stream) {
+  if (worlds <= 0 || !checkpoint ||
+      (!FLASH_NEWTON_NATIVE_GEMV && initial_threads != 64) ||
+      (initial_threads != 64 && initial_threads != 128 && initial_threads != 256))
+    return int(cudaErrorInvalidValue);
+  constexpr auto bytes = flash_libero::substep_shared_bytes;
+  constexpr auto initial_bytes = physics_newton::NewtonInitialSharedLayout::bytes;
+  auto error = cudaFuncSetAttribute(replay<physics_newton::NewtonPhase::Initialize>,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, initial_bytes);
+  if (error != cudaSuccess) return int(error);
+  error = cudaFuncSetAttribute(replay<physics_newton::NewtonPhase::Resume>,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+  if (error != cudaSuccess) return int(error);
+  replay<physics_newton::NewtonPhase::Initialize><<<dim3(1,worlds),initial_threads,initial_bytes,stream>>>(
+      request,upstream,enabled,publication,plan,info,values,initial_gradient_stop,checkpoint);
+  error = cudaGetLastError();
+  if (error != cudaSuccess) return int(error);
+  replay<physics_newton::NewtonPhase::Resume><<<dim3(1,worlds),64,bytes,stream>>>(
+      request,upstream,enabled,publication,plan,info,values,initial_gradient_stop,checkpoint);
+  return int(cudaGetLastError());
+}
+#endif
 
 // A diagnostic first-forward boundary using the actual production function.
 // The normal physical substep kernel and its call schedule are unchanged.

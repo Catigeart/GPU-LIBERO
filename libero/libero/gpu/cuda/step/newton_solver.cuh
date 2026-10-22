@@ -25,8 +25,14 @@ struct NewtonOptions {
   real_t *smooth_force = nullptr;
 };
 
+// Full preserves the ordinary single-call entry. The optional two-kernel
+// schedule carries only initialization's live state in an owned checkpoint.
+enum class NewtonPhase { Full, Initialize, Resume };
+
 // All block threads participate; shared is the parent kernel's workspace.
+template<NewtonPhase Phase = NewtonPhase::Full>
 __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonModelData &model,
     const NewtonWorldData &world, const int *upstream, const int *enabled,
-    const int *publication, const int64_t *plan, const NewtonOptions &options);
+    const int *publication, const int64_t *plan, const NewtonOptions &options,
+    unsigned char *checkpoint = nullptr);
 } // namespace physics_newton

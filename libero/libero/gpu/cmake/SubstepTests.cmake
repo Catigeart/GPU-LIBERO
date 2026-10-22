@@ -77,6 +77,9 @@ function(flash_add_newton_replay_probe suffix precision_bits mathdx_input mathdx
   target_include_directories(${target} PRIVATE "${FLASH_STEP}"
     "${FLASH_MATHDX_ROOT}/include" "${FLASH_MATHDX_ROOT}/external/cutlass/include")
   target_compile_definitions(${target} PRIVATE ${PROBE_UNPARSED_ARGUMENTS})
+  if(precision_bits STREQUAL "64" AND NOT PROBE_PROFILE)
+    target_compile_definitions(${target} PRIVATE FLASH_NEWTON_SPLIT_PROBE=1)
+  endif()
   if(PROBE_PROFILE OR NOT suffix STREQUAL "")
     target_compile_definitions(${target} PRIVATE FLASH_NEWTON_ONLY_PROBE=1)
   endif()

@@ -95,8 +95,8 @@ class NativeBatchedPhysics:
         from libero.gpu.host.runtime.step.fused_substep import FusedSubstep
         if any(type(x) is not bool for x in (staged,motion_passive,actuation_solve)):
             raise TypeError('staged, motion_passive and actuation_solve must be bools')
-        if staged and (motion_passive or actuation_solve):
-            raise ValueError('select staged or standalone producers, not both')
+        if staged and motion_passive and not actuation_solve:
+            raise ValueError('select staged or standalone motion; combine staged with actuation_solve for aligned execution')
         if staged:
             from libero.gpu.host.runtime.step.staged_substep import StagedSubstep
             FusedSubstep = StagedSubstep
@@ -109,12 +109,22 @@ class NativeBatchedPhysics:
             from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
             FusedSubstep = PeeledForceSubstep
             extra['force_threads'] = force_threads
+        aligned = False
+        if staged and actuation_solve:
+            from libero.gpu.host.runtime.step.aligned_substep import AlignedSubstep, selected_for_control
+            aligned = selected_for_control(self.bundle.runtime.euler.nv, atomic_reductions)
+            if aligned:
+                FusedSubstep = AlignedSubstep
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,
                               fast_compile=fast_compile, device_lto=device_lto,
                               profile_newton=profile_newton, atomic_reductions=atomic_reductions,
                               single_solve=single_solve, **extra)
+        if staged and actuation_solve:
+            fusion.resources.update(newton_split_requested=True, newton_split_selected=aligned,
+                newton_split_selection=('measured NV39 normal product' if aligned else
+                    'retain force fusion outside the measured initialization-split domain'))
         # Only the built-in device sampler has a proved read set (poses and
         # velocities, never intermediate cfrc/sensordata). Unknown observers
         # retain complete Post even if they permit graph capture.

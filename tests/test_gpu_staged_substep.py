@@ -35,7 +35,37 @@ class StagedProductTests(unittest.TestCase):
         self.assertFalse(factory.call_args.kwargs['allow_build'])
         self.assertEqual(fusion.enqueue_substep.call_count,3)
         with self.assertRaisesRegex(ValueError,'select staged'):
-            physics.prepare_fused_substep_graph('offline',staged=True,actuation_solve=True)
+            physics.prepare_fused_substep_graph('offline',staged=True,motion_passive=True)
+
+    def test_aligned_selection_retains_force_fusion_outside_measured_domain(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        import warp as wp
+        from libero.gpu.host.adapters.environment.batched_physics import NativeBatchedPhysics
+        for nv, atomic, selected in ((39, None, True), (21, None, False),
+                                     (57, None, False), (43, None, False), (39, False, False)):
+            with self.subTest(nv=nv, atomic=atomic):
+                physics = NativeBatchedPhysics.__new__(NativeBatchedPhysics)
+                physics.debug, physics._observer = False, None
+                runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv))
+                physics.bundle = SimpleNamespace(runtime=runtime, stream=object())
+                fusion = SimpleNamespace(resources={}, enqueue_substep=MagicMock())
+                with patch('libero.gpu.host.runtime.step.aligned_substep.AlignedSubstep',
+                           return_value=fusion) as aligned, patch(
+                           'libero.gpu.host.runtime.step.peeled_force.PeeledForceSubstep',
+                           return_value=fusion) as force, patch.object(wp, 'ScopedCapture') as scope:
+                    capture = SimpleNamespace(graph=object())
+                    scope.return_value.__enter__.return_value = capture
+                    result = physics.prepare_fused_substep_graph('offline', staged=True,
+                        actuation_solve=True, atomic_reductions=atomic)
+                self.assertIs(result, fusion)
+                self.assertEqual(aligned.call_count, int(selected))
+                self.assertEqual(force.call_count, int(not selected))
+                self.assertEqual(fusion.resources['newton_split_selected'], selected)
+                self.assertEqual(fusion.enqueue_substep.call_count, 3)
+                self.assertIs(physics._control_graph, capture.graph)
+                factory = aligned if selected else force
+                self.assertFalse(factory.call_args.kwargs['allow_build'])
 
     def test_motion_product_keeps_the_native_schedule_and_independent_target(self):
         with tempfile.TemporaryDirectory() as directory:

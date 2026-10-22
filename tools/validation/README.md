@@ -1179,6 +1179,15 @@ outputs are resident in the residual kernel's shared arena. A version-1 frozen
 baseline retains its original handoff 1 and launch implementation. Frozen
 products are diagnostic inputs and are never used for ordinary product loading.
 
+`--producer force --newton-split --baseline-force` evaluates the actual
+Init256/Resume64 composition against that frozen force product. This direct
+regional experiment deliberately permits every compiled NV shape; the public
+`staged=True, actuation_solve=True` selector currently admits only measured
+NV39 and otherwise retains force fusion. The optional final Post/Euler input
+export is outside all numerical/timing gates and reports export failures
+separately. Its diagnostic Full-Newton entry is configured before capture,
+including the wide shape's dynamic shared-memory opt-in.
+
 Optional CMake targets `flash_newton_replay_probe_profile[_nv21|_nv57]` call
 the actual independently compiled instrumented Newton with a fixed QP. They
 reuse vendor and reduction objects, omit the forward body, and export the

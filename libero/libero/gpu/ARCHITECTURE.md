@@ -123,6 +123,31 @@ observer/debug policies can do additional work.
 
 ### FP64 motion replacement
 
+Combining `staged=True, actuation_solve=True` selects an optional initialization
+split for the measured NV39, normal-reduction domain. Other dimensions and
+explicit ordered reductions retain `PeeledForceSubstep`; the selection and its
+reason are exposed in `fusion.resources`. Intermediate NV families are not
+enabled merely by interpolating between measured sizes. Ordinary backend and
+fusion defaults are unchanged.
+
+The selected chain is motion/passive → entry force → preparation (64 threads)
+→ Newton initialization (256) → Newton remainder (64) → Post/controller/tail
+(64), with the same three forwards per substep. `aligned_substep.cu` contains
+the actual CUDA entries, `aligned_launch.cu` their same-stream orchestration,
+and `host/runtime/step/aligned_substep.py` the retained handoff owners.
+`newton_solver.cu::solve_newton<Full/Initialize/Resume>` maintains one numerical
+source in a separate compilation unit, without forced solver inlining.
+Initialization ends after the CPU two-candidate warmstart comparison. Its
+checkpoint contains control and four live vectors, not Hessian/factor scratch;
+Resume preserves the original iteration, stopping and publication semantics.
+The optional offline MathDx GEMV fallback permits only 64 initializer threads.
+
+This split passed N=2 numerical checks for NV21/39/57. Complete-control timing
+supported only NV39 in the representative round; the small and large trials
+regressed. The retained residual is intentional, not a claim that every FP32
+Newton stage has been independently ported. `cmake/StagedSubstep.cmake` owns
+the products; ordinary execution never builds them.
+
 The opt-in `prepare_substep_fusion(..., motion_passive=True)` path replaces the
 native fused body's cold motion/bias/passive mathematics with a standalone
 `cuda/step/fp64_motion_passive.cu::fp64_motion_passive_kernel`. The remaining

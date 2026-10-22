@@ -2,6 +2,8 @@
 #pragma once
 #include "newton_types.cuh"
 #include "newton_shared_layout.cuh"
+#include "newton_gram_layout.cuh"
+#include "numerics/detail/newton_policy.cuh"
 
 namespace physics_newton {
 // Uniform control values live in block shared storage. Arrays make the
@@ -128,4 +130,33 @@ struct NewtonControl {
 // pointers, or numerical vectors; accessors are aliases of the indexed cells.
 static_assert(sizeof(NewtonControl) == flash_libero::NewtonLayout::control_bytes, "Shared control layout");
 static_assert(offsetof(NewtonControl, reals) == 40 * sizeof(int), "Shared real control offset");
+
+// The initialization boundary precedes the first Hessian assembly. Constraint
+// rows and coefficients already have their ordinary global owners; only these
+// four short vectors and scalar control values cross the new kernel boundary.
+struct NewtonInitialLayout {
+  static constexpr std::size_t control = 0;
+  static constexpr std::size_t vectors = flash_libero::shared_align(sizeof(NewtonControl));
+  static constexpr std::size_t pitch = flash_libero::shared_vector_bytes;
+  static constexpr std::size_t bytes = vectors + 4 * pitch;
+};
+// The initializer owns no Hessian, search direction, or smooth workspace.
+// Keep its four live vectors compact and loan only the cache/GEMV scratch.
+// Inheriting unused offsets lets the common solve body name dead remainder
+// views; Initialize's compile-time branch never dereferences those views.
+struct NewtonInitialSharedLayout : flash_libero::NewtonLayout {
+  static constexpr std::size_t control = NewtonInitialLayout::control;
+  static constexpr std::size_t qacc = NewtonInitialLayout::vectors;
+  static constexpr std::size_t warmstart = qacc + NewtonInitialLayout::pitch;
+  static constexpr std::size_t constraint_force = warmstart + NewtonInitialLayout::pitch;
+  static constexpr std::size_t warm_mass = constraint_force + NewtonInitialLayout::pitch;
+  static constexpr std::size_t mathdx = NewtonInitialLayout::bytes;
+  static constexpr int nv = flash_libero::SubstepShape::nv;
+  static constexpr std::size_t cache_bytes = GramRowLayout::after_counters(nv * (nv + 1) / 2) +
+      2 * GramRowLayout::bytes(nv);
+  static constexpr std::size_t scratch_bytes = FLASH_NEWTON_NATIVE_GEMV ? cache_bytes :
+      (cache_bytes > flash_libero::NewtonLayout::mathdx_bytes ? cache_bytes :
+       flash_libero::NewtonLayout::mathdx_bytes);
+  static constexpr std::size_t bytes = mathdx + scratch_bytes;
+};
 } // namespace physics_newton

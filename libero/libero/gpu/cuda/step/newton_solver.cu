@@ -32,8 +32,9 @@ using flash_libero::SubstepShape;
 namespace physics_newton {
 using flash_libero::NewtonLayout;
 using flash_libero::shared_at;
+template<class Layout = NewtonLayout>
 static __device__ __forceinline__ NewtonControl &newton_control(unsigned char *shared) {
-  return *shared_at<NewtonControl>(shared, NewtonLayout::control);
+  return *shared_at<NewtonControl>(shared, Layout::control);
 }
 } // namespace physics_newton
 
@@ -58,9 +59,10 @@ static __device__ inline jacobian_cache::View jacobian_view(const NewtonWorldDat
 // All lanes capture refresh before the entry barrier, so the leader can update
 // the header here without racing a slower warp's refresh decision. The existing
 // entry publication barrier publishes both global planes and the header.
+template<class Layout = NewtonLayout>
 static __device__ void prepare_row_coefficients(unsigned char *shared, const NewtonWorldData &p,
                                                 bool refresh, uint64_t generation) {
-  auto &ctl = newton_control(shared);
+  auto &ctl = newton_control<Layout>(shared);
   if (!ctl.invariant_valid() || !refresh)
     return;
   CF_NEWTON_PROFILE_SCOPE(Coefficients);
@@ -5405,12 +5407,13 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
 }
 
 // The immutable prepared plan and output ownership establish nonaliasing.
+template<class Layout = NewtonLayout>
 static __device__ void warm_mass_cost_prepared(const NewtonModelData &m, const NewtonWorldData &p,
                                                unsigned char *shared, const real_t *smooth_force,
                                                const real_t *smooth_acceleration) {
-  real_t *shared_warmstart = shared_at<real_t>(shared, NewtonLayout::warmstart);
-  real_t *shared_warm_mass = shared_at<real_t>(shared, NewtonLayout::warm_mass);
-  auto &c = newton_control(shared);
+  real_t *shared_warmstart = shared_at<real_t>(shared, Layout::warmstart);
+  real_t *shared_warm_mass = shared_at<real_t>(shared, Layout::warm_mass);
+  auto &c = newton_control<Layout>(shared);
   if (threadIdx.x >= 32 || !c.newton_world())
     return;
   real_t cost = REAL_C(0.0);
@@ -5469,12 +5472,14 @@ static __device__ inline void accumulate_candidate_cost(
   }
 }
 
+template<bool VariableThreads = false, class Layout = NewtonLayout>
 static __device__ void candidate_costs_block(unsigned char *shared, const NewtonWorldData &p) {
-  auto &ctl = newton_control(shared);
+  auto &ctl = newton_control<Layout>(shared);
   if (!ctl.active())
     return;
-  constexpr int warps = SubstepShape::threads / 32;
-  __shared__ real_t warm_partial[warps], smooth_partial[warps];
+  constexpr int capacity = VariableThreads ? 8 : SubstepShape::threads / 32;
+  const int warps = VariableThreads ? int(blockDim.x) / 32 : SubstepShape::threads / 32;
+  __shared__ real_t warm_partial[capacity], smooth_partial[capacity];
   real_t warm = REAL_C(0.0), smooth = REAL_C(0.0);
   const int ne = ctl.ne(), nf = ctl.nf();
   for (int bucket = 0; bucket < 7; ++bucket) {
@@ -5504,9 +5509,10 @@ static __device__ void candidate_costs_block(unsigned char *shared, const Newton
   }
 }
 
+template<class Layout = NewtonLayout>
 static __device__ void select_candidate_block(unsigned char *shared, const real_t *warm,
                                                const real_t *smooth) {
-  auto &ctl = newton_control(shared);
+  auto &ctl = newton_control<Layout>(shared);
   if (!ctl.newton_world())
     return;
   // Costs are the mathematical inputs to this choice. Candidate force/state
@@ -5520,7 +5526,7 @@ static __device__ void select_candidate_block(unsigned char *shared, const real_
   const bool choose_smooth = ctl.warm_cost() > ctl.smooth_cost();
   if (threadIdx.x == 0)
     ctl.choice() = choose_smooth;
-  real_t *qacc = shared_at<real_t>(shared, NewtonLayout::qacc);
+  real_t *qacc = shared_at<real_t>(shared, Layout::qacc);
   const real_t *selected = choose_smooth ? smooth : warm;
   for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x)
     qacc[i] = selected[i];
@@ -5571,13 +5577,42 @@ static __device__ bool initial_gradient_converged(unsigned char *shared,
   return c.s07_status() != 0;
 }
 
+// Stream order publishes this private handoff between the two kernels. No
+// Hessian, factor, unused row capacity or transient MathDx arena is copied.
+template<bool Save, class Layout = NewtonLayout>
+static __device__ void transfer_initial_state(unsigned char *shared, unsigned char *checkpoint) {
+  if constexpr (Save) __syncthreads(); // closes the leader's candidate-error write
+  auto *control = shared_at<unsigned char>(shared, Layout::control);
+  for (int i = threadIdx.x; i < int(sizeof(NewtonControl)); i += blockDim.x) {
+    if constexpr (Save) checkpoint[i] = control[i];
+    else control[i] = checkpoint[i];
+  }
+  __syncthreads(); // Resume consumes active below after the control copy.
+  const std::size_t offsets[] = {Layout::qacc, Layout::warmstart,
+      Layout::constraint_force, Layout::warm_mass};
+  for (int vector = 0; vector < 4; ++vector) {
+    if (vector == 3 && !newton_control<Layout>(shared).active()) continue;
+    real_t *local = shared_at<real_t>(shared, offsets[vector]);
+    real_t *global = reinterpret_cast<real_t *>(checkpoint + NewtonInitialLayout::vectors +
+                                               vector * NewtonInitialLayout::pitch);
+    for (int j = threadIdx.x; j < SubstepShape::nv; j += blockDim.x) {
+      if constexpr (Save) global[j] = local[j];
+      else local[j] = global[j];
+    }
+  }
+  __syncthreads();
+}
+
+template<NewtonPhase Phase>
 __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonModelData &model,
                                                     const NewtonWorldData &p, const int *entry_upstream,
                                                     const int *entry_enabled, const int *entry_publication,
-                                                    const int64_t *entry_plan, const NewtonOptions &options) {
+                                                    const int64_t *entry_plan, const NewtonOptions &options,
+                                                    unsigned char *checkpoint) {
+  using Layout = std::conditional_t<Phase == NewtonPhase::Initialize, NewtonInitialSharedLayout, NewtonLayout>;
   const int w = blockIdx.y;
   CF_NEWTON_PROFILE_BEGIN(entry_enabled[w] != 0);
-  auto &c = newton_control(shared);
+  auto &c = newton_control<Layout>(shared);
   const uint64_t position_generation = p.position_generation[0];
   const bool refresh_coefficients = !p.position_cached[0] ||
       *reinterpret_cast<const uint64_t *>(p.precomputed + NewtonCoefficientLayout::generation) !=
@@ -5596,15 +5631,15 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
       layout_counts[0] == p.nefc[0] && layout_counts[1] == p.ne[0] &&
       layout_counts[2] == p.nf[0] && layout_counts[3] == p.ncon[0];
   // Each lane accesses its DOF; these names are addresses, not copied vectors.
-  real_t *constraint_force = shared_at<real_t>(shared, NewtonLayout::constraint_force);
-  real_t *gradient = shared_at<real_t>(shared, NewtonLayout::gradient);
-  real_t *hessian = shared_at<real_t>(shared, NewtonLayout::hessian);
-  real_t *mass_acceleration = shared_at<real_t>(shared, NewtonLayout::mass_acceleration);
-  real_t *mass_search = shared_at<real_t>(shared, NewtonLayout::mass_search);
-  real_t *qacc = shared_at<real_t>(shared, NewtonLayout::qacc);
-  real_t *search = shared_at<real_t>(shared, NewtonLayout::search);
-  real_t *warm_mass = shared_at<real_t>(shared, NewtonLayout::warm_mass);
-  real_t *warmstart = shared_at<real_t>(shared, NewtonLayout::warmstart);
+  real_t *constraint_force = shared_at<real_t>(shared, Layout::constraint_force);
+  real_t *gradient = shared_at<real_t>(shared, Layout::gradient);
+  real_t *hessian = shared_at<real_t>(shared, Layout::hessian);
+  real_t *mass_acceleration = shared_at<real_t>(shared, Layout::mass_acceleration);
+  real_t *mass_search = shared_at<real_t>(shared, Layout::mass_search);
+  real_t *qacc = shared_at<real_t>(shared, Layout::qacc);
+  real_t *search = shared_at<real_t>(shared, Layout::search);
+  real_t *warm_mass = shared_at<real_t>(shared, Layout::warm_mass);
+  real_t *warmstart = shared_at<real_t>(shared, Layout::warmstart);
   NewtonOptions execution = options;
   if (execution.audit)
     execution.audit += w * 8;
@@ -5612,309 +5647,331 @@ __device__ __noinline__ void solve_newton(unsigned char *shared, const NewtonMod
     execution.first_disagreement += w * 8;
   real_t *smooth_acceleration = execution.smooth_acceleration ? execution.smooth_acceleration : p.qacc_smooth;
   real_t *smooth_force = execution.smooth_force ? execution.smooth_force : p.qfrc_smooth;
-  // Cooperative zero initialization, followed by one uniform header load.
-  for (int i = threadIdx.x; i < NewtonControl::integer_count; i += blockDim.x)
-    c.integers[i] = 0;
-  for (int i = threadIdx.x; i < NewtonControl::real_count; i += blockDim.x)
-    c.reals[i] = REAL_C(0.0);
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    c.empty() = entry_enabled[w] && !entry_upstream[w] && p.nefc[0] == 0;
-    c.newton_world() = c.active() = entry_enabled[w] && !entry_upstream[w] && p.nefc[0] > 0;
-    c.err_code() = entry_upstream[w];
-    c.error_item() = -1;
-    c.solver_iter() = p.canonical_solver_iter[0];
-    c.solver_nnz() = p.canonical_solver_nnz[0];
-    c.count() = p.nefc[0];
-    c.ne() = p.ne[0];
-    c.nf() = p.nf[0];
-    c.ncon() = p.ncon[0];
-    c.stage() = 1;
-    c.maxiter_arr() = 100;
-    c.diagnostic() = entry_publication[w];
-    c.meaninertia() = model.model_scalars[1];
-    c.tolerance() = model.model_scalars[0];
-    c.expected = entry_plan[w];
-    const bool schema_ready = prepare_newton_entry(p, c, reuse_layout);
-    if (c.newton_world() && !schema_ready) {
-      if (!c.err_code())
-        c.err_code() = NewtonError::constraint + 4;
-      c.active() = c.newton_world() = 0;
-    }
-    if (entry_enabled[w]) {
-      ++p.attempted[0];
-      if (execution.audit)
-        ++execution.audit[0];
-    }
-  }
-  // DOF lanes load only their own vector cells. Large constraint work remains
-  // global and is traversed cooperatively over its actual live row count.
-  for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
-    qacc[i] = p.canonical_qacc[i];
-    warmstart[i] = p.canonical_qacc_warmstart[i];
-    constraint_force[i] = p.canonical_qfrc_constraint[i];
-  }
-  const int live_rows = max(0, min(p.nefc[0], SubstepShape::rows));
-  libero_newton_io::copy_block(p.external_r_ef, p.force, live_rows);
-  libero_newton_io::copy_block(p.canonical_state, p.state, live_rows);
-  __syncthreads();
-  real_t *dx_matrix = shared_at<real_t>(shared, NewtonLayout::mathdx);
-  if (c.invariant_valid() && !reuse_layout)
-    constraint_tile_head_offsets_block(c.count(), c.ne(), c.nf(), 0, 0, p.efc_type, p.efc_id, p.contact_dim,
-                                       p.constraint_head_rows, p.constraint_head_count[0],
-                                       p.constraint_tile_head_offset);
-  if (!reuse_layout)
-    validate_contact_metadata_warp(p, c);
-  prepare_row_coefficients(shared, p, refresh_coefficients, position_generation);
-  // The metadata validator's writer is lane zero of warp zero. The caller's
-  // existing publication barrier closes both tile production and this header.
-  if (threadIdx.x == 0 && !reuse_layout && c.invariant_valid() && !c.err_code()) {
-    int *counts = reinterpret_cast<int *>(p.precomputed + NewtonCoefficientLayout::layout_counts);
-    counts[0] = c.count(); counts[1] = c.ne(); counts[2] = c.nf(); counts[3] = c.ncon();
-    *reinterpret_cast<uint64_t *>(p.precomputed + NewtonCoefficientLayout::layout_generation) =
-        position_generation;
-    *reinterpret_cast<int *>(p.precomputed + NewtonCoefficientLayout::layout_valid) = 1;
-  }
-  if (c.empty()) {
-    for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
-      qacc[i] = smooth_acceleration[i];
-      warmstart[i] = smooth_acceleration[i];
-      constraint_force[i] = REAL_C(0.0);
-    }
-    if (threadIdx.x == 0)
-      c.solver_iter() = 0;
-  }
-  __syncthreads(); // publishes entry metadata, coefficients, tile offsets and empty-world output
-#if FLASH_NEWTON_ATOMIC_REDUCTIONS
-  // All lanes captured reuse/refresh before entry. A successful cached prefix
-  // alone is insufficient: every constraint count and layout verdict must
-  // match as well. Failure/overflow is a prepared fallback, not a per-solve retry.
-  if (reduction_policy.cache_enabled && c.active() && c.invariant_valid() && !c.err_code()) {
-    const auto cache = jacobian_view(p);
-    if (refresh_coefficients || !reuse_layout || !jacobian_prepared) {
-      CF_NEWTON_PROFILE_SCOPE(JacobianCache);
-      jacobian_cache::prepare(cache, p.J, p.D, c.count(), position_generation, dx_matrix);
-      __syncthreads(); // publish CSC and prepared header before consumers
-    }
-  }
-#endif
-
-  // Every condition below is uniform after the producer's numerical barrier.
-  // Failure/convergence exits this body immediately; all lanes rejoin before
-  // finalization. active stays immutable throughout the numerical body.
-  CF_NEWTON_PROFILE_VALUE(Rows, c.count());
-  CF_NEWTON_PROFILE_VALUE(Contacts, c.ncon());
-  CF_NEWTON_PROFILE_VALUE(FrictionRows, c.nf());
-  CF_NEWTON_PROFILE_VALUE(CoefficientRefresh, refresh_coefficients && c.invariant_valid());
-  CF_NEWTON_PROFILE_VALUE(LayoutRefresh, !reuse_layout && c.invariant_valid() && !c.err_code());
-  int iteration_slot = 0;
-  do {
-    if (!c.active())
-      break;
-    if (threadIdx.x == 0)
-      solver_iter_reset(0, &c.newton_world(), &c.solver_iter());
-    CF_NEWTON_PROFILE_STAGE(WarmJacobian);
-    jacvec_candidates_blas_dx(&c.newton_world(), p.nefc, p.J, smooth_acceleration, warmstart, p.aref, p.efc_b,
-                              p.jar_warm, dx_matrix, p.blas_diagnostic);
-    // Gauss and both cost sums share the candidate reduction's publication.
-    CF_NEWTON_PROFILE_STAGE(WarmCosts);
-    warm_mass_cost_prepared(model, p, shared, smooth_force, smooth_acceleration);
-    candidate_costs_block(shared, p);
+  real_t *dx_matrix = shared_at<real_t>(shared, Layout::mathdx);
+  if constexpr (Phase != NewtonPhase::Resume) {
+    // Cooperative zero initialization, followed by one uniform header load.
+    for (int i = threadIdx.x; i < NewtonControl::integer_count; i += blockDim.x)
+      c.integers[i] = 0;
+    for (int i = threadIdx.x; i < NewtonControl::real_count; i += blockDim.x)
+      c.reals[i] = REAL_C(0.0);
     __syncthreads();
-    select_candidate_block(shared, warmstart, smooth_acceleration);
-    __syncthreads(); // selected qacc, choice and candidate verdict
-    if (c.s08a_status()) {
-      if (threadIdx.x == 0 && !c.err_code())
-        c.err_code() = NewtonError::commit + c.s08a_status();
-      break;
-    }
-    CF_NEWTON_PROFILE_STAGE(InitialResiduals);
-    warm_init_mass_prepared(&c.active(), &c.choice(), warm_mass, qacc, p.qM, mass_acceleration, model);
-    warm_init_jacvec(&c.active(), p.nefc, &c.choice(), p.jar_warm, p.efc_b, p.jar);
-    __syncthreads();
-    CF_NEWTON_PROFILE_STAGE(InitialConstraint);
-    constraint_update_core_block(shared, p, true, p.jar, true, false);
-    __syncthreads();
-    // Transpose's exit publishes these leader records together with J^T f.
-    hessian_prepare_core_block(0, &c.status(), &c.route());
-    CF_NEWTON_PROFILE_STAGE(InitialTranspose);
-    constraint_transpose_blas_dx(0, &c.active(), &c.count(), p.J, p.force, constraint_force,
-                                 SubstepShape::rows, SubstepShape::nv, dx_matrix, p.blas_diagnostic, atomic_workspace(p), jacobian_view(p));
-    CF_NEWTON_PROFILE_STAGE(InitialAssembly);
-    gauss_compute_block(0, &c.active(), mass_acceleration, smooth_force, qacc, smooth_acceleration, &c.cost(),
-                        &c.quad0(), true);
-    if (execution.initial_gradient_stop && initial_gradient_converged(
-            shared, mass_acceleration, smooth_force, constraint_force, gradient))
-      break;
-    // Gauss writes cost/quad0 independently of H and MathDx staging; the
-    // assembly/factor collectives publish them before direction/search.
-    hessian_assemble_blas_dx(0, &c.count(), &c.active(), 1, p.J, p.D, p.state, p.qM, model.madr, model.parentid,
-                             model.simplenum, hessian, &c.status(), SubstepShape::rows, dx_matrix,
-                             p.blas_diagnostic, atomic_workspace(p), jacobian_view(p));
-    CF_NEWTON_PROFILE_STAGE(InitialFactor);
-    hessian_factor_update_dx(shared, model, p, 1);
-    if (c.status()) {
-      if (threadIdx.x == 0 && !c.err_code())
-        c.err_code() = NewtonError::hessian + c.status();
-      break;
-    }
-    CF_NEWTON_PROFILE_STAGE(InitialDirection);
-    direction_core_blas_dx(shared, p, smooth_force); // owns its exit publication
-
-#if defined(FLASH_NEWTON_PROFILE)
-    // Five scalars in already-reserved profile cells; ordinary products have
-    // no scan, calculation or writes from this diagnostic block.
     if (threadIdx.x == 0) {
-      real_t max_force=REAL_C(0.0), norm2=REAL_C(0.0), decrement=REAL_C(0.0);
-      for (int r=0;r<c.count();++r)
-        if (p.state[r]==4) max_force=fmax(max_force,fabs(p.force[r]));
-      for (int j=0;j<SubstepShape::nv;++j) {
-        norm2+=gradient[j]*gradient[j];
-        decrement-=gradient[j]*search[j];
+      c.empty() = entry_enabled[w] && !entry_upstream[w] && p.nefc[0] == 0;
+      c.newton_world() = c.active() = entry_enabled[w] && !entry_upstream[w] && p.nefc[0] > 0;
+      c.err_code() = entry_upstream[w];
+      c.error_item() = -1;
+      c.solver_iter() = p.canonical_solver_iter[0];
+      c.solver_nnz() = p.canonical_solver_nnz[0];
+      c.count() = p.nefc[0];
+      c.ne() = p.ne[0];
+      c.nf() = p.nf[0];
+      c.ncon() = p.ncon[0];
+      c.stage() = 1;
+      c.maxiter_arr() = 100;
+      c.diagnostic() = entry_publication[w];
+      c.meaninertia() = model.model_scalars[1];
+      c.tolerance() = model.model_scalars[0];
+      c.expected = entry_plan[w];
+      const bool schema_ready = prepare_newton_entry(p, c, reuse_layout);
+      if (c.newton_world() && !schema_ready) {
+        if (!c.err_code())
+          c.err_code() = NewtonError::constraint + 4;
+        c.active() = c.newton_world() = 0;
       }
-      CF_NEWTON_PROFILE_VALUE(InitialConeRows,c.ncone());
-      CF_NEWTON_PROFILE_VALUE(WarmChoice,c.choice());
-      CF_NEWTON_PROFILE_VALUE(InitialConeMaxForceBits,__double_as_longlong(double(max_force)));
-      CF_NEWTON_PROFILE_VALUE(InitialGradientNormBits,__double_as_longlong(double(sqrt(norm2))));
-      CF_NEWTON_PROFILE_VALUE(InitialDecrementBits,__double_as_longlong(double(decrement)));
+      if (entry_enabled[w]) {
+        ++p.attempted[0];
+        if (execution.audit)
+          ++execution.audit[0];
+      }
     }
-#endif
+    // DOF lanes load only their own vector cells. Large constraint work remains
+    // global and is traversed cooperatively over its actual live row count.
+    for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
+      qacc[i] = p.canonical_qacc[i];
+      warmstart[i] = p.canonical_qacc_warmstart[i];
+      constraint_force[i] = p.canonical_qfrc_constraint[i];
+    }
+    const int live_rows = max(0, min(p.nefc[0], SubstepShape::rows));
+    libero_newton_io::copy_block(p.external_r_ef, p.force, live_rows);
+    libero_newton_io::copy_block(p.canonical_state, p.state, live_rows);
+    __syncthreads();
+    if (c.invariant_valid() && !reuse_layout)
+      constraint_tile_head_offsets_block(c.count(), c.ne(), c.nf(), 0, 0, p.efc_type, p.efc_id, p.contact_dim,
+                                         p.constraint_head_rows, p.constraint_head_count[0],
+                                         p.constraint_tile_head_offset);
+    if (!reuse_layout)
+      validate_contact_metadata_warp(p, c);
+    prepare_row_coefficients<Layout>(shared, p, refresh_coefficients, position_generation);
+    // The metadata validator's writer is lane zero of warp zero. The caller's
+    // existing publication barrier closes both tile production and this header.
+    if (threadIdx.x == 0 && !reuse_layout && c.invariant_valid() && !c.err_code()) {
+      int *counts = reinterpret_cast<int *>(p.precomputed + NewtonCoefficientLayout::layout_counts);
+      counts[0] = c.count(); counts[1] = c.ne(); counts[2] = c.nf(); counts[3] = c.ncon();
+      *reinterpret_cast<uint64_t *>(p.precomputed + NewtonCoefficientLayout::layout_generation) =
+          position_generation;
+      *reinterpret_cast<int *>(p.precomputed + NewtonCoefficientLayout::layout_valid) = 1;
+    }
+    if (c.empty()) {
+      for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
+        qacc[i] = smooth_acceleration[i];
+        warmstart[i] = smooth_acceleration[i];
+        constraint_force[i] = REAL_C(0.0);
+      }
+      if (threadIdx.x == 0)
+        c.solver_iter() = 0;
+    }
+    __syncthreads(); // publishes entry metadata, coefficients, tile offsets and empty-world output
+  #if FLASH_NEWTON_ATOMIC_REDUCTIONS
+    // All lanes captured reuse/refresh before entry. A successful cached prefix
+    // alone is insufficient: every constraint count and layout verdict must
+    // match as well. Failure/overflow is a prepared fallback, not a per-solve retry.
+    if (reduction_policy.cache_enabled && c.active() && c.invariant_valid() && !c.err_code()) {
+      const auto cache = jacobian_view(p);
+      if (refresh_coefficients || !reuse_layout || !jacobian_prepared) {
+        CF_NEWTON_PROFILE_SCOPE(JacobianCache);
+        jacobian_cache::prepare(cache, p.J, p.D, c.count(), position_generation, dx_matrix);
+        __syncthreads(); // publish CSC and prepared header before consumers
+      }
+    }
+  #endif
 
-    // CPU order: line search -> commit -> constraint/Hessian -> direction
-    // -> stopping rule. Every solve and completed warmstart update is retained.
-    for (; iteration_slot < 100; ++iteration_slot) {
-#if LIBERO_NEWTON_TRACE
-      seed_eval_block(0, p.eval_trace, p.eval_tag);
+    // Every condition below is uniform after the producer's numerical barrier.
+    // Failure/convergence exits this body immediately; all lanes rejoin before
+    // finalization. active stays immutable throughout the numerical body.
+    CF_NEWTON_PROFILE_VALUE(Rows, c.count());
+    CF_NEWTON_PROFILE_VALUE(Contacts, c.ncon());
+    CF_NEWTON_PROFILE_VALUE(FrictionRows, c.nf());
+    CF_NEWTON_PROFILE_VALUE(CoefficientRefresh, refresh_coefficients && c.invariant_valid());
+    CF_NEWTON_PROFILE_VALUE(LayoutRefresh, !reuse_layout && c.invariant_valid() && !c.err_code());
+    if (c.active()) {
+      if (threadIdx.x == 0)
+        solver_iter_reset(0, &c.newton_world(), &c.solver_iter());
+      CF_NEWTON_PROFILE_STAGE(WarmJacobian);
+      jacvec_candidates_blas_dx(&c.newton_world(), p.nefc, p.J, smooth_acceleration, warmstart, p.aref, p.efc_b,
+                                p.jar_warm, dx_matrix, p.blas_diagnostic);
+      // Gauss and both cost sums share the candidate reduction's publication.
+      CF_NEWTON_PROFILE_STAGE(WarmCosts);
+      warm_mass_cost_prepared<Layout>(model, p, shared, smooth_force, smooth_acceleration);
+      candidate_costs_block<Phase == NewtonPhase::Initialize, Layout>(shared, p);
       __syncthreads();
-#endif
-      CF_NEWTON_PROFILE_STAGE(LineSearch);
-      search_kernel_blas_dx(shared, model, p, smooth_force);
-      __syncthreads();
-      CF_NEWTON_PROFILE_ADD(SearchEvaluations, c.LSiter());
-      if (threadIdx.x == 0 && execution.audit) {
-        execution.audit[2] += c.LSiter();
-        execution.audit[7] += c.alpha() == REAL_C(0.0);
+      select_candidate_block<Layout>(shared, warmstart, smooth_acceleration);
+      __syncthreads(); // selected qacc, choice and candidate verdict
+      if (c.s08a_status()) {
+        if (threadIdx.x == 0 && !c.err_code())
+          c.err_code() = NewtonError::commit + c.s08a_status();
       }
-      if (c.s07_status() || c.alpha() == REAL_C(0.0)) {
-        if (threadIdx.x == 0) {
-          if (c.s07_status() && !c.err_code())
-            c.err_code() = 1000 + c.s07_status();
-          else if (!c.s07_status())
-            c.stop_reason() = 10;
-        }
-        break;
-      }
-      CF_NEWTON_PROFILE_STAGE(CommitSave);
-      commit_step_core_block(0, &c.active(), p.nefc, &c.alpha(), search, mass_search, p.Jv, qacc,
-                             mass_acceleration, p.jar, &c.committed(), SubstepShape::nv, SubstepShape::rows);
-      // Independent destinations: save_old reads neither qacc, Ma nor jar.
-      save_old_block(0, &c.active(), p.nefc, p.state, &c.cost(), p.oldstate, &c.oldcost(), SubstepShape::rows);
+    }
+  } else {
+    transfer_initial_state<false>(shared, checkpoint);
+  }
+
+  if constexpr (Phase == NewtonPhase::Initialize) {
+    transfer_initial_state<true, Layout>(shared, checkpoint);
+    return;
+  } else {
+    int iteration_slot = 0;
+    do {
+      if (!c.active() || c.s08a_status()) break;
+      CF_NEWTON_PROFILE_STAGE(InitialResiduals);
+      warm_init_mass_prepared(&c.active(), &c.choice(), warm_mass, qacc, p.qM, mass_acceleration, model);
+      warm_init_jacvec(&c.active(), p.nefc, &c.choice(), p.jar_warm, p.efc_b, p.jar);
       __syncthreads();
-      CF_NEWTON_PROFILE_STAGE(IterConstraint);
-      constraint_update_core_block(shared, p, true, p.jar, true, true);
+      CF_NEWTON_PROFILE_STAGE(InitialConstraint);
+      constraint_update_core_block(shared, p, true, p.jar, true, false);
       __syncthreads();
+      // Transpose's exit publishes these leader records together with J^T f.
       hessian_prepare_core_block(0, &c.status(), &c.route());
-      CF_NEWTON_PROFILE_STAGE(IterTranspose);
+      CF_NEWTON_PROFILE_STAGE(InitialTranspose);
       constraint_transpose_blas_dx(0, &c.active(), &c.count(), p.J, p.force, constraint_force,
                                    SubstepShape::rows, SubstepShape::nv, dx_matrix, p.blas_diagnostic, atomic_workspace(p), jacobian_view(p));
-      CF_NEWTON_PROFILE_STAGE(IterPrepare);
+      CF_NEWTON_PROFILE_STAGE(InitialAssembly);
       gauss_compute_block(0, &c.active(), mass_acceleration, smooth_force, qacc, smooth_acceleration, &c.cost(),
                           &c.quad0(), true);
-      CF_NEWTON_PROFILE_STAGE(IterFactor);
-      hessian_factor_update_dx(shared, model, p, 3);
+      if (execution.initial_gradient_stop && initial_gradient_converged(
+              shared, mass_acceleration, smooth_force, constraint_force, gradient))
+        break;
+      // Gauss writes cost/quad0 independently of H and MathDx staging; the
+      // assembly/factor collectives publish them before direction/search.
+      hessian_assemble_blas_dx(0, &c.count(), &c.active(), 1, p.J, p.D, p.state, p.qM, model.madr, model.parentid,
+                               model.simplenum, hessian, &c.status(), SubstepShape::rows, dx_matrix,
+                               p.blas_diagnostic, atomic_workspace(p), jacobian_view(p));
+      CF_NEWTON_PROFILE_STAGE(InitialFactor);
+      hessian_factor_update_dx(shared, model, p, 1);
       if (c.status()) {
         if (threadIdx.x == 0 && !c.err_code())
           c.err_code() = NewtonError::hessian + c.status();
         break;
       }
-      CF_NEWTON_PROFILE_STAGE(IterDirection);
-      direction_core_blas_dx(shared, p, smooth_force, false);
-      CF_NEWTON_PROFILE_STAGE(Statistics);
-      stats_stop_block(0, &c.active(), p.nefc, &c.stage(), &c.committed(), p.oldstate, p.state, gradient,
-                       &c.oldcost(), &c.cost(), &c.meaninertia(), &c.tolerance(), &c.slope(), &c.nactive(),
-                       &c.nupdate(), &c.LSiter(), &c.iteration(), &c.solver_iter_base(), &c.maxiter_arr(),
-                       p.solver_stats_f, p.solver_stats_i, &c.out_nchange(), &c.out_improvement(),
-                       &c.out_gradient(), &c.out_stop(), &c.out_reason(), &c.iteration(), &c.s08c_status(),
-                       SubstepShape::nv, SubstepShape::rows, &c.changed_count(), mass_acceleration,
-                       smooth_force, p.J, p.force, &execution);
-      __syncthreads();
-      if (c.s08c_status() || (c.out_stop() && (c.out_reason() == 1 || c.out_reason() == 2))) {
-        if (threadIdx.x == 0) {
-          if (c.s08c_status() && !c.err_code())
-            c.err_code() = 3000 + c.s08c_status();
-          else if (!c.s08c_status())
-            c.stop_reason() = c.out_reason();
+      CF_NEWTON_PROFILE_STAGE(InitialDirection);
+      direction_core_blas_dx(shared, p, smooth_force); // owns its exit publication
+
+  #if defined(FLASH_NEWTON_PROFILE)
+      // Five scalars in already-reserved profile cells; ordinary products have
+      // no scan, calculation or writes from this diagnostic block.
+      if (threadIdx.x == 0) {
+        real_t max_force=REAL_C(0.0), norm2=REAL_C(0.0), decrement=REAL_C(0.0);
+        for (int r=0;r<c.count();++r)
+          if (p.state[r]==4) max_force=fmax(max_force,fabs(p.force[r]));
+        for (int j=0;j<SubstepShape::nv;++j) {
+          norm2+=gradient[j]*gradient[j];
+          decrement-=gradient[j]*search[j];
         }
-        break;
+        CF_NEWTON_PROFILE_VALUE(InitialConeRows,c.ncone());
+        CF_NEWTON_PROFILE_VALUE(WarmChoice,c.choice());
+        CF_NEWTON_PROFILE_VALUE(InitialConeMaxForceBits,__double_as_longlong(double(max_force)));
+        CF_NEWTON_PROFILE_VALUE(InitialGradientNormBits,__double_as_longlong(double(sqrt(norm2))));
+        CF_NEWTON_PROFILE_VALUE(InitialDecrementBits,__double_as_longlong(double(decrement)));
+      }
+  #endif
+
+      // CPU order: line search -> commit -> constraint/Hessian -> direction
+      // -> stopping rule. Every solve and completed warmstart update is retained.
+      for (; iteration_slot < 100; ++iteration_slot) {
+  #if LIBERO_NEWTON_TRACE
+        seed_eval_block(0, p.eval_trace, p.eval_tag);
+        __syncthreads();
+  #endif
+        CF_NEWTON_PROFILE_STAGE(LineSearch);
+        search_kernel_blas_dx(shared, model, p, smooth_force);
+        __syncthreads();
+        CF_NEWTON_PROFILE_ADD(SearchEvaluations, c.LSiter());
+        if (threadIdx.x == 0 && execution.audit) {
+          execution.audit[2] += c.LSiter();
+          execution.audit[7] += c.alpha() == REAL_C(0.0);
+        }
+        if (c.s07_status() || c.alpha() == REAL_C(0.0)) {
+          if (threadIdx.x == 0) {
+            if (c.s07_status() && !c.err_code())
+              c.err_code() = 1000 + c.s07_status();
+            else if (!c.s07_status())
+              c.stop_reason() = 10;
+          }
+          break;
+        }
+        CF_NEWTON_PROFILE_STAGE(CommitSave);
+        commit_step_core_block(0, &c.active(), p.nefc, &c.alpha(), search, mass_search, p.Jv, qacc,
+                               mass_acceleration, p.jar, &c.committed(), SubstepShape::nv, SubstepShape::rows);
+        // Independent destinations: save_old reads neither qacc, Ma nor jar.
+        save_old_block(0, &c.active(), p.nefc, p.state, &c.cost(), p.oldstate, &c.oldcost(), SubstepShape::rows);
+        __syncthreads();
+        CF_NEWTON_PROFILE_STAGE(IterConstraint);
+        constraint_update_core_block(shared, p, true, p.jar, true, true);
+        __syncthreads();
+        hessian_prepare_core_block(0, &c.status(), &c.route());
+        CF_NEWTON_PROFILE_STAGE(IterTranspose);
+        constraint_transpose_blas_dx(0, &c.active(), &c.count(), p.J, p.force, constraint_force,
+                                     SubstepShape::rows, SubstepShape::nv, dx_matrix, p.blas_diagnostic, atomic_workspace(p), jacobian_view(p));
+        CF_NEWTON_PROFILE_STAGE(IterPrepare);
+        gauss_compute_block(0, &c.active(), mass_acceleration, smooth_force, qacc, smooth_acceleration, &c.cost(),
+                            &c.quad0(), true);
+        CF_NEWTON_PROFILE_STAGE(IterFactor);
+        hessian_factor_update_dx(shared, model, p, 3);
+        if (c.status()) {
+          if (threadIdx.x == 0 && !c.err_code())
+            c.err_code() = NewtonError::hessian + c.status();
+          break;
+        }
+        CF_NEWTON_PROFILE_STAGE(IterDirection);
+        direction_core_blas_dx(shared, p, smooth_force, false);
+        CF_NEWTON_PROFILE_STAGE(Statistics);
+        stats_stop_block(0, &c.active(), p.nefc, &c.stage(), &c.committed(), p.oldstate, p.state, gradient,
+                         &c.oldcost(), &c.cost(), &c.meaninertia(), &c.tolerance(), &c.slope(), &c.nactive(),
+                         &c.nupdate(), &c.LSiter(), &c.iteration(), &c.solver_iter_base(), &c.maxiter_arr(),
+                         p.solver_stats_f, p.solver_stats_i, &c.out_nchange(), &c.out_improvement(),
+                         &c.out_gradient(), &c.out_stop(), &c.out_reason(), &c.iteration(), &c.s08c_status(),
+                         SubstepShape::nv, SubstepShape::rows, &c.changed_count(), mass_acceleration,
+                         smooth_force, p.J, p.force, &execution);
+        __syncthreads();
+        if (c.s08c_status() || (c.out_stop() && (c.out_reason() == 1 || c.out_reason() == 2))) {
+          if (threadIdx.x == 0) {
+            if (c.s08c_status() && !c.err_code())
+              c.err_code() = 3000 + c.s08c_status();
+            else if (!c.s08c_status())
+              c.stop_reason() = c.out_reason();
+          }
+          break;
+        }
+      }
+    } while (false);
+
+    CF_NEWTON_PROFILE_STAGE(Finalize);
+    // Close every lane's status/active reads before the leader clears scratch
+    // flags or prepares finalization. No lane leaves the collective early.
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      c.active() = 0;
+      if (iteration_slot < 100) {
+        c.s07_status() = 0;
+        c.status() = 0;
+        c.route() = 0;
       }
     }
-  } while (false);
-
-  CF_NEWTON_PROFILE_STAGE(Finalize);
-  // Close every lane's status/active reads before the leader clears scratch
-  // flags or prepares finalization. No lane leaves the collective early.
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    c.active() = 0;
-    if (iteration_slot < 100) {
-      c.s07_status() = 0;
-      c.status() = 0;
-      c.route() = 0;
-    }
-  }
-#if LIBERO_NEWTON_TRACE
-  if (iteration_slot < 100)
-    seed_eval_block(0, p.eval_trace, p.eval_tag);
-#endif
-  // Finalize acceleration/warmstart and publish the solver outputs.
-  if (threadIdx.x == 0)
-    finalize_exit(0, &c.newton_world(), &c.err_code(), &c.solver_exit(), &c.solver_finalize_active());
-  finalize_block(0, &c.solver_finalize_active(), &c.solver_exit(), &c.iteration(), qacc, warmstart,
-                 &c.solver_iter(), &c.solver_nnz(), &c.s08d_status(), SubstepShape::nv);
-  // These records have one writer. Publish once when other lanes consume &c.valid().
-  if (threadIdx.x == 0) {
-    if (c.solver_finalize_active() && c.s08d_status()) {
-      if (!c.err_code())
-        c.err_code() = NewtonError::finalize + c.s08d_status();
-      c.solver_finalize_active() = 0;
-    }
-    if (entry_enabled[w] && execution.audit)
-      execution.audit[6] += c.iteration();
-    final_event(0, qacc, &c.empty(), &c.newton_world(), &c.solver_exit(), &c.err_code(), &c.s08d_status(),
-                p.attempted, p.solver_candidate, p.solver_candidate_attempt, p.solver_candidate_completed,
-                p.solver_candidate_origin, p.solver_source_stage, p.solver_rejected_final_entry,
-                SubstepShape::nv);
-    publish(0, entry_upstream + w, entry_enabled + w, &c.err_code(), &c.valid(), &c.written());
-    publication_gate(0, &c.valid(), &c.diagnostic());
-    finish_publication(0, &c.valid(), &c.written(), (&c.expected), p.n_written);
-  }
-  __syncthreads();
-  if (c.valid()) {
-    for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
-      p.canonical_qacc[i] = qacc[i];
-      p.canonical_qacc_warmstart[i] = warmstart[i];
-      p.canonical_qfrc_constraint[i] = constraint_force[i];
-    }
-    libero_newton_io::copy_block(p.force, p.external_r_ef, p.nefc[0]);
-    libero_newton_io::copy_block(p.state, p.canonical_state, p.nefc[0]);
+  #if LIBERO_NEWTON_TRACE
+    if (iteration_slot < 100)
+      seed_eval_block(0, p.eval_trace, p.eval_tag);
+  #endif
+    // Finalize acceleration/warmstart and publish the solver outputs.
+    if (threadIdx.x == 0)
+      finalize_exit(0, &c.newton_world(), &c.err_code(), &c.solver_exit(), &c.solver_finalize_active());
+    finalize_block(0, &c.solver_finalize_active(), &c.solver_exit(), &c.iteration(), qacc, warmstart,
+                   &c.solver_iter(), &c.solver_nnz(), &c.s08d_status(), SubstepShape::nv);
+    // These records have one writer. Publish once when other lanes consume &c.valid().
     if (threadIdx.x == 0) {
-      p.canonical_solver_iter[0] = c.solver_iter();
-      p.canonical_solver_nnz[0] = c.solver_nnz();
+      if (c.solver_finalize_active() && c.s08d_status()) {
+        if (!c.err_code())
+          c.err_code() = NewtonError::finalize + c.s08d_status();
+        c.solver_finalize_active() = 0;
+      }
+      if (entry_enabled[w] && execution.audit)
+        execution.audit[6] += c.iteration();
+      final_event(0, qacc, &c.empty(), &c.newton_world(), &c.solver_exit(), &c.err_code(), &c.s08d_status(),
+                  p.attempted, p.solver_candidate, p.solver_candidate_attempt, p.solver_candidate_completed,
+                  p.solver_candidate_origin, p.solver_source_stage, p.solver_rejected_final_entry,
+                  SubstepShape::nv);
+      publish(0, entry_upstream + w, entry_enabled + w, &c.err_code(), &c.valid(), &c.written());
+      publication_gate(0, &c.valid(), &c.diagnostic());
+      finish_publication(0, &c.valid(), &c.written(), (&c.expected), p.n_written);
     }
-    libero_newton_io::copy_block(p.solver_stats_f, p.canonical_solver_stats_f, 3 * min(c.iteration(), 1000));
-    libero_newton_io::copy_block(p.solver_stats_i, p.canonical_solver_stats_i, 4 * min(c.iteration(), 1000));
+    __syncthreads();
+    if (c.valid()) {
+      for (int i = threadIdx.x; i < SubstepShape::nv; i += blockDim.x) {
+        p.canonical_qacc[i] = qacc[i];
+        p.canonical_qacc_warmstart[i] = warmstart[i];
+        p.canonical_qfrc_constraint[i] = constraint_force[i];
+      }
+      libero_newton_io::copy_block(p.force, p.external_r_ef, p.nefc[0]);
+      libero_newton_io::copy_block(p.state, p.canonical_state, p.nefc[0]);
+      if (threadIdx.x == 0) {
+        p.canonical_solver_iter[0] = c.solver_iter();
+        p.canonical_solver_nnz[0] = c.solver_nnz();
+      }
+      libero_newton_io::copy_block(p.solver_stats_f, p.canonical_solver_stats_f, 3 * min(c.iteration(), 1000));
+      libero_newton_io::copy_block(p.solver_stats_i, p.canonical_solver_stats_i, 4 * min(c.iteration(), 1000));
+    }
+    if (threadIdx.x == 0) {
+      p.err_code[0] = c.err_code();
+      p.valid[0] = c.valid();
+      p.diagnostic[0] = c.diagnostic();
+    }
+    __syncthreads();
+    CF_NEWTON_PROFILE_VALUE(Iterations, c.iteration());
+    CF_NEWTON_PROFILE_VALUE(StopReason, c.stop_reason());
+    CF_NEWTON_PROFILE_VALUE(Error, c.err_code());
+    CF_NEWTON_PROFILE_END();
   }
-  if (threadIdx.x == 0) {
-    p.err_code[0] = c.err_code();
-    p.valid[0] = c.valid();
-    p.diagnostic[0] = c.diagnostic();
-  }
-  __syncthreads();
-  CF_NEWTON_PROFILE_VALUE(Iterations, c.iteration());
-  CF_NEWTON_PROFILE_VALUE(StopReason, c.stop_reason());
-  CF_NEWTON_PROFILE_VALUE(Error, c.err_code());
-  CF_NEWTON_PROFILE_END();
 }
+
+template __device__ void solve_newton<NewtonPhase::Full>(unsigned char *, const NewtonModelData &,
+    const NewtonWorldData &, const int *, const int *, const int *, const int64_t *,
+    const NewtonOptions &, unsigned char *);
+#if FLASH_REAL_BITS == 64 && !defined(FLASH_NEWTON_PROFILE)
+template __device__ void solve_newton<NewtonPhase::Initialize>(unsigned char *, const NewtonModelData &,
+    const NewtonWorldData &, const int *, const int *, const int *, const int64_t *,
+    const NewtonOptions &, unsigned char *);
+template __device__ void solve_newton<NewtonPhase::Resume>(unsigned char *, const NewtonModelData &,
+    const NewtonWorldData &, const int *, const int *, const int *, const int64_t *,
+    const NewtonOptions &, unsigned char *);
+#endif
 
 } // namespace physics_newton
 
