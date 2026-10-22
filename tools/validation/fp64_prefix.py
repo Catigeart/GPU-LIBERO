@@ -36,6 +36,9 @@ class PrefixVersions:
             tail=source[source.rfind('namespace libero_position {'):]
             tail=re.sub(r'__device__ __constant__ int mass_subtree_sizes\[\d+\] = \{[0-9,]+\};\n','',tail)
             tail=tail.replace(', libero_position::mass_subtree_sizes','')
+            tail=re.sub(r'^real_t\* s_joint_trig=phase\+\d+;\n','',tail,flags=re.MULTILINE)
+            tail=re.sub(r'(libero_position::body_block\([^\n]*), true, s_joint_trig\);',
+                        r'\1);',tail)
             tail=re.sub(r'^    libero_position::transmission_block\(([^\n]*)\);$',
                         r'    if(threadIdx.x==0) { libero_position::transmission(\1); }',
                         tail,flags=re.MULTILINE)

@@ -230,7 +230,7 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
         intervals=contiguous_subtree_sizes(p.compos.parent.numpy())
     geom_shared=3*f.ngeom if bounds_cache else 0
     fixed=21*nb+6*nj+geom_shared  # body matrix, joint frames, inertial + geom positions
-    body_phase=7*nb+nq+4*nm+12
+    body_phase=7*nb+nq+4*nm+12+(2*nj if intervals is not None else 0)
     mass_phase=23*nb+12*nv+2*nM
     shared_doubles=fixed+max(body_phase,mass_phase)
     originals=_dataflow_stages(d)
@@ -269,6 +269,8 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
             args.append('true')
             if intervals is not None:
                 args.append('libero_position::mass_subtree_sizes')
+        if key=='body' and intervals is not None and name.endswith('body_block'):
+            args.extend(('true','s_joint_trig'))
         if key=='cf_bounds_prepare_cached_block':args.append('true')
         return '%s(%s, %s);'%(function or name,world,', '.join(args))
     def lane(statement):return '    if(threadIdx.x==0) { '+statement+' }'
@@ -292,6 +294,8 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
     for name,count in [('s_xpos',3*nb),('s_xquat',4*nb),('s_qtmp',nq),
                        ('s_mqtmp',4*nm),('s_world_xipos',3),('s_world_ximat',9)]:
         code.append('real_t* %s=phase+%d;'%(name,offset));offset+=count
+    if intervals is not None:
+        code.append('real_t* s_joint_trig=phase+%d;'%offset)
     body_base_count=len(_MODEL)+4+len(_DATA)+len(_DIAG)
     body={i:shifted('body',i) for i in range(15,body_base_count)}
     body.update({19:'s_qtmp',20:'s_mqtmp',21:'s_xpos',22:'s_xquat',23:'s_xmat',
@@ -363,6 +367,7 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
     source='namespace libero_position {\n'+constants+'__device__ __forceinline__ void dataflow(int w, '+signature+') {\n'+'\n'.join(code)+'\n}\n}\n'
     return source,values,specs,dict(shared_bytes=8*shared_doubles,
         subtree_mass=intervals is not None,parallel_transmission=intervals is not None,
+        private_body_paths=intervals is not None,
         phase_barriers=sum(statement.count('__syncthreads()') for statement in code),
         legacy_phase_barriers=len(_dataflow_stages(d)),fixed_shared_doubles=fixed,
         geometry_shared_doubles=geom_shared,bounds_cache=bool(bounds_cache),

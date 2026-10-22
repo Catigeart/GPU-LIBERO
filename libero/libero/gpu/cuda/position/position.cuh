@@ -169,7 +169,11 @@ struct BodyOutputs {
   int *offcenter_rot_identity;
   int *body_norm_branch;
 };
-__device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyOutputs &out) {
+struct BodyPose { real_t position[3], quaternion[4], matrix[9]; };
+// Null private_pose keeps the existing level schedule. A private path consumes
+// only its own preceding pose, publishing anchors and body state at its owner.
+__device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyOutputs &out,
+    BodyPose *private_pose=nullptr, bool publish=true, const real_t *joint_trig=nullptr) {
   real_t *qpos0 = in.qpos0;
   real_t *bpos = in.bpos;
   real_t *bquat = in.bquat;
@@ -215,8 +219,10 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
       copy(pre_pos + 3 * b, p, 3);
       copy(pre_quat + 4 * b, q, 4);
     }
-    copy(xanchor + 3 * a, p, 3);
-    xaxis[3 * a + 2] = 1;
+    if (publish) {
+      copy(xanchor + 3 * a, p, 3);
+      xaxis[3 * a + 2] = 1;
+    }
     if constexpr (body_diagnostics) {
       copy(joint_pos + 3 * a, p, 3);
       copy(joint_quat + 4 * a, q, 4);
@@ -227,10 +233,10 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
     const real_t *bq = mi >= 0 ? mqtmp + 4 * mi : bquat + 4 * b;
     if (body_diagnostics && mi >= 0)
       body_route[b] = 2;
-    rotmat(xmat + 9 * pid, bp, p);
+    rotmat(private_pose ? private_pose->matrix : xmat + 9 * pid, bp, p);
     for (int k = 0; k < 3; ++k)
-      p[k] += xpos[3 * pid + k];
-    mulquat(xquat + 4 * pid, bq, q);
+      p[k] += private_pose ? private_pose->position[k] : xpos[3 * pid + k];
+    mulquat(private_pose ? private_pose->quaternion : xquat + 4 * pid, bq, q);
     if constexpr (body_diagnostics) {
       copy(pre_pos + 3 * b, p, 3);
       copy(pre_quat + 4 * b, q, 4);
@@ -267,7 +273,8 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
             if (!isfinite(z)) {
               return 2;
             }
-            real_t sn = sin(z), cs = cos(z);
+            real_t sn = joint_trig ? joint_trig[2*j] : sin(z);
+            real_t cs = joint_trig ? joint_trig[2*j+1] : cos(z);
             if (!isfinite(sn) || !isfinite(cs)) {
               return 5;
             }
@@ -293,8 +300,10 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
       if (!finite(p, 3) || !finite(q, 4)) {
         return 5;
       }
-      copy(xanchor + 3 * j, anchor, 3);
-      copy(xaxis + 3 * j, axis, 3);
+      if (publish) {
+        copy(xanchor + 3 * j, anchor, 3);
+        copy(xaxis + 3 * j, axis, 3);
+      }
       if constexpr (body_diagnostics) {
         copy(joint_pos + 3 * j, p, 3);
         copy(joint_quat + 4 * j, q, 4);
@@ -308,14 +317,22 @@ __device__ __forceinline__ int body_one(int b, const BodyInputs &in, const BodyO
   }
   if constexpr (body_diagnostics)
     body_norm_before[b] = n;
-  body_norm_branch[b] = (n < REAL_C(1e-15));
+  if (publish) body_norm_branch[b] = (n < REAL_C(1e-15));
   normalize(q, n);
-  copy(xpos + 3 * b, p, 3);
-  copy(xquat + 4 * b, q, 4);
+  if (private_pose) {
+    copy(private_pose->position,p,3);
+    copy(private_pose->quaternion,q,4);
+    quatmat(q,private_pose->matrix);
+  }
+  if (publish) {
+    copy(xpos + 3 * b, p, 3);
+    copy(xquat + 4 * b, q, 4);
+    if (private_pose) copy(xmat + 9*b,private_pose->matrix,9);
+  }
   if constexpr (body_diagnostics)
     body_mat_identity[b] = identity(q);
-  quatmat(q, xmat + 9 * b);
-  if (!finite(xmat + 9 * b, 9)) {
+  if (!private_pose) quatmat(q, xmat + 9 * b);
+  if (!finite(private_pose ? private_pose->matrix : xmat + 9 * b, 9)) {
     return 5;
   }
   return 0;
@@ -583,7 +600,7 @@ body_block(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid
            int *joint_route, int *body_mat_identity, int *joint_rot_identity, int *hinge_zero,
            int *offcenter_rot_identity, real_t *trig_arg, real_t *trig_sin, real_t *trig_cos,
            int *norm_branch, int *mocap_branch, int *body_norm_branch, const int *level_offsets,
-           const int *level_bodies, int level_count) {
+           const int *level_bodies, int level_count, bool private_paths=false, real_t *joint_trig=nullptr) {
   if (threadIdx.x == 0)
     body(w, qpos0, parent, jnum, jadr, mocapid, bpos, bquat, jtype, qadr, jaxis, jpos, nq, nb, nj,
          nm, active, qpos, mocap_pos, mocap_quat, qtmp, mqtmp, xpos, xquat, xmat, xanchor, xaxis,
@@ -628,20 +645,56 @@ body_block(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid
                                       hinge_zero + w * (nj),
                                       offcenter_rot_identity + w * (nj),
                                       body_norm_branch + w * (nb)};
-  for (int level = 0; level < level_count; ++level) {
-    for (int at = level_offsets[level] + threadIdx.x; at < level_offsets[level + 1];
-         at += blockDim.x) {
-      const int b = level_bodies[at];
-      const int blocked = out.body_norm_branch[parent[b]];
-      if (blocked < 0) {
-        out.body_norm_branch[b] = blocked;
-        continue;
+  // The fast profile has no per-ancestor diagnostic writes. Depth remains
+  // bounded by the qualified body catalogue; larger inputs retain levels.
+  if (private_paths && !body_diagnostics && nb<=64) {
+    // Immutable hinge deltas are shared by overlapping private paths. The
+    // caller lends dead phase storage; no allocation grows with world count.
+    if (joint_trig) {
+      for(int j=threadIdx.x;j<nj;j+=blockDim.x) {
+        if(jtype[j]!=3) continue;
+        const real_t z=(in.qtmp[qadr[j]]-qpos0[qadr[j]])*REAL_C(.5);
+        real_t sn=0,cs=1;
+        if(isfinite(z) && z!=0) {
+#if FLASH_REAL_BITS == 64
+          sincos(z,&sn,&cs);
+#else
+          sincosf(z,&sn,&cs);
+#endif
+        }
+        joint_trig[2*j]=sn;joint_trig[2*j+1]=cs;
       }
-      const int code = body_one(b, in, out);
-      if (code)
-        out.body_norm_branch[b] = -code;
+      __syncthreads();
+    }
+    for (int b=threadIdx.x+1;b<nb;b+=blockDim.x) {
+      int ancestors[64],depth=0;
+      for(int p=b;p>0;p=parent[p]) ancestors[depth++]=p;
+      BodyPose pose;
+      copy(pose.position,out.xpos,3);
+      copy(pose.quaternion,out.xquat,4);
+      copy(pose.matrix,out.xmat,9);
+      for(int at=depth-1;at>=0;--at) {
+        const int code=body_one(ancestors[at],in,out,&pose,at==0,joint_trig);
+        if(code) { out.body_norm_branch[b]=-code;break; }
+      }
     }
     __syncthreads();
+  } else {
+    for (int level = 0; level < level_count; ++level) {
+      for (int at = level_offsets[level] + threadIdx.x; at < level_offsets[level + 1];
+           at += blockDim.x) {
+        const int b = level_bodies[at];
+        const int blocked = out.body_norm_branch[parent[b]];
+        if (blocked < 0) {
+          out.body_norm_branch[b] = blocked;
+          continue;
+        }
+        const int code = body_one(b, in, out);
+        if (code)
+          out.body_norm_branch[b] = -code;
+      }
+      __syncthreads();
+    }
   }
   // Levels reorder independent bodies, so publish the earliest ORIGINAL body.
   if (threadIdx.x == 0)
