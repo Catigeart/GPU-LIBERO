@@ -214,6 +214,7 @@ function(flash_variant nv nq nm nj nu precision_bits osc_input osc_target)
   if(FLASH_NEWTON_ATOMIC_REDUCTIONS AND
       (nv EQUAL 39 OR (precision_bits STREQUAL "64" AND (nv EQUAL 21 OR nv EQUAL 57))))
     flash_add_newton_replay_probe("${suffix}" "${precision_bits}" "${mathdx_input}" "${mathdx_target}" "${osc_input}" "${osc_target}" ${definitions})
+    flash_add_newton_replay_probe("${suffix}" "${precision_bits}" "${mathdx_input}" "${mathdx_target}" "${osc_input}" "${osc_target}" PROFILE ${definitions})
   endif()
 endfunction()
 

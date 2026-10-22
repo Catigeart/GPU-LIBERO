@@ -5125,9 +5125,14 @@ static __device__ void hessian_cone_dx(int rows, int contacts, int *count, int *
     }
     __syncthreads();
 #endif
-    if constexpr (FLASH_REAL_BITS == 32 && SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
+    if constexpr ((FLASH_REAL_BITS == 32 || SubstepShape::nv <= 48) &&
+                  SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
       // LTJ is already published by its producer. Warp0 applies every row
       // in order and the group barrier below publishes the complete factor.
+      // Both precisions retain CPU 2.3.7's recurrence; the per-lane vector
+      // needs no shared publication between pivots or between ordered rows.
+      // FP64 keeps the original path above the 48-column family: the wider
+      // register batch regressed complete-control timing despite local gains.
       if (threadIdx.x < 32)
         rank_update::ordered_plus<SubstepShape::nv>(HC, ltj, d, vec);
     } else if constexpr (SubstepShape::nv <= 32) {
@@ -5251,7 +5256,8 @@ static __device__ void hessian_factor_update_dx(unsigned char *shared, const New
     __syncthreads();
     if (!lost) {
       CF_NEWTON_PROFILE_SCOPE(RankUpdates);
-      if constexpr (FLASH_REAL_BITS == 32 && SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
+      if constexpr ((FLASH_REAL_BITS == 32 || SubstepShape::nv <= 48) &&
+                    SubstepShape::nv > 32 && SubstepShape::nv <= 64) {
         if (threadIdx.x < 32) {
           const int completed = rank_update::ordered_rows<SubstepShape::nv>(
               shared_hessian, p.J, coefficient_plane(p.precomputed, NewtonCoefficientLayout::sqrt_d),

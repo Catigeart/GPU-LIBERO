@@ -16,6 +16,8 @@ def add_arguments(p):
     p.add_argument('--task', type=int, default=4)
     p.add_argument('--state', type=Path, help='optional previously recorded FP64 endpoint')
     p.add_argument('--performance', action='store_true')
+    p.add_argument('--host-state', action='store_true',
+                   help='hold timed versions on the host; transfers stay outside CUDA events')
     p.add_argument('--producer', choices=('motion', 'force'), default='motion')
     p.add_argument('--baseline-motion', action='store_true',
                    help='compare force replacement against a frozen motion product')
@@ -345,8 +347,15 @@ def main(args):
                     graphs[name]=cap.graph
                     restore(seed)
                     for _ in range(5):wp.capture_launch(cap.graph,stream=env.stream)
-                    with wp.ScopedStream(env.stream):
-                        device_states[name]=[wp.clone(a) for a in arrays]
+                    if args.host_state:
+                        # Pinned owners permit asynchronous copies on this
+                        # stream. Downloading each array with numpy() would
+                        # introduce thousands of host/device rendezvous.
+                        device_states[name]=[wp.empty_like(a,device='cpu',pinned=True) for a in arrays]
+                        for a,s in zip(arrays,device_states[name]):wp.copy(s,a,stream=env.stream)
+                    else:
+                        with wp.ScopedStream(env.stream):
+                            device_states[name]=[wp.clone(a) for a in arrays]
                 starts={k:[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)] for k in graphs}
                 stops={k:[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)] for k in graphs}
                 report['gpu_before']=gpu_sample()
@@ -364,7 +373,8 @@ def main(args):
                     ms=[wp.get_event_elapsed_time(x,y,synchronize=False) for x,y in zip(starts[name],stops[name])]
                     report['performance']['control_'+name]=dict(ms=ms,mean_ms=float(np.mean(ms)),median_ms=float(np.median(ms)),std_ms=float(np.std(ms)),
                         warmup=5,steps=20,physical_substeps_per_control=env.runtime.substeps,
-                        restore_save_inside_events=False,continuing_per_version_state=True)
+                        restore_save_inside_events=False,continuing_per_version_state=True,
+                        snapshot_location='host_pinned' if args.host_state else 'device')
                 report['performance_work']={}
                 for name in graphs:
                     for a,s in zip(arrays,device_states[name]):wp.copy(a,s,stream=env.stream)

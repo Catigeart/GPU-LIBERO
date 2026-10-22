@@ -1156,6 +1156,12 @@ outside CUDA events. Construction, reset, capture and transfers are excluded.
 GPU co-tenant snapshots and individual samples are retained. No runtime build,
 clock change, renderer or other-process intervention is permitted.
 
+`--host-state` keeps the two continuing-version snapshots in pinned host memory
+when device memory is occupied by another job. Asynchronous copies use the same
+stream as the Graph and remain outside the CUDA event interval; both versions
+use the same storage mode and the report records it. Numerical input and
+work-counter checks are unchanged.
+
 `--producer force --baseline-motion` instead checks the entry actuation/smooth
 producer and compares the complete chain against a frozen motion-replacement
 product. Local checks include object/robot external wrenches, control limits
@@ -1172,3 +1178,13 @@ The current healthy path must finish with handoff 2: after-controller force
 outputs are resident in the residual kernel's shared arena. A version-1 frozen
 baseline retains its original handoff 1 and launch implementation. Frozen
 products are diagnostic inputs and are never used for ordinary product loading.
+
+Optional CMake targets `flash_newton_replay_probe_profile[_nv21|_nv57]` call
+the actual independently compiled instrumented Newton with a fixed QP. They
+reuse vendor and reduction objects, omit the forward body, and export the
+existing profile table configuration/schema/name functions. The ordinary replay
+and production targets contain no profile recorder. Record the initial cone
+state as well as the final state: a converged frictionless final solution does
+not establish that warmstart candidates needed no cone factorization. Nested
+profile scopes overlap their parent phases and must not be added as independent
+percentages. Fixed-QP timing is a regional measurement, not task throughput.

@@ -49,33 +49,40 @@ endfunction()
 
 # Optional fixed-input diagnostics; normal products never depend on this target.
 function(flash_add_newton_replay_probe suffix precision_bits mathdx_input mathdx_target osc_input osc_target)
+  cmake_parse_arguments(PROBE "PROFILE" "" "" ${ARGN})
   set(source "${FLASH_GPU}/../../../tests/cuda/newton_replay_probe.cu")
   if(NOT EXISTS "${source}")
     return()
   endif()
   flash_precision_suffix(${precision_bits} precision_suffix)
-  set(target flash_newton_replay_probe${suffix}${precision_suffix})
+  set(profile_suffix)
+  set(solver flash_newton_solver${precision_suffix}${suffix})
+  if(PROBE_PROFILE)
+    set(profile_suffix _profile)
+    set(solver flash_newton_solver_profile${precision_suffix}${suffix})
+  endif()
+  set(target flash_newton_replay_probe${profile_suffix}${suffix}${precision_suffix})
   set(forward_inputs)
-  if(suffix STREQUAL "")
+  if(suffix STREQUAL "" AND NOT PROBE_PROFILE)
     list(APPEND forward_inputs ${osc_input}
       $<TARGET_OBJECTS:flash_post_solver${precision_suffix}>
       $<TARGET_OBJECTS:flash_osc_solver${precision_suffix}>
       $<TARGET_OBJECTS:flash_controller_pipeline${precision_suffix}>)
   endif()
   add_library(${target} SHARED EXCLUDE_FROM_ALL "${source}" ${mathdx_input} ${forward_inputs}
-    $<TARGET_OBJECTS:flash_newton_solver${precision_suffix}${suffix}>
+    $<TARGET_OBJECTS:${solver}>
     $<TARGET_OBJECTS:flash_newton_atomic${precision_suffix}>
     $<TARGET_OBJECTS:flash_newton_transpose${precision_suffix}>
     $<TARGET_OBJECTS:flash_newton_jacobian_cache${precision_suffix}>)
   target_include_directories(${target} PRIVATE "${FLASH_STEP}"
     "${FLASH_MATHDX_ROOT}/include" "${FLASH_MATHDX_ROOT}/external/cutlass/include")
-  target_compile_definitions(${target} PRIVATE ${ARGN})
-  if(NOT suffix STREQUAL "")
+  target_compile_definitions(${target} PRIVATE ${PROBE_UNPARSED_ARGUMENTS})
+  if(PROBE_PROFILE OR NOT suffix STREQUAL "")
     target_compile_definitions(${target} PRIVATE FLASH_NEWTON_ONLY_PROBE=1)
   endif()
   target_link_libraries(${target} PRIVATE flash_cuda_options${precision_suffix})
   add_dependencies(${target} ${mathdx_target})
-  if(suffix STREQUAL "")
+  if(suffix STREQUAL "" AND NOT PROBE_PROFILE)
     add_dependencies(${target} ${osc_target})
   endif()
   set_target_properties(${target} PROPERTIES CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
