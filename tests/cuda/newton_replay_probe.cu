@@ -64,6 +64,7 @@ extern "C" int flash_newton_replay_launch_entry_policy(const physics_newton::New
 
 // A diagnostic first-forward boundary using the actual production function.
 // The normal physical substep kernel and its call schedule are unchanged.
+#ifndef FLASH_NEWTON_ONLY_PROBE
 #include "fused_substep.cu"
 namespace {
 __global__ void forward_once(const flash_libero::SubstepArguments *arguments, real_t *smooth) {
@@ -91,3 +92,4 @@ extern "C" int flash_newton_forward_probe_launch(const flash_libero::SubstepArgu
   forward_once<<<dim3(1,worlds),flash_libero::SubstepShape::threads,bytes,stream>>>(arguments,smooth);
   return int(cudaGetLastError());
 }
+#endif

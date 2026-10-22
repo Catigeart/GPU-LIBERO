@@ -45,6 +45,25 @@ Neither changes the general collision/constraint configuration or forces a
 vector-copy choice. NV21/43 use scalar I/O; NV57 retains its selected mathematics
 and packet I/O. Small-capacity complete Cholesky remains on cuSOLVERDx.
 
+The native FP64 fused solver retains three forwards, CPU 2.3.7 stopping,
+incremental Hessian updates and all warmstart submissions. Its 64-thread
+transpose auto selector uses four lanes per DOF for NV<=48 and 128..512 live
+rows. Other domains retain direct ownership; larger CTAs keep their existing
+shared-partial selector. Explicit direct/atomic/CSC choices remain available.
+The selected body and selector are in `cuda/step/newton_transpose.cu/.cuh`.
+
+Native FP64 line-search preparation can publish the whole Jv and then prepare
+independent head-owned quadratic records with three block rendezvous. The
+admitted region has 64 threads, at least 64 live rows and at most 64 heads.
+It borrows the completed smooth-candidate residual plane (`efc_b`), whose next
+reader belongs to the next solve; no device allocation or larger shared arena
+is introduced. Nonfinite speculative products or coefficients select the
+original tile path before any published Jv/quad write. Wider head sets and other
+CTA sizes also retain that path. `newton_solver.cu::s07_full_products_block`
+changes preparation only; candidate evaluation, alpha selection, stopping and
+result publication retain the CPU rules. Regional tests and shared-device
+timing do not establish a new whole-task or 130-task speedup.
+
 ## Compiled Product Selection
 
 The maintained options live in `cmake/Substep.cmake`; both the source checkout

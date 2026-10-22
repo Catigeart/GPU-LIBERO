@@ -135,10 +135,33 @@ the forward entry returns before control or integration. The forward fixture
 includes the maintained physical-substep source in its own translation unit to
 access the actual forward function. Neither target is a normal product
 dependency, and neither adds diagnostics to the production execution path.
+The FP64 `flash_newton_replay_probe_nv21` and `_nv57` targets expose the same
+Newton-only entries for small and large catalogue shapes; they omit the
+forward source and its controller/Post link inputs.
 The entries are declared in `cuda/newton_replay_probe.cu`; their return codes
 report CUDA launch errors, while the output records contain solver status.
 `flash_newton_replay_launch_entry_policy` selects the initial-gradient test
 explicitly, so both policies can be compared using one numerical device object.
+
+Two optional FP64 CUDA fixtures cover native Newton product organization:
+
+- `flash_newton_transpose_test` compares the actual production reductions and
+  their immediate gradient consumer with a long-double reference. It covers
+  all 13 catalogue NV values, two worlds, row/CTA boundaries, masked NaNs,
+  inactive holds and output redzones.
+- `flash_newton_linesearch_products_test` compares the actual full-row and
+  retained tile preparations in two worlds. It covers three-, four- and
+  six-dimensional cone records, cross-tile groups, head-count fallback, Jv
+  NaNs and coefficient overflow. The exceptional output prefixes are compared
+  with the retained path. This NV39 fixture includes the maintained solver
+  source solely to reach its private preparation functions; normal products
+  keep their separately compiled Newton object.
+
+Build these targets in the existing CMake tree and execute the resulting
+binaries. They neither create an environment nor integrate a physical step.
+The line-search fixture accepts `--timing` for its optional regional comparison;
+the default invocation checks correctness only.
+Any reported timing is regional; it is not full-task throughput.
 
 The optional `flash_boxbox_replay_probe` and `_fp32` shared-library targets
 accept batches of frozen sizes, positions, rotation matrices and margins.

@@ -4317,6 +4317,7 @@ static __device__ real_t s07_tile_jv(int row, int begin, const real_t *tile, con
 // Consume the just-produced Dx output while it still resides in shared memory.
 // A cone crossing a tile boundary waits until its last row is available; only
 // its earlier (at most five) rows then need the global Jv mirror.
+template<bool FullJacobianProduct = false>
 static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const NewtonModelData &model,
                                                 const NewtonWorldData &world, const real_t *smooth_force,
                                                 int w, int i, int rows, int begin, const real_t *tile,
@@ -4325,7 +4326,8 @@ static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const New
                                                 const real_t *head_friction = nullptr) {
   int base = w * rows;
   const real_t *Jv = world.Jv + base;
-  real_t v = s07_tile_jv(i, begin, tile, Jv), j = world.jar[base + i], D = world.D[base + i];
+  real_t v = FullJacobianProduct ? tile[i] : s07_tile_jv(i, begin, tile, Jv);
+  real_t j = world.jar[base + i], D = world.D[base + i];
   real_t DJ0 = D * j;
   q[0] = j * DJ0;
   q[1] = v * DJ0;
@@ -4335,7 +4337,7 @@ static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const New
     int dim = head_dim && rank >= 0 ? head_dim[rank] : world.cone_dim[base + i];
     real_t mu = head_mu && rank >= 0 ? head_mu[rank] : world.cone_mu[base + i];
     for (int k = 1; k < dim; ++k) {
-      real_t jk = world.jar[base + i + k], vk = s07_tile_jv(i + k, begin, tile, Jv),
+      real_t jk = world.jar[base + i + k], vk = FullJacobianProduct ? tile[i + k] : s07_tile_jv(i + k, begin, tile, Jv),
              Dk = world.D[base + i + k];
       real_t DJk = Dk * jk;
       q[0] += jk * DJk;
@@ -4346,7 +4348,7 @@ static __device__ bool s07_quad_group_values_dx(unsigned char *shared, const New
     for (int k = 1; k < dim; ++k) {
       real_t f = head_friction && rank >= 0 ? head_friction[(k - 1) * rows + rank]
                                             : world.cone_friction[(base + i) * 5 + k - 1];
-      real_t U = world.jar[base + i + k] * f, V = s07_tile_jv(i + k, begin, tile, Jv) * f;
+      real_t U = world.jar[base + i + k] * f, V = (FullJacobianProduct ? tile[i + k] : s07_tile_jv(i + k, begin, tile, Jv)) * f;
       UU += U * U;
       UV += U * V;
       VV += V * V;
@@ -4808,6 +4810,63 @@ static __device__ void s07_continue_dx(unsigned char *shared, const NewtonModelD
     s07_finish_block(shared, model, world, smooth_force, w, REAL_C(0.0), niter, 5, REAL_C(1.0));
 }
 
+// Whole-row Jv publication before independent head-owned quadratic records.
+// The smooth-candidate residual in efc_b is dead after warm_init_jacvec; borrow
+// that world-local global plane until the next solve, without a new allocation.
+// Normal finite inputs need three CTA publications, rather than two per tile.
+// Do not expose speculative Jv/quad writes: exceptional inputs retry the
+// original tile path, retaining its exact ordered failure/publication prefix.
+#if FLASH_REAL_BITS == 64 && FLASH_NEWTON_NATIVE_GEMV
+static __device__ bool s07_full_products_block(unsigned char *shared,
+    const NewtonModelData &model, const NewtonWorldData &world,
+    const real_t *smooth_force) {
+  auto &ctl = newton_control(shared);
+  const int rows = ctl.count(), heads = world.constraint_head_count[0];
+  if (blockDim.x != 64 || rows < 64 || heads > 64)
+    return false;
+  constexpr int lanes = SubstepShape::nv <= 32 ? 8 : 16;
+  const int lane = int(threadIdx.x) % lanes;
+  const real_t *search = shared_at<real_t>(shared, NewtonLayout::search);
+  real_t *temporary = world.efc_b;
+  bool bad = false;
+  for (int row = int(threadIdx.x) / lanes; row < rows; row += int(blockDim.x) / lanes) {
+    real_t value = REAL_C(0.0);
+    for (int j = lane; j < SubstepShape::nv; j += lanes)
+      value += world.J[size_t(row) * SubstepShape::nv + j] * search[j];
+    value = gemv::row_sum<lanes>(value);
+    if (lane == 0) {
+      temporary[row] = value;
+      bad |= !isfinite(value);
+    }
+  }
+  if (__syncthreads_or(bad))
+    return false;
+  const bool owned = int(threadIdx.x) < heads;
+  const int row = owned ? world.constraint_head_rows[threadIdx.x] : -1;
+  real_t q[9];
+  bool valid = true;
+  int width = 0;
+  if (owned) {
+    width = world.efc_type[row] == 7 ? 9 : 3;
+    valid = world.efc_type[row] != 7 || world.cone_dim[row] >= 3;
+    if (valid)
+      valid = s07_quad_group_values_dx<true>(shared, model, world, smooth_force,
+          0, row, SubstepShape::rows, 0, temporary, q);
+  }
+  if (__syncthreads_or(!valid))
+    return false;
+  for (int r = threadIdx.x; r < rows; r += blockDim.x)
+    world.Jv[r] = temporary[r];
+  if (owned)
+    for (int k = 0; k < width; ++k)
+      world.quad[3 * row + k] = q[k];
+  if (threadIdx.x == 0)
+    ++world.blas_diagnostic[6];
+  __syncthreads();
+  return true;
+}
+#endif
+
 // The solve loop provides the final publication barrier after this call.
 static __device__ void search_kernel_blas_dx(unsigned char *shared, const NewtonModelData &model,
                                              const NewtonWorldData &world,
@@ -4824,10 +4883,15 @@ static __device__ void search_kernel_blas_dx(unsigned char *shared, const Newton
   real_t *workspace = shared_at<real_t>(shared, NewtonLayout::mathdx);
   {
     CF_NEWTON_PROFILE_SCOPE(SearchJacobian);
-    s07_jv_blas_dx(shared, model, world, smooth_force, 0, ctl.count(), SubstepShape::rows,
-        workspace, world.blas_diagnostic, true,
-        world.constraint_group_heads, world.constraint_head_rows,
-        world.constraint_tile_head_offset, nullptr, nullptr, nullptr);
+    bool complete = false;
+#if FLASH_REAL_BITS == 64 && FLASH_NEWTON_NATIVE_GEMV
+    complete = s07_full_products_block(shared, model, world, smooth_force);
+#endif
+    if (!complete)
+      s07_jv_blas_dx(shared, model, world, smooth_force, 0, ctl.count(), SubstepShape::rows,
+          workspace, world.blas_diagnostic, true,
+          world.constraint_group_heads, world.constraint_head_rows,
+          world.constraint_tile_head_offset, nullptr, nullptr, nullptr);
   }
   if (!ctl.s07_status()) {
     CF_NEWTON_PROFILE_SCOPE(SearchContinue);

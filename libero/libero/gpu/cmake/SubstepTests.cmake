@@ -24,6 +24,29 @@ function(flash_add_newton_cone_fixture suffix precision_bits mathdx_input mathdx
   endif()
 endfunction()
 
+function(flash_add_newton_line_fixture precision_bits mathdx_input mathdx_target)
+  set(source "${FLASH_GPU}/../../../tests/cuda/newton_linesearch_products_test.cu")
+  if(NOT precision_bits STREQUAL "64" OR NOT EXISTS "${source}")
+    return()
+  endif()
+  set(target flash_newton_linesearch_products_test)
+  add_executable(${target} EXCLUDE_FROM_ALL "${source}" ${mathdx_input}
+    $<TARGET_OBJECTS:flash_newton_atomic> $<TARGET_OBJECTS:flash_newton_transpose>
+    $<TARGET_OBJECTS:flash_newton_jacobian_cache>)
+  target_include_directories(${target} PRIVATE "${FLASH_STEP}")
+  target_compile_definitions(${target} PRIVATE ${ARGN})
+  target_compile_options(${target} PRIVATE --split-compile=3)
+  target_link_libraries(${target} PRIVATE flash_cuda_options)
+  add_dependencies(${target} ${mathdx_target})
+  set_target_properties(${target} PROPERTIES CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
+    CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
+  if(FLASH_GLOBAL_DEVICE_LTO)
+    target_link_options(${target} PRIVATE "$<DEVICE_LINK:-dlto>")
+    target_link_libraries(${target} PRIVATE "${FLASH_SOLVERDX}")
+  endif()
+endfunction()
+
 # Optional fixed-input diagnostics; normal products never depend on this target.
 function(flash_add_newton_replay_probe suffix precision_bits mathdx_input mathdx_target osc_input osc_target)
   set(source "${FLASH_GPU}/../../../tests/cuda/newton_replay_probe.cu")
@@ -32,10 +55,14 @@ function(flash_add_newton_replay_probe suffix precision_bits mathdx_input mathdx
   endif()
   flash_precision_suffix(${precision_bits} precision_suffix)
   set(target flash_newton_replay_probe${suffix}${precision_suffix})
-  add_library(${target} SHARED EXCLUDE_FROM_ALL "${source}" ${mathdx_input} ${osc_input}
-    $<TARGET_OBJECTS:flash_post_solver${precision_suffix}>
-    $<TARGET_OBJECTS:flash_osc_solver${precision_suffix}>
-    $<TARGET_OBJECTS:flash_controller_pipeline${precision_suffix}>
+  set(forward_inputs)
+  if(suffix STREQUAL "")
+    list(APPEND forward_inputs ${osc_input}
+      $<TARGET_OBJECTS:flash_post_solver${precision_suffix}>
+      $<TARGET_OBJECTS:flash_osc_solver${precision_suffix}>
+      $<TARGET_OBJECTS:flash_controller_pipeline${precision_suffix}>)
+  endif()
+  add_library(${target} SHARED EXCLUDE_FROM_ALL "${source}" ${mathdx_input} ${forward_inputs}
     $<TARGET_OBJECTS:flash_newton_solver${precision_suffix}${suffix}>
     $<TARGET_OBJECTS:flash_newton_atomic${precision_suffix}>
     $<TARGET_OBJECTS:flash_newton_transpose${precision_suffix}>
@@ -43,8 +70,14 @@ function(flash_add_newton_replay_probe suffix precision_bits mathdx_input mathdx
   target_include_directories(${target} PRIVATE "${FLASH_STEP}"
     "${FLASH_MATHDX_ROOT}/include" "${FLASH_MATHDX_ROOT}/external/cutlass/include")
   target_compile_definitions(${target} PRIVATE ${ARGN})
+  if(NOT suffix STREQUAL "")
+    target_compile_definitions(${target} PRIVATE FLASH_NEWTON_ONLY_PROBE=1)
+  endif()
   target_link_libraries(${target} PRIVATE flash_cuda_options${precision_suffix})
-  add_dependencies(${target} ${mathdx_target} ${osc_target})
+  add_dependencies(${target} ${mathdx_target})
+  if(suffix STREQUAL "")
+    add_dependencies(${target} ${osc_target})
+  endif()
   set_target_properties(${target} PROPERTIES CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real"
     CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
     JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
