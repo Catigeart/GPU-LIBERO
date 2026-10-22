@@ -81,7 +81,7 @@ class NativeBatchedPhysics:
 
     def prepare_fused_substep_graph(self, build_root, *, allow_compile=False,
                                     fast_compile=False, device_lto=False, profile_newton=False,
-                                    atomic_reductions=None, defer_post=True, single_solve=False):
+                                    atomic_reductions=None, defer_post=True, single_solve=False, staged=False):
         """Capture one readable fusion kernel per physical substep.
 
         Offline callers may permit compilation; ordinary execution loads only
@@ -91,6 +91,11 @@ class NativeBatchedPhysics:
         if self.debug or not self._graph_eligible():
             raise ValueError('substep fusion requires device-only sampling')
         from libero.gpu.host.runtime.step.fused_substep import FusedSubstep
+        if type(staged) is not bool:
+            raise TypeError('staged must be a bool')
+        if staged:
+            from libero.gpu.host.runtime.step.staged_substep import StagedSubstep
+            FusedSubstep = StagedSubstep
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,

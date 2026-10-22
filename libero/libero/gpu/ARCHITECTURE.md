@@ -108,6 +108,7 @@ not part of this project. The outer graph owns the substep sequence.
 | --- | --- | --- |
 | Component graph | Non-debug graph-eligible observer, no explicit substep fusion. | `NativeBatchedPhysics.prepare_control_graph` |
 | Single-substep CUDA graph | Explicit fusion API; only completed CMake products are loaded during normal execution. | `host/runtime/step/fused_substep.py::FusedSubstep`; `cuda/step/fused_substep.cu::fused_substep_kernel` |
+| Coarse FP64 staged graph | Explicit `prepare_substep_fusion(..., staged=True)`; optional decomposition baseline, 64 threads per world. | `host/runtime/step/staged_substep.py::StagedSubstep`; `cuda/step/staged_{forward,newton,post}.cu` |
 | Host/debug loop | Debug or observer needing host callbacks; captured borrows are discarded. | `NativeBatchedPhysics.enqueue_action`; `host/runtime/step/schedule.py` |
 | Position refresh | State/generation invalidation or suspended prefix; rebuild before resuming. | `FusedSubstep.enqueue_substep`; `cuda/runtime/position_reuse.cuh` |
 | Velocity/reference/bias reuse | Same physical substep, state epoch and position generation. New substep or prefix reentry invalidates readiness. | `cuda/step/fused_substep.cu::forward_dynamics` |
@@ -119,6 +120,56 @@ not part of this project. The outer graph owns the substep sequence.
 Normal qualified native fused execution performs 75 Newton solves, 50 factored mass
 solves and 3 complete Post evaluations per control step. Recovery and alternative
 observer/debug policies can do additional work.
+
+### Coarse FP64 decomposition
+
+The optional staged entry retains the native three-forward schedule. Within
+each forward it launches preparation, complete Newton, then Post/publication
+with the adjacent controller/check/Euler tail. An ordinary substep has nine
+region nodes. Prefix refresh and acceleration-reset continuations retain the
+existing conditional Graph callbacks, including mixed-world preservation.
+The outer Graph still sequences the physical substeps; this is not a fused
+25-substep kernel.
+
+`staged_forward.cu::staged_prepare_kernel` owns velocity, reference, bias,
+actuation, smooth acceleration and the Newton input bridge.
+`staged_newton.cu::staged_newton_kernel` calls the unchanged separately compiled
+`newton_solver.cu::solve_newton`. Its Hessian, factors, reductions, line search
+and warmstart stay within that kernel and keep the CPU2.3.7 mathematics.
+`staged_post.cu::staged_post_kernel` publishes the forward before executing its
+adjacent tail. There is no device-wide synchronization inside these kernels;
+stream/Graph dependencies order the regions.
+
+The original fused entry and staged entry share maintained numerical bodies
+in `substep_forward_math.cuh`, `substep_euler_math.cuh` and the
+`substep_forward_{prepare,newton,post}.cuh` helpers. `substep_tail.cuh` owns
+their common controller/check/reset/integration logic. None includes another
+kernel `.cu`, generates CUDA text at runtime or duplicates the numerical math.
+
+The private handoff uses two integers and NV FP64 values per world, allocated
+before capture and retained by `StagedSubstep`. Existing smooth force and
+acceleration owners bridge preparation to Newton. The private Newton qacc
+view is explicitly carried to Post because rejected/held solves need not
+publish canonical qacc. No Hessian or iterative solver state is spilled.
+The existing substep/Newton argument ABIs remain unchanged.
+
+All catalogue shapes have explicit CMake targets. Build the optional products
+offline in the existing build tree, together with their canonical fused binding
+and selector products:
+
+```bash
+python -m libero.gpu.host.build.substep_native --precision fp64 --staged \
+  --build-root /path/to/project/cmake-control --mathdx-root /path/to/mathdx \
+  --arch 80 --fast-compile
+```
+
+Then select `env.prepare_substep_fusion(build_root, fast_compile=True,
+staged=True, allow_compile=False)`. It requires native FP64, 64-thread SDK
+objects and the three-solve schedule. FP32, single-solve and fused profiling
+requests are rejected. The default fused entry is still available with
+`staged=False`; this option alone does not claim a performance improvement.
+The kernel-catalogue build does not qualify scene inputs; prepare native scenes
+through the normal `libero.gpu.build` entry as usual.
 
 ## Retained alternatives
 

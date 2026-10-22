@@ -1,0 +1,18 @@
+#pragma once
+#include "substep_kernel.cuh"
+
+namespace flash_libero {
+// Private handoff, allocated once before capture. The public substep/Newton
+// argument layouts and numerical workspaces retain their existing ABI.
+struct StagedSubstepArguments {
+  const SubstepArguments *arguments;
+  int *phase;                       // [world], -1 means suspended/completed
+  int *smooth_reuse_status;         // [world], dies at position suspension
+  real_t *qacc;                     // [world][NV], Newton-private Post input
+};
+static_assert(sizeof(StagedSubstepArguments) == 4 * sizeof(void *), "staged ABI");
+__global__ void staged_prepare_kernel(const StagedSubstepArguments *, SubstepEntry, int);
+__global__ void staged_newton_kernel(const StagedSubstepArguments *, int);
+__global__ void staged_post_kernel(const StagedSubstepArguments *, SubstepEntry, int, bool, bool, bool);
+__global__ void staged_reset_tail_kernel(const StagedSubstepArguments *);
+} // namespace flash_libero

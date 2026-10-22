@@ -115,6 +115,8 @@ class CudaFP32BatchEnv(GpuBatchEnv):
 
 
     def prepare_substep_fusion(self, build_root, **kwargs):
+        if kwargs.get('staged'):
+            raise ValueError('staged substeps require the native FP64 backend')
         if kwargs.get('profile_newton') or kwargs.get('device_lto'):
             raise ValueError('native substep instrumentation is not an MJWarp backend option')
         return self.runtime.prepare_control_graph()

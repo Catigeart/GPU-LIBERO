@@ -200,6 +200,8 @@ The authoritative source files are:
 | Source | Responsibility |
 | --- | --- |
 | `cuda/step/fused_substep.cu` | Single-substep orchestration, forward dynamics, controller entry and integration. |
+| `cuda/step/substep_forward_{math,prepare,newton,post}.cuh`, `substep_euler_math.cuh`, `substep_tail.cuh` | Numerical bodies and orchestration helpers shared by the fused and optional staged entries. |
+| `cuda/step/staged_{forward,newton,post}.cu`, `staged_launch.cu` | Optional coarse FP64 preparation / complete Newton / Post-tail kernels; see the [staged architecture and build instructions](ARCHITECTURE.md#coarse-fp64-decomposition). |
 | `cuda/control/controller_pipeline.cu` | Dimension-general gather, overlapping seed copies, solve scheduling and publication; ordered alias fallback. |
 | `cuda/control/osc_solver.cu` | Independently compiled fixed 7/6 OSC numerical body; collective success return. |
 | `host/runtime/step/controller_copy_plan.py` | Cold packet scheduling and all-world overlap/wiring proof. |

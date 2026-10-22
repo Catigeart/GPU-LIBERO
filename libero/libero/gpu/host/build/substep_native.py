@@ -95,24 +95,50 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
     return result
 
 
-def prepare_all(source, root, sdk, arch, **options):
+def prepare_staged(source, root, sdk, arch, **options):
+    """Explicit coarse FP64 product, sharing the existing CMake build tree."""
+    if scalar.bits != 64 or options.get('single_solve') or options.get('profile_newton'):
+        raise ValueError('staged substeps require FP64, three solves and no fused profiler')
+    manifest = prepare(source, root, sdk, arch, **options)
+    if manifest['config']['threads_per_world'] != 64:
+        raise ValueError('initial staged baseline requires 64-thread native SDK objects')
+    manifest['config'] = dict(manifest['config'], execution='staged-ABC')
+    manifest['translation_units'] += 2  # prepare/Newton/Post replace one fused object
+    manifest['target'] = manifest['target'].replace('flash_substep', 'flash_substep_staged', 1)
+    manifest['library'] = str(Path(manifest['library']).with_name(
+        Path(manifest['library']).name.replace('substep', 'substep_staged', 1)))
+    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
+    name = Path(manifest['library']).stem.replace('substep_staged', 'manifest-staged', 1) + '.json'
+    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    return manifest
+
+
+def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     """One offline target for the entire task catalogue; no per-task builds."""
     from .substep_catalog import variants
-    manifest = prepare(source, root, sdk, arch, **options)
+    manifest = (prepare_staged if staged else prepare)(source, root, sdk, arch, **options)
     profiled = manifest['config']['profile_newton']
     ordered = options.get('atomic_reductions') is False
     target = ('flash_substeps_ordered_profile_all' if profiled else 'flash_substeps_ordered_all') if ordered else (
         'flash_substeps_profile_all' if profiled else 'flash_substeps_all')
     if scalar.bits == 32:
         target += '_fp32'
+    if staged:
+        target = 'flash_staged_substeps_ordered_all' if ordered else 'flash_staged_substeps_all'
     manifest['target'] = target
     command = manifest['commands'][1]
     command[command.index('--target')+1] = target
     manifest['libraries'] = [str(Path(manifest['folder'])/(v.product(profiled)+('_fp32' if scalar.bits == 32 else '')+
                             ('_ordered' if ordered else '')+'.so')) for v in variants()]
-    manifest['translation_units'] = 4*len(variants()) + (7 if manifest['config']['atomic_reductions'] else 4)
+    if staged:
+        manifest['libraries'] = [str(Path(p).with_name(Path(p).name.replace('substep', 'substep_staged', 1)))
+                                 for p in manifest['libraries']]
+    manifest['translation_units'] = (8 if staged else 4)*len(variants()) + (7 if manifest['config']['atomic_reductions'] else 4)
     manifest['identity'] = hashlib.sha256((manifest['identity']+target).encode()).hexdigest()
     manifest_name = 'manifest-all' + ('-fp32' if scalar.bits == 32 else '') + ('-ordered' if ordered else '') + ('-profile' if profiled else '') + '.json'
+    if staged:
+        manifest_name = manifest_name.replace('manifest-all', 'manifest-staged-all')
     _write_changed(Path(manifest['folder'])/manifest_name,json.dumps(manifest,indent=2))
     return manifest
 
@@ -178,12 +204,14 @@ def main():
     parser.add_argument('--arch',type=int,default=80)
     parser.add_argument('--fast-compile',action='store_true')
     parser.add_argument('--profile-newton',action='store_true')
+    parser.add_argument('--staged',action='store_true',help='Build the optional coarse FP64 decomposition')
     parser.add_argument('--ordered-reductions',action='store_true',
                         help='Build the ordered comparison products alongside the default products')
     args = parser.parse_args()
     scalar.select(args.precision)
     source = Path(__file__).resolve().parents[2]/'cuda/step/fused_substep.cu'
     manifest = prepare_all(source,args.build_root,args.mathdx_root,args.arch,
+                           staged=args.staged,
                            fast_compile=args.fast_compile,profile_newton=args.profile_newton,
                            atomic_reductions=False if args.ordered_reductions else None)
     with compilation_scope(True):

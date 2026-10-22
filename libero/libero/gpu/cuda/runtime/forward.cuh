@@ -4,19 +4,19 @@
 #include <stdint.h>
 #include <math.h>
 namespace forward_cuda {
-__device__ void increment(int w,const int* mask,const int* first,int64_t* expected) {
+static __device__ inline void increment(int w,const int* mask,const int* first,int64_t* expected) {
     if(mask[w]==1 && first[w]==0) ++expected[w];
 }
-__device__ void collision_mask(int w,const int* active,const int* valid,
+static __device__ inline void collision_mask(int w,const int* active,const int* valid,
     const int64_t* written,const int64_t* expected,const int* first,int* result) {
     result[w]=active[w]==1 && valid[w]==1 && written[w]==expected[w] && first[w]==0;
 }
-__device__ void reference_mask(int w,const int* valid,const int64_t* written,
+static __device__ inline void reference_mask(int w,const int* valid,const int64_t* written,
     const int64_t* expected,const int* first,int* active) {
     if(valid[w]!=1 || written[w]!=expected[w] || first[w]!=0) active[w]=0;
 }
-__device__ void invalidate(int w,int* valid) { valid[w]=0; }
-__device__ void publish(int w,const int* active,const int* nvalid,const int* nerror,
+static __device__ inline void invalidate(int w,int* valid) { valid[w]=0; }
+static __device__ inline void publish(int w,const int* active,const int* nvalid,const int* nerror,
     const int* first,const int* projection,const int64_t* source,const int64_t* state,
     int* valid,int64_t* written,int* error) {
     valid[w]=0; error[w]=first[w];
@@ -26,7 +26,7 @@ __device__ void publish(int w,const int* active,const int* nvalid,const int* ner
         written[w]=source[w]; valid[w]=1;
     }
 }
-__device__ void begin(int w,const int* mask,int* error,const int64_t* state,
+static __device__ inline void begin(int w,const int* mask,int* error,const int64_t* state,
     int64_t* source,int64_t* epoch,int* active,int* position,int* velocity,
     int* bias,int* smooth,int64_t* expected) {
     active[w]=0;
@@ -39,13 +39,13 @@ __device__ void begin(int w,const int* mask,int* error,const int64_t* state,
     }
     increment(w,mask,error,expected);
 }
-__device__ void newton_mask(int w,const int* active,const int* first,
+static __device__ inline void newton_mask(int w,const int* active,const int* first,
     const int* smooth,const int* reference,const int* status,int* admitted,int* error) {
     admitted[w]=0; error[w]=first[w];
     if(!error[w]) error[w]=status[w];
     if(active[w]==1 && !error[w] && smooth[w]==1 && reference[w]==1) admitted[w]=1;
 }
-__device__ void counts(int w,const int* admitted,const int* source,const int* source_ncon,
+static __device__ inline void counts(int w,const int* admitted,const int* source,const int* source_ncon,
     int* nefc,int* ne,int* nf,int* ncon,int* count,int* empty,int* newton,int* active,
     int* status,int* item,int rows,int contacts,int nv) {
     nefc[w]=ne[w]=nf[w]=ncon[w]=count[w]=0;
@@ -65,7 +65,7 @@ __device__ void counts(int w,const int* admitted,const int* source,const int* so
     else if(nc<0 || nc>contacts) bad=5;
     if(bad>=0) { status[w]=9001; item[w]=bad; }
 }
-__device__ void cone_heads(int w,const int* admitted,const int* nefc,const int* ne,
+static __device__ inline void cone_heads(int w,const int* admitted,const int* nefc,const int* ne,
     const int* nf,const int* ncon,const int* type,const int* id,const int* dim,
     const real_t* mu,const real_t* friction,int* cone_dim,real_t* cone_mu,
     real_t* cone_friction,int* status,int* item,int rows,int contacts) {
@@ -111,7 +111,7 @@ __device__ void cone_heads(int w,const int* admitted,const int* nefc,const int* 
     }
 }
 // Foundation gates retain private singleton protocol indices and public world.
-__device__ void gate_copy(int w,const int* admission,const int* count,
+static __device__ inline void gate_copy(int w,const int* admission,const int* count,
     const int64_t* epoch,const int64_t* expected,const int* producer_valid,
     const int64_t* event,int* errors,int* stage_out,int* local_out,int* item_out,
     int64_t* event_out,int* active,int* valid,int capacity,int stage,
