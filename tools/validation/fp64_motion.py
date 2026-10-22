@@ -19,6 +19,9 @@ def add_arguments(p):
     p.add_argument('--producer', choices=('motion', 'force'), default='motion')
     p.add_argument('--baseline-motion', action='store_true',
                    help='compare force replacement against a frozen motion product')
+    p.add_argument('--baseline-force', action='store_true',
+                   help='compare against a frozen accepted force product')
+    p.add_argument('--baseline-force-threads', type=int, default=256, choices=(64,128,256))
     p.add_argument('--prior-force', type=Path,
                    help='optional frozen producer for same-input local tuning')
     p.add_argument('--threads', type=int, nargs='+',
@@ -78,6 +81,8 @@ def main(args):
     from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
     from libero.gpu.host.runtime.step.peeled_force import PeeledForceSubstep
     from libero.gpu.host.runtime.step.physics import _reference_mask
+    if args.baseline_motion and args.baseline_force:
+        raise ValueError('select one frozen baseline kind')
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
     path=args.output/f'task{args.task:02d}.json'
@@ -106,14 +111,28 @@ def main(args):
                 env.runtime.euler.qacc_warmstart.assign(ep['qacc_warmstart'])
             else:env.reset(seed=0)
             env._physics.stage_action(np.tile([.02,-.015,.01,.005,-.003,.002,.1],(2,1)))
-            baseline_class=PeeledMotionSubstep if args.baseline_motion else FusedSubstep
+            baseline_class=PeeledForceSubstep if args.baseline_force else (
+                PeeledMotionSubstep if args.baseline_motion else FusedSubstep)
             base=baseline_class(env.runtime,args.build_root/'cmake-control',allow_build=False,fast_compile=True)
+            if args.baseline_force:base.force_threads=args.baseline_force_threads
             old=ct.CDLL(str(args.baseline.resolve()))
-            size=getattr(old,'flash_libero_motion_arguments_size' if args.baseline_motion
-                         else 'flash_libero_substep_arguments_size');size.restype=ct.c_size_t
+            prefix='force' if args.baseline_force else 'motion' if args.baseline_motion else 'substep'
+            size=getattr(old,'flash_libero_'+prefix+'_arguments_size');size.restype=ct.c_size_t
             assert size()==ct.sizeof(base.arguments)
+            if prefix in ('motion','force'):
+                if getattr(old,'flash_libero_'+prefix+'_nv')()!=base.variant.nv:
+                    raise ValueError('frozen baseline NV differs')
+            elif old.flash_libero_substep_dimension(0)!=base.variant.nv:
+                raise ValueError('frozen baseline NV differs')
             base.library=old
-            if args.baseline_motion:
+            if args.baseline_force:
+                configure=old.flash_libero_force_configure;configure.argtypes=[ct.c_void_p]*3
+                values=[(ct.c_int*2)() for _ in range(3)]
+                with wp.ScopedDevice(env.stream.device):assert configure(*values)==0
+                base.launch_force_substep=old.flash_libero_launch_force_substep
+                base.launch_force_substep.argtypes=[ct.c_void_p]*4+[ct.c_int]*6+[ct.c_void_p]
+                base.launch_force_substep.restype=ct.c_int
+            elif args.baseline_motion:
                 configure=old.flash_libero_motion_configure;configure.argtypes=[ct.c_void_p]*3
                 values=[(ct.c_int*2)() for _ in range(3)]
                 with wp.ScopedDevice(env.stream.device):assert configure(*values)==0
@@ -353,9 +372,12 @@ def main(args):
                     work={k:(final_counts[k]-initial_counts[k]).tolist() for k in final_counts if k!='error'}
                     work['final_error']=final_counts['error'].tolist()
                     if args.producer=='force':
-                        work['force_ready']=candidate.force_ready.numpy().tolist()
+                        implementation=base if name=='baseline' else candidate
+                        handoff=getattr(implementation,'force_ready',None)
+                        work['force_ready']=handoff.numpy().tolist() if handoff is not None else None
                         if name=='candidate' and candidate.force_threads:
-                            assert work['force_ready']==[1,1],work
+                            expected=2 if candidate.resources.get('force_after_controller') else 1
+                            assert work['force_ready']==[expected,expected],work
                     report['performance_work'][name]=work
                     assert work['integrated']==[25*env.runtime.substeps]*2,work
                     assert not np.any(final_counts['error']),work

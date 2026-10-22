@@ -3,6 +3,7 @@
 #include "fp64_actuation_solve.cuh"
 #include "newton_shared_layout.cuh"
 using namespace flash_libero;
+extern "C" int flash_libero_force_handoff_version() { return 2; }
 extern "C" size_t flash_libero_force_arguments_size() { return sizeof(SubstepArguments); }
 extern "C" int flash_libero_force_nv() { return SubstepShape::nv; }
 extern "C" int flash_libero_force_configure(int *regs, int *shared, int *local) {

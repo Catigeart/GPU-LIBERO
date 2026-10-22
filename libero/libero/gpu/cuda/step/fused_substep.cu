@@ -88,16 +88,16 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
 // A block-wide return always occurs after a barrier and a world-uniform predicate.
 #if defined(FLASH_FP64_ACTUATION_SOLVE)
 __global__ void force_residual_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
-    SubstepEntry entry, bool publish_post, const int *motion_prepared, const int *force_prepared) {
+    SubstepEntry entry, bool publish_post, const int *motion_prepared, int *force_prepared) {
 #elif defined(FLASH_FP64_MOTION_PASSIVE)
 __global__ void motion_residual_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
                                        SubstepEntry entry, bool publish_post, const int *motion_prepared) {
-  const int *force_prepared = nullptr;
+  int *force_prepared = nullptr;
 #else
 __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
                                      SubstepEntry entry, bool publish_post) {
   const int *motion_prepared = nullptr;
-  const int *force_prepared = nullptr;
+  int *force_prepared = nullptr;
 #endif
   const auto &args = *arguments;
   auto *shared = substep_shared_data();
@@ -163,6 +163,17 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
         args.continuation[world] = int(SubstepEntry::PhysicsPosition);
       return;
     }
+#if defined(FLASH_FP64_ACTUATION_SOLVE)
+    // Checks have completed and position is current. OSC's shared lifetime is
+    // over; current ctrl can produce directly into the next smooth arena.
+    if (force_prepared) {
+      const bool produced = prepare_fp64_force(args,world,motion_prepared,
+          shared_at<real_t>(shared,SmoothLayout::scalar_force),
+          shared_at<real_t>(shared,SmoothLayout::force),
+          shared_at<real_t>(shared,SmoothLayout::acceleration));
+      if (threadIdx.x == 0) force_prepared[world] = produced ? 2 : 0;
+    }
+#endif
   }
 
   if (entry != SubstepEntry::AccelerationReset) {
@@ -171,7 +182,7 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // mj_forward/mj_step. Every forward still solves Newton and publishes qacc.
     forward_dynamics(args, world, shared, publish_post, -1,
         entry == SubstepEntry::PhysicsPosition ? motion_prepared : nullptr,
-        entry == SubstepEntry::PhysicsPosition ? force_prepared : nullptr);
+        force_prepared);
   }
   finish_substep(args, world, entry);
 }

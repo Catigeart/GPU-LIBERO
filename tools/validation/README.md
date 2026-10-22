@@ -1165,3 +1165,10 @@ have produced both worlds' force handoffs. `--threads` limits variants when
 producer mathematics is unchanged. `--prior-force SO` optionally compares a
 frozen producer on the same held inputs for local tuning. These options retain
 the same no-runtime-compilation and N=2-first policy.
+
+`--baseline-force --baseline-force-threads N` instead binds an explicitly frozen
+accepted force product after ABI/NV checks, allowing an incremental comparison.
+The current healthy path must finish with handoff 2: after-controller force
+outputs are resident in the residual kernel's shared arena. A version-1 frozen
+baseline retains its original handoff 1 and launch implementation. Frozen
+products are diagnostic inputs and are never used for ordinary product loading.

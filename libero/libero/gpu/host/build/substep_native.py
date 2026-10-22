@@ -140,7 +140,7 @@ def prepare_force(source, root, sdk, arch, **options):
     """Motion plus the first-entry FP64 actuation/smooth producer."""
     manifest = prepare_motion(source, root, sdk, arch, **options)
     manifest['config'] = dict(manifest['config'], execution='force-residual',
-        force_organization='fp32-dof-owned-fp64', force_schedule='entry-first')
+        force_organization='fp32-dof-owned-fp64', force_schedule='entry-reuse-controller')
     manifest['translation_units'] += 1
     manifest['target'] = manifest['target'].replace('flash_substep_motion', 'flash_substep_force', 1)
     manifest['library'] = str(Path(manifest['library']).with_name(

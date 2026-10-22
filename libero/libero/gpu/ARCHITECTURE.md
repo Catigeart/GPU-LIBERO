@@ -143,8 +143,14 @@ duplicate transmission dot; original transmission admission still runs.
 The first forward admits the private force outputs at the original point.
 The next forward may reuse the successful producer while ctrl is unchanged;
 the existing public smooth cache retains precedence and factor-reuse counts.
-After the controller changes ctrl, the final forward still uses native force
-preparation. Every Newton call and warmstart update remains. BADCTRL and other
+After the controller changes ctrl and position/velocity checks complete,
+`force_residual_kernel` calls `prepare_fp64_force` from that same CUDA source.
+The expired OSC shared arena holds its scalar forces, smooth RHS and acceleration;
+the next forward consumes those cells directly on a valid prefix reuse. This
+adds no global launch. A cold preparation can instead read the complete private
+global work view. Handoff states 0/1/2 mean fallback/global/resident, and the
+loader checks version 2 of this handoff contract. Every Newton call and warmstart
+update remains. BADCTRL and other
 exceptions use the native implementation with its per-invocation warnings.
 `force_threads` accepts 64/128/256 or 0 to disable force production; disabling
 motion also disables this dependent producer. Unsupported extents and unusual

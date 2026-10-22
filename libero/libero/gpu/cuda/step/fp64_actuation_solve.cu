@@ -12,13 +12,9 @@
 #include <cmath>
 
 namespace flash_libero {
-__global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
-    const SubstepArguments *arguments, const int *motion_ready, int *ready,
-    SubstepEntry entry) {
-  const auto &a = *arguments;
-  const int w = blockIdx.y, lane = threadIdx.x;
-  if (lane == 0) ready[w] = 0;
-  if (entry != SubstepEntry::Start && a.continuation[w] != int(entry)) return;
+__device__ bool prepare_fp64_force(const SubstepArguments &a, int w,
+    const int *motion_ready, double *scalar_force, double *force, double *acceleration) {
+  const int lane = threadIdx.x;
   const auto &u = a.actuation;
   const auto &s = a.smooth_acceleration;
   const int nv = s.nv, nu = u.nu, nb = s.nbody;
@@ -30,9 +26,8 @@ __global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
       s.count[w] != 1 || s.body_count[w] != nb - 1 ||
       s.position_valid[w] != 1 || s.position_written[w] != s.forward_epoch[w] ||
       s.source_active[w] != 1 ||
-      (s.source_status[w] != 0 && s.source_status[w] != 5)) return;
+      (s.source_status[w] != 0 && s.source_status[w] != 5)) return false;
 
-  __shared__ double scalar_force[32], force[128], acceleration[128];
   __shared__ unsigned present[2];
   const size_t v = size_t(w) * nv, m = size_t(w) * s.nm, act = size_t(w) * nu;
   const double *control = a.control_copy.source + act;
@@ -94,7 +89,7 @@ __global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
     scalar_force[lane] = value;
     bad |= !isfinite(value) || !isfinite(velocity) || !isfinite(before_limit);
   }
-  if (__syncthreads_or(bad)) return;
+  if (__syncthreads_or(bad)) return false;
 
   // The producer owns its actuator sum, smooth RHS and projected external
   // wrench. Body order and force-then-torque additions follow mj_xfrcAccumulate.
@@ -130,9 +125,9 @@ __global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
     s.smooth[v + d] = s.seed[v + d] = initial;
     force[d] = rhs;
   }
-  if (__syncthreads_or(bad)) return;
+  if (__syncthreads_or(bad)) return false;
   if (!forward_mass::solve(force, acceleration, s.source_ld + m,
-      s.source_inv + v, s.madr, s.parent, a.forward_workspace.mass_plan)) return;
+      s.source_inv + v, s.madr, s.parent, a.forward_workspace.mass_plan)) return false;
 
   // Retain established private work views. Only the residual's original gate
   // may publish smooth/acceleration or increment the admitted reuse counter.
@@ -163,7 +158,20 @@ __global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
     s.warning_count[w] = s.source_warning_count[w];
     s.warning_last[w] = s.source_warning_last[w];
     s.status[w] = s.source_warning_count[w] ? 25 : 0;
-    ready[w] = 1;
   }
+  __syncthreads(); // close private stores before an in-kernel consumer
+  return true;
+}
+
+__global__ __launch_bounds__(256) void fp64_actuation_solve_kernel(
+    const SubstepArguments *arguments, const int *motion_ready, int *ready,
+    SubstepEntry entry) {
+  const int w = blockIdx.y;
+  if (threadIdx.x == 0) ready[w] = 0;
+  if (entry != SubstepEntry::Start && arguments->continuation[w] != int(entry)) return;
+  __shared__ double scalar_force[32], force[128], acceleration[128];
+  const bool produced = prepare_fp64_force(*arguments,w,motion_ready,
+                                         scalar_force,force,acceleration);
+  if (threadIdx.x == 0) ready[w] = produced ? 1 : 0;
 }
 } // namespace flash_libero

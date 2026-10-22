@@ -56,7 +56,7 @@ class StagedProductTests(unittest.TestCase):
             self.assertEqual(force['folder'], fused['folder'])
             self.assertEqual(force['target'], 'flash_substep_force_nv57')
             self.assertEqual(force['config']['solves_per_substep'], 3)
-            self.assertEqual(force['config']['force_schedule'], 'entry-first')
+            self.assertEqual(force['config']['force_schedule'], 'entry-reuse-controller')
             self.assertFalse(force['source_generation'])
 
     def test_staged_product_has_its_own_identity_and_reuses_build_tree(self):

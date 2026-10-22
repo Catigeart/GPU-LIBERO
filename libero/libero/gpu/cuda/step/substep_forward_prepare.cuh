@@ -139,7 +139,8 @@ __device__ __forceinline__ void prepare_solver_inputs(const SubstepArguments &ar
       physics_force::d_copy_admitted_block(world, in.gate, in.source, in.target, in.width);
     }
     __syncthreads();
-    const bool prepared_force = force_prepared && force_prepared[world] == 1 &&
+    const int force_state = force_prepared ? force_prepared[world] : 0;
+    const bool prepared_force = (force_state == 1 || force_state == 2) &&
         args.actuation_gate.gate[world] == 1 && args.actuation.active[world] == 1 &&
         args.actuation.vel_status[world] == 0;
     if (!prepared_force) {
@@ -178,10 +179,14 @@ __device__ __forceinline__ void prepare_solver_inputs(const SubstepArguments &ar
       } else if (prepared_force && in.active[world] == 1 && args.smooth_gate.gate[world] == 1) {
         real_t *force = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::force);
         real_t *acc = flash_libero::shared_at<real_t>(shared, flash_libero::SmoothLayout::acceleration);
-        for (int i = threadIdx.x; i < in.nv; i += blockDim.x) {
-          force[i] = in.qfrc[size_t(world) * in.nv + i];
-          acc[i] = in.qacc_smooth[size_t(world) * in.nv + i];
-        }
+        // State 2 already owns these shared cells after the controller.
+        // An unexpected cold preparation may reuse the arena; its complete
+        // global work view remains the safe source in that case.
+        if (force_state != 2 || !reuse)
+          for (int i = threadIdx.x; i < in.nv; i += blockDim.x) {
+            force[i] = in.qfrc[size_t(world) * in.nv + i];
+            acc[i] = in.qacc_smooth[size_t(world) * in.nv + i];
+          }
         if (threadIdx.x == 0) ++in.factor_reuse_count[world];
       } else {
         physics_force::d_smooth_chain(

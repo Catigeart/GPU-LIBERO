@@ -18,6 +18,8 @@ class PeeledForceSubstep(PeeledMotionSubstep):
             ('fast_compile', 'device_lto', 'atomic_reductions') if k in options})
         self.manifest = substep_native.finish(manifest, allow_build=options.get('allow_build', False))
         self.library = lib = ct.CDLL(self.manifest['library'])
+        if lib.flash_libero_force_handoff_version()!=2:
+            raise RuntimeError('force handoff ABI differs; rebuild offline')
         lib.flash_libero_force_arguments_size.restype = ct.c_size_t
         if (lib.flash_libero_force_arguments_size() != ct.sizeof(self.arguments) or
                 lib.flash_libero_force_nv() != self.variant.nv):
@@ -63,6 +65,7 @@ class PeeledForceSubstep(PeeledMotionSubstep):
         self.launch_force_substep.restype = ct.c_int
         self.resources = dict(self.resources, execution='force-residual',
             force_eligible=self.force_eligible, force_threads=self.force_threads,
+            force_after_controller=True, controller_force_threads=64,
             handoff_bytes_per_world=8, force_resources={name:dict(registers=regs[i],
                 static_shared_bytes=shared[i],local_bytes_per_thread=local[i])
                 for i,name in enumerate(('actuation_solve','residual'))})
