@@ -33,7 +33,7 @@ template<bool Private> __global__ void replay(BodyReplay a) {
 extern "C" size_t flash_body_replay_size(){return sizeof(BodyReplay);}
 extern "C" int flash_body_replay_launch(const BodyReplay *a,int worlds,int candidate,
  int threads,cudaStream_t stream) {
- if(!a||worlds<1||a->nb>64||(threads!=64&&threads!=128&&threads!=256))
+ if(!a||worlds<1||a->nb>64||a->nj>64||(threads!=64&&threads!=128&&threads!=256))
   return int(cudaErrorInvalidValue);
  if(candidate)replay<true><<<dim3(1,worlds),threads,0,stream>>>(*a);
  else replay<false><<<dim3(1,worlds),threads,0,stream>>>(*a);

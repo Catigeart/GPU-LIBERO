@@ -213,7 +213,7 @@ def _dataflow_stages(d):
     return stages
 
 
-def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
+def _dataflow_source(d,*,bounds_cache=None,cooperative_prefix=False):
     """Bind world slices into one handwritten block dataflow orchestrator.
 
     The generator performs no mathematical rewriting. It substitutes shared
@@ -225,7 +225,7 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
     nq,nb,nj,nm=b.static.nq,b.static.nb,b.static.nj,b.static.nm
     nv,nM=m.nv,m.nM
     intervals=None
-    if subtree_mass and _topology(p)['qualified']:
+    if cooperative_prefix and _topology(p)['qualified']:
         from libero.gpu.model.topology import contiguous_subtree_sizes
         intervals=contiguous_subtree_sizes(p.compos.parent.numpy())
     geom_shared=3*f.ngeom if bounds_cache else 0
@@ -376,14 +376,14 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
         native_dimensions=dict(nq=nq,nbody=nb,njnt=nj,nmocap=nm,nv=nv,nM=nM))
 
 
-def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cache=None,subtree_mass=None):
+def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cache=None,cooperative_prefix=None):
     if dataflow_profile not in ('compatible','fast'):
         raise ValueError('position dataflow profile must be compatible or fast')
-    if subtree_mass is None:
-        subtree_mass=dataflow_profile=='fast' and scalar.bits==64
-    if type(subtree_mass) is not bool or subtree_mass and scalar.bits!=64:
-        raise ValueError('subtree_mass must be bool and requires FP64 when enabled')
-    source,values,specs,workspace=_dataflow_source(d,bounds_cache=bounds_cache,subtree_mass=subtree_mass)
+    if cooperative_prefix is None:
+        cooperative_prefix=dataflow_profile=='fast' and scalar.bits==64
+    if type(cooperative_prefix) is not bool or cooperative_prefix and scalar.bits!=64:
+        raise ValueError('cooperative_prefix must be bool and requires FP64 when enabled')
+    source,values,specs,workspace=_dataflow_source(d,bounds_cache=bounds_cache,cooperative_prefix=cooperative_prefix)
     # Geometry frames and durable publication have independent owners. More
     # warps hide their memory latency; small/compatible cases keep the default.
     original_threads=128 if dataflow_profile=='fast' and d.position.frames.ngeom>=128 else 64
@@ -408,7 +408,7 @@ def create_dataflow_plan(d,build_root,*,dataflow_profile='compatible',bounds_cac
     return plan
 
 
-def install_dataflow(bundle,build_root,*,dataflow_profile='compatible',subtree_mass=None):
+def install_dataflow(bundle,build_root,*,dataflow_profile='compatible',cooperative_prefix=None):
     """Explicit dataflow candidate; legacy install remains the comparison route."""
     d=bundle.dynamics
     bounds_cache=None
@@ -427,7 +427,7 @@ def install_dataflow(bundle,build_root,*,dataflow_profile='compatible',subtree_m
             from .collision import prepare_bounds_cache
             bounds_cache=prepare_bounds_cache(ws,d)
     plan=create_dataflow_plan(d,build_root,dataflow_profile=dataflow_profile,bounds_cache=bounds_cache,
-                              subtree_mass=subtree_mass)
+                              cooperative_prefix=cooperative_prefix)
     position_hold,snapshot=_create_position_snapshot_plan(d,Path(build_root)/'snapshot')
     if temporal_bounds:
         plan.manifest['geometry_consumer']='fresh geom pose -> C temporal bounds; F PCA bounds producer omitted after cold admission'

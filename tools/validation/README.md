@@ -1231,3 +1231,30 @@ staged/force selector retains the measured neutral controller separation.
 `controller_pipeline.cu`, then performs the original checks and next-forward
 admission through `substep_controller_tail.cuh`. FP32 and FP64 continue to use
 one `osc_solver.cu` numerical source. There is no new controller algorithm.
+
+
+`fp64-motion --suite SUITE --task INDEX` selects any of the five task suites.
+`--catalogue-screen` reuses the separately completed regional malformed-input
+qualification, runs the ordinary composition check and one 5-warmup/20-control
+comparison, and checks the continuing 625-substep endpoint. The longer endpoint
+uses a relative `1e-7 * (1 + reference scale)` investigation screen; the existing
+20-substep composition bound remains `1e-9`. A failed screen is recorded and
+must be investigated, not silently dropped. Initialization, reset and graph
+capture are recorded separately. Snapshot copies use pinned CPU owners and
+remain outside CUDA timing events. These measurements cover the physical
+control graph, not public observation/task-predicate wall time.
+
+`--baseline-prefix DIRECTORY` additionally selects an explicitly frozen complete
+position-prefix catalogue for each captured implementation. The validation-only
+`fp64_prefix.py::PrefixVersions` matches the complete binding wrapper after
+undoing the known algorithm-selector literals, verifies binary identity and
+parameter/shared-arena ABI, and rejects missing or ambiguous matches. It never
+supplies libraries to ordinary environment construction. Use this when changing
+the position prefix: sharing the new prefix between both timed implementations
+would omit that change from the comparison. A frozen controller/Euler/init chain
+also requires `--baseline-aligned --baseline-euler --baseline-controller`.
+
+Optional targets `flash_position_mass_replay_probe`,
+`flash_transmission_replay_probe` and `flash_body_replay_probe` exercise the actual
+production bodies against externally stored CPU/model fixtures. They do not
+contain a second reference implementation or depend on environment construction.

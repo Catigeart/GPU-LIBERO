@@ -202,12 +202,14 @@ def main(args):
         faulthandler.cancel_dump_traceback_later()
         report['construction_s']=time.perf_counter()-tick
         try:
+            reset_tick=time.perf_counter()
             if args.state:
                 with np.load(args.state) as z:
                     ep={k:z['candidate.'+k].copy() for k in ('qpos','qvel','time','qacc_warmstart')}
                 env.reset(seed=0,init_states=np.column_stack((ep['time'],ep['qpos'],ep['qvel'])))
                 env.runtime.euler.qacc_warmstart.assign(ep['qacc_warmstart'])
             else:env.reset(seed=0)
+            report['reset_s']=time.perf_counter()-reset_tick
             env._physics.stage_action(np.tile([.02,-.015,.01,.005,-.003,.002,.1],(2,1)))
             baseline_class=PeeledForceSubstep if args.baseline_force else (
                 PeeledMotionSubstep if args.baseline_motion else FusedSubstep)
@@ -499,14 +501,17 @@ def main(args):
                 event('substeps_passed',case=case,max_abs=max(x['max_abs'] for x in checks))
             if args.performance:
                 restore(seed);graphs={};device_states={};initial_counts=counters()
+                report['control_graph_capture_s']={}
                 for name,x in (('baseline',base),('candidate',candidate)):
                     select_prefix(name)
                     x.arguments=type(x.arguments).from_buffer_copy(original[name])
                     x.device_arguments.assign(np.frombuffer(bytes(x.arguments),np.uint8).copy())
+                    capture_tick=time.perf_counter()
                     with wp.ScopedCapture(stream=env.stream) as cap:
                         for sub in range(env.runtime.substeps):
                             x._enqueue(sub==0,sub==env.runtime.substeps-1)
                     graphs[name]=cap.graph
+                    report['control_graph_capture_s'][name]=time.perf_counter()-capture_tick
                     restore(seed)
                     for _ in range(5):wp.capture_launch(cap.graph,stream=env.stream)
                     if args.host_state:

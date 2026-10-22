@@ -349,7 +349,7 @@ body(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, real
      real_t *body_norm_before, int *body_route, int *joint_route, int *body_mat_identity,
      int *joint_rot_identity, int *hinge_zero, int *offcenter_rot_identity, real_t *trig_arg,
      real_t *trig_sin, real_t *trig_cos, int *norm_branch, int *mocap_branch, int *body_norm_branch,
-     bool initialize_only = false) {
+     bool initialize_only = false, bool precleared = false) {
   qpos += w * nq;
   qtmp += w * nq;
   mocap_pos += w * nm * 3;
@@ -383,39 +383,41 @@ body(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid, real
   body_norm_branch += w * nb;
   // Every owned field is cleared even on an inactive world. Caller normalization commits only on
   // success.
-  zero(xpos, nb * 3);
-  zero(xquat, nb * 4);
-  zero(xmat, nb * 9);
-  zero(xanchor, nj * 3);
-  zero(xaxis, nj * 3);
-  zero(qtmp, nq);
-  zero(mqtmp, nm * 4);
-  zero(world_xipos, 3);
-  zero(world_ximat, 9);
-  if constexpr (body_diagnostics) {
-    zero(norm_before, nj);
-    zero(mocap_before, nm);
-    zero(pre_pos, nb * 3);
-    zero(pre_quat, nb * 4);
-    zero(joint_pos, nj * 3);
-    zero(joint_quat, nj * 4);
-    zero(body_norm_before, nb);
-    zero(trig_arg, nj);
-    zero(trig_sin, nj);
-    zero(trig_cos, nj);
+  if (!precleared) {
+    zero(xpos, nb * 3);
+    zero(xquat, nb * 4);
+    zero(xmat, nb * 9);
+    zero(xanchor, nj * 3);
+    zero(xaxis, nj * 3);
+    zero(qtmp, nq);
+    zero(mqtmp, nm * 4);
+    zero(world_xipos, 3);
+    zero(world_ximat, 9);
+    if constexpr (body_diagnostics) {
+      zero(norm_before, nj);
+      zero(mocap_before, nm);
+      zero(pre_pos, nb * 3);
+      zero(pre_quat, nb * 4);
+      zero(joint_pos, nj * 3);
+      zero(joint_quat, nj * 4);
+      zero(body_norm_before, nb);
+      zero(trig_arg, nj);
+      zero(trig_sin, nj);
+      zero(trig_cos, nj);
+    }
+    for (int i = 0; i < nb; ++i) {
+      body_norm_branch[i] = 0;
+      if constexpr (body_diagnostics)
+        body_route[i] = body_mat_identity[i] = 0;
+    }
+    for (int i = 0; i < nj; ++i)
+      if constexpr (body_diagnostics)
+        joint_route[i] = joint_rot_identity[i] = hinge_zero[i] = offcenter_rot_identity[i] =
+            norm_branch[i] = 0;
+    for (int i = 0; i < nm; ++i)
+      if constexpr (body_diagnostics)
+        mocap_branch[i] = 0;
   }
-  for (int i = 0; i < nb; ++i) {
-    body_norm_branch[i] = 0;
-    if constexpr (body_diagnostics)
-      body_route[i] = body_mat_identity[i] = 0;
-  }
-  for (int i = 0; i < nj; ++i)
-    if constexpr (body_diagnostics)
-      joint_route[i] = joint_rot_identity[i] = hinge_zero[i] = offcenter_rot_identity[i] =
-          norm_branch[i] = 0;
-  for (int i = 0; i < nm; ++i)
-    if constexpr (body_diagnostics)
-      mocap_branch[i] = 0;
   status[w] = 0;
   if (active[w] == 0)
     return;
@@ -601,13 +603,27 @@ body_block(int w, real_t *qpos0, int *parent, int *jnum, int *jadr, int *mocapid
            int *offcenter_rot_identity, real_t *trig_arg, real_t *trig_sin, real_t *trig_cos,
            int *norm_branch, int *mocap_branch, int *body_norm_branch, const int *level_offsets,
            const int *level_bodies, int level_count, bool private_paths=false, real_t *joint_trig=nullptr) {
+  const bool cooperative_clear=private_paths && !body_diagnostics;
+  if (cooperative_clear) {
+    libero_vec::fill_block(xpos+w*nb*3,nb*3,REAL_C(0));
+    libero_vec::fill_block(xquat+w*nb*4,nb*4,REAL_C(0));
+    libero_vec::fill_block(xmat+w*nb*9,nb*9,REAL_C(0));
+    libero_vec::fill_block(xanchor+w*nj*3,nj*3,REAL_C(0));
+    libero_vec::fill_block(xaxis+w*nj*3,nj*3,REAL_C(0));
+    libero_vec::fill_block(qtmp+w*nq,nq,REAL_C(0));
+    libero_vec::fill_block(mqtmp+w*nm*4,nm*4,REAL_C(0));
+    libero_vec::fill_block(world_xipos+w*3,3,REAL_C(0));
+    libero_vec::fill_block(world_ximat+w*9,9,REAL_C(0));
+    libero_vec::fill_block(body_norm_branch+w*nb,nb,0);
+    __syncthreads();  // leader normalization consumes the cleared scratch
+  }
   if (threadIdx.x == 0)
     body(w, qpos0, parent, jnum, jadr, mocapid, bpos, bquat, jtype, qadr, jaxis, jpos, nq, nb, nj,
          nm, active, qpos, mocap_pos, mocap_quat, qtmp, mqtmp, xpos, xquat, xmat, xanchor, xaxis,
          world_xipos, world_ximat, status, norm_before, mocap_before, pre_pos, pre_quat, joint_pos,
          joint_quat, body_norm_before, body_route, joint_route, body_mat_identity,
          joint_rot_identity, hinge_zero, offcenter_rot_identity, trig_arg, trig_sin, trig_cos,
-         norm_branch, mocap_branch, body_norm_branch, true);
+         norm_branch, mocap_branch, body_norm_branch, true, cooperative_clear);
   __syncthreads();
   if (active[w] != 1 || status[w])
     return;

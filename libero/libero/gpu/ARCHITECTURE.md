@@ -131,8 +131,11 @@ enabled merely by interpolating between measured sizes. Ordinary backend and
 fusion defaults are unchanged.
 
 The selected chain is motion/passive → entry force → preparation (64 threads)
-→ Newton initialization (256) → Newton remainder (64) → Post/controller/tail
-(64), with the same three forwards per substep. `aligned_substep.cu` contains
+→ Newton initialization (256) → Newton remainder (64) → Post/tail (64).
+The admitted NV39 path separately launches controller/checks after the second
+forward and Euler after the third, preserving all three solves and warmstarts.
+`aligned_controller.cu` and `aligned_euler.cu` are runtime-shaped CUDA units;
+unsupported Euler arenas retain the original aligned tail. `aligned_substep.cu` contains
 the actual CUDA entries, `aligned_launch.cu` their same-stream orchestration,
 and `host/runtime/step/aligned_substep.py` the retained handoff owners.
 `newton_solver.cu::solve_newton<Full/Initialize/Resume>` maintains one numerical
@@ -216,6 +219,48 @@ existing CMake tree to prepare every catalogue NV together with the canonical
 native products. Loading a partial development tree requires that selected NV's
 motion and canonical products are already current. Runtime never builds them.
 Acceptance and timing remain specific to the measured inputs and GPU load.
+
+### Qualified FP64 position prefix
+
+`host/bindings/position.py::create_dataflow_plan` selects a 256-thread world
+block for the qualified fast FP64 prefix. This prefix is independent of the
+substep solver and applies to the existing fast dataflow entry. Its internal
+`cooperative_prefix` option is one diagnostic opt-out for the qualified group;
+compatible/legacy FP32 bindings retain their original paths.
+
+```text
+body setup and quaternion normalization
+  -> private body paths, shared immutable hinge sin/cos
+  -> body / geom / site frames
+  -> independent subtree CoM and composite-inertia component sums
+  -> original packed mass assembly and factor solve
+  -> cooperative scalar transmission and durable publication
+```
+
+The mathematics live in `cuda/position/position.cuh` (`body_block`, `body_one`,
+`transmission_block`) and `position_mass.cuh` (`compos`, `crb`). Python supplies
+only existing pointer bindings, shared offsets and immutable model integers.
+`model/topology.py::contiguous_subtree_sizes` proves the subtree intervals before
+selection. Noncontiguous/unqualified models retain the existing recurrence.
+The fast path clears numerical scratch cooperatively before leader admission
+and normalization; detailed diagnostic initialization remains unchanged.
+Private body paths use at most 64 ancestor indices per participating thread;
+larger trees and detailed diagnostic profiles retain level scheduling. Each
+path has private parent poses and exactly one output body, preserving failure
+propagation without reading an unfinished sibling path. The hinge cache borrows
+`2 * NJ` real values from the body phase; its lifetime ends before mass scratch
+reuses that arena.
+
+Scalar transmission keeps the dense CPU moment layout and publishes only rows
+before the earliest invalid actuator. More than 32 actuators retain the scalar
+fallback. CoM keeps the CPU tiny-subtree-mass fallback, and CRB does not add
+children into the world body's tensor. These choices preserve CPU MuJoCo 2.3.7
+semantics rather than substituting MJWarp's different data conventions.
+
+Collision and constraint pipelines already have independent world/pair/contact
+tile boundaries (`host/bindings/collision.py` and `constraints.py`). Their CPU
+contact algorithms, stable row ordering and publication contracts are retained;
+this alignment does not claim they were newly replaced by FP32 kernels.
 
 ### Regional FP64 decomposition
 
