@@ -558,6 +558,11 @@ def main(args):
                     report['performance_work'][name]=work
                     assert work['integrated']==[25*env.runtime.substeps]*2,work
                     assert not np.any(final_counts['error']),work
+                endpoint_path=args.output/f'task{args.task:02d}-control-endpoints.npz'
+                np.savez_compressed(endpoint_path,**{
+                    name+'.'+field:values for name,fields in timed_endpoints.items()
+                    for field,values in fields.items()})
+                report['performance_endpoint_file']=str(endpoint_path)
                 report['performance_endpoint_checks']=compare(timed_endpoints['baseline'],timed_endpoints['candidate'],relative=1.e-7)
                 # Record accumulated trajectory error independently of timing.
                 # A failed screen remains visible and requires investigation.

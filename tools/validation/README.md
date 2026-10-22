@@ -1239,7 +1239,9 @@ qualification, runs the ordinary composition check and one 5-warmup/20-control
 comparison, and checks the continuing 625-substep endpoint. The longer endpoint
 uses a relative `1e-7 * (1 + reference scale)` investigation screen; the existing
 20-substep composition bound remains `1e-9`. A failed screen is recorded and
-must be investigated, not silently dropped. Initialization, reset and graph
+must be investigated, not silently dropped. The small public physical endpoint
+arrays are saved in `taskXX-control-endpoints.npz` for diagnosis; full solver
+workspace snapshots are not saved by the catalogue screen. Initialization, reset and graph
 capture are recorded separately. Snapshot copies use pinned CPU owners and
 remain outside CUDA timing events. These measurements cover the physical
 control graph, not public observation/task-predicate wall time.
