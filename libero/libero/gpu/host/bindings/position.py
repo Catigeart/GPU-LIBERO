@@ -341,7 +341,9 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
     code.extend(['    '+call('compos','0',compos),'    __syncthreads();',lane(call('gate1')),
                  '    '+call('crb','0',crb),'    __syncthreads();',lane(call('gate2')),
                  '    '+call('factor_solve','0',factor,'cf_pm::factor_solve_shared'),'    __syncthreads();',
-                 lane(call('finish')),lane(call('position_finish')),lane(call('transmission')),
+                 lane(call('finish')),lane(call('position_finish')),
+                 ('    '+call('transmission',function='libero_position::transmission_block')
+                  if intervals is not None else lane(call('transmission'))),
                  lane(call('dynamics_status')),lane(call('dynamics_finish')),
                  '    __syncthreads(); // packed factor -> durable output publication'])
     for key,index,source in [('compos',17,'s_com'),('compos',18,'s_cinert'),('compos',19,'s_cdof'),
@@ -360,7 +362,7 @@ def _dataflow_source(d,*,bounds_cache=None,subtree_mass=False):
         (nb,','.join(map(str,intervals)))) if intervals is not None else ''
     source='namespace libero_position {\n'+constants+'__device__ __forceinline__ void dataflow(int w, '+signature+') {\n'+'\n'.join(code)+'\n}\n}\n'
     return source,values,specs,dict(shared_bytes=8*shared_doubles,
-        subtree_mass=intervals is not None,
+        subtree_mass=intervals is not None,parallel_transmission=intervals is not None,
         phase_barriers=sum(statement.count('__syncthreads()') for statement in code),
         legacy_phase_barriers=len(_dataflow_stages(d)),fixed_shared_doubles=fixed,
         geometry_shared_doubles=geom_shared,bounds_cache=bool(bounds_cache),

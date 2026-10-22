@@ -36,6 +36,9 @@ class PrefixVersions:
             tail=source[source.rfind('namespace libero_position {'):]
             tail=re.sub(r'__device__ __constant__ int mass_subtree_sizes\[\d+\] = \{[0-9,]+\};\n','',tail)
             tail=tail.replace(', libero_position::mass_subtree_sizes','')
+            tail=re.sub(r'^    libero_position::transmission_block\(([^\n]*)\);$',
+                        r'    if(threadIdx.x==0) { libero_position::transmission(\1); }',
+                        tail,flags=re.MULTILINE)
             original_threads=plan.manifest['original_threads_per_world']
             tail=tail.replace(f'<<<dim3(1,worlds,1),{plan.block_size},',
                               f'<<<dim3(1,worlds,1),{original_threads},')
@@ -60,7 +63,7 @@ class PrefixVersions:
             candidate_path=Path(plan.manifest['library'])
             self.report.append(dict(baseline=str(path),baseline_sha256=row['sha256'],
                 candidate=str(candidate_path),candidate_sha256=hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
-                baseline_threads=original_threads,candidate_threads=plan.block_size,
+                baseline_threads=row.get('threads',original_threads),candidate_threads=plan.block_size,
                 binding_wrapper_sha256=digest))
 
     def activate(self, name):

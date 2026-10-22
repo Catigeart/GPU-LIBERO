@@ -14,6 +14,8 @@ def add_arguments(p):
     p.add_argument('--baseline', type=Path, required=True, help='frozen native substep .so')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--task', type=int, default=4)
+    p.add_argument('--suite', default='libero_10', choices=('libero_10','libero_90','libero_spatial','libero_object','libero_goal'))
+    p.add_argument('--catalogue-screen', action='store_true', help='reuse regional edge-case qualification; check ordinary composition and timed endpoint')
     p.add_argument('--state', type=Path, help='optional previously recorded FP64 endpoint')
     p.add_argument('--performance', action='store_true')
     p.add_argument('--host-state', action='store_true',
@@ -70,13 +72,13 @@ def save(path, data):
     path.write_text(json.dumps(data,indent=2)+'\n')
 
 
-def compare(ref, out):
+def compare(ref, out, relative=1.e-9):
     import numpy as np
     rows=[]
     for key,a in ref.items():
         b=out[key];scale=float(np.max(np.abs(a))) if a.size else 0.
         error=float(np.max(np.abs(a-b))) if a.size else 0.
-        limit=1.e-9*(1.+scale)
+        limit=relative*(1.+scale)
         rows.append(dict(field=key,max_abs=error,scale=scale,limit=limit,
             passed=bool(np.isfinite(a).all() and np.isfinite(b).all() and error<=limit)))
     return rows
@@ -182,11 +184,11 @@ def main(args):
     install_warp_guard();wp.init()
     args.output.mkdir(parents=True,exist_ok=True)
     path=args.output/f'task{args.task:02d}.json'
-    report=dict(task=args.task,worlds=2,producer=args.producer,region={},cases={},performance={},passed=False)
+    report=dict(task=args.task,suite=args.suite,worlds=2,producer=args.producer,region={},cases={},performance={},passed=False)
     def event(name,**kw):print(json.dumps(dict(event=name,**kw)),flush=True)
     with compilation_scope(False) as scope:
         task=next(t for t in json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
-                  if t['suite']=='libero_10' and t['task_id']==args.task)
+                  if t['suite']==args.suite and t['task_id']==args.task)
         report['inputs']=dict(task_key=task['key'],model_directory=task['directory'],
             state=str(args.state) if args.state else 'official_initial_states',
             state_sha256=hashlib.sha256(args.state.read_bytes()).hexdigest() if args.state else None,
@@ -324,11 +326,14 @@ def main(args):
             if not any(a.ptr==factor_reuse.ptr and a.dtype==wp.int64 and a.shape==(2,) for a in arrays):
                 arrays.append(factor_reuse)
             def snapshot():
+                # Batch copies on one stream instead of synchronizing once per
+                # retained array. Pinned owners survive until their snapshot.
+                values=[wp.empty_like(a,device='cpu',pinned=True) for a in arrays]
+                for a,v in zip(arrays,values):wp.copy(v,a,stream=env.stream)
                 wp.synchronize_stream(env.stream)
-                return [a.numpy().copy() for a in arrays]
+                return values
             def restore(values):
-                with wp.ScopedStream(env.stream):
-                    for a,v in zip(arrays,values):a.assign(v)
+                for a,v in zip(arrays,values):wp.copy(a,v,stream=env.stream)
                 wp.synchronize_stream(env.stream)
             def region():
                 if args.producer=='force':
@@ -400,7 +405,7 @@ def main(args):
                 checks=compare(expected,region());report['region'][str(threads)]=checks;save(path,report)
                 assert all(x['passed'] for x in checks),checks
                 event('region_passed',threads=threads,max_abs=max(x['max_abs'] for x in checks))
-                if args.performance:
+                if args.performance and not args.catalogue_screen:
                     for _ in range(5):wp.capture_launch(cap.graph,stream=env.stream)
                     starts=[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)]
                     stops=[wp.Event(env.stream.device,enable_timing=True) for _ in range(20)]
@@ -423,10 +428,10 @@ def main(args):
                         wp.synchronize_stream(env.stream)
                         us=[1000*wp.get_event_elapsed_time(x,y,synchronize=False) for x,y in zip(starts,stops)]
                         report['performance']['prior_force_'+str(threads)]=dict(us=us,mean_us=float(np.mean(us)),median_us=float(np.median(us)))
-            selected=min(choices,key=lambda n:report['performance'][args.producer+'_'+str(n)]['median_us']) if args.performance else choices[0]
+            selected=min(choices,key=lambda n:report['performance'][args.producer+'_'+str(n)]['median_us']) if args.performance and not args.catalogue_screen else choices[0]
             setattr(candidate,args.producer+'_threads',selected);report['selected_threads']=selected
             report['resources'][args.producer+'_threads']=selected
-            if args.producer=='force':
+            if args.producer=='force' and not args.catalogue_screen:
                 report['force_inputs']={}
                 for case in ('external_wrench','control_limits','badctrl_fallback'):
                     restore(prepared)
@@ -462,6 +467,7 @@ def main(args):
             cases=[('ordinary',False,False,20),('policy_post',True,True,1)]
             if args.task==4:cases.append(('mixed_cache_miss',False,True,5))
             if args.producer=='force':cases.append(('badctrl',False,False,1))
+            if args.catalogue_screen:cases=cases[:1]
             for case,policy,post,steps in cases:
                 end={};counts={}
                 for name,x in implementations:
@@ -531,10 +537,10 @@ def main(args):
                         warmup=5,steps=20,physical_substeps_per_control=env.runtime.substeps,
                         restore_save_inside_events=False,continuing_per_version_state=True,
                         snapshot_location='host_pinned' if args.host_state else 'device')
-                report['performance_work']={}
+                report['performance_work']={};timed_endpoints={}
                 for name in graphs:
                     for a,s in zip(arrays,device_states[name]):wp.copy(a,s,stream=env.stream)
-                    wp.synchronize_stream(env.stream);final_counts=counters()
+                    wp.synchronize_stream(env.stream);final_counts=counters();timed_endpoints[name]=endpoint()
                     work={k:(final_counts[k]-initial_counts[k]).tolist() for k in final_counts if k!='error'}
                     work['final_error']=final_counts['error'].tolist()
                     if args.producer=='force':
@@ -547,12 +553,19 @@ def main(args):
                     report['performance_work'][name]=work
                     assert work['integrated']==[25*env.runtime.substeps]*2,work
                     assert not np.any(final_counts['error']),work
+                report['performance_endpoint_checks']=compare(timed_endpoints['baseline'],timed_endpoints['candidate'],relative=1.e-7)
+                # Record accumulated trajectory error independently of timing.
+                # A failed screen remains visible and requires investigation.
+                report['performance_endpoint_screen_passed']=all(x['passed'] for x in report['performance_endpoint_checks'])
+                if args.catalogue_screen:
+                    save(path,report)
+                    assert report['performance_endpoint_screen_passed'],report['performance_endpoint_checks']
                 a=report['performance']['control_baseline']['mean_ms'];b=report['performance']['control_candidate']['mean_ms']
                 report['control_speedup']=a/b;event('performance',speedup=a/b,baseline_ms=a,candidate_ms=b)
             assert not [x for x in scope['events']+env.build_report['events'] if x.get('commands_executed')]
             report.update(passed=True,runtime_compilations=0);save(path,report)
             select_prefix('candidate')
-            if args.newton_split:
+            if args.newton_split and not args.catalogue_screen:
                 # Save reusable regional inputs while this costly environment
                 # is alive. The export is outside all correctness/timing gates.
                 restore(seed)

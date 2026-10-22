@@ -857,6 +857,42 @@ __device__ LIBERO_POSITION_STAGE_INLINE void transmission(int w, real_t *q, int 
     moment[i * nv + da[i]] = gear[i];
   }
 }
+// Block-cooperative scalar-joint transmission. Same dense public layout and
+// first-failure prefix as transmission(); CPU 2.3.7 mj_transmission semantics.
+__device__ LIBERO_POSITION_STAGE_INLINE void transmission_block(
+    int w, real_t *q, int *active, int *qa, int *da, real_t *gear,
+    real_t *length, real_t *moment, int *status, int nq, int nv, int nu) {
+  if (nu > 32) {
+    if (threadIdx.x == 0)
+      transmission(w,q,active,qa,da,gear,length,moment,status,nq,nv,nu);
+    return;  // enclosing dataflow owns the publication barrier
+  }
+  const int lane=threadIdx.x;
+  q+=w*nq;length+=w*nu;moment+=w*nu*nv;
+  for(int i=lane;i<nu;i+=blockDim.x) length[i]=0;
+  for(int i=lane;i<nu*nv;i+=blockDim.x) moment[i]=0;
+  bool bad=false;
+  if(active[w]==1)
+    for(int i=lane;i<nq;i+=blockDim.x) bad|=!isfinite(q[i]);
+  // This vote also orders the dense clears before the sparse row writes.
+  const int invalid=__syncthreads_or(bad);
+  const int admission=active[w]==0?0:active[w]!=1?1:invalid?2:0;
+  if(lane==0) status[w]=admission;
+  if(active[w]!=1 || admission) return;
+  if(lane<32) {
+    int code=0;real_t value=0;
+    if(lane<nu) {
+      if(qa[lane]<0 || qa[lane]>=nq || da[lane]<0 || da[lane]>=nv) code=3;
+      else {value=q[qa[lane]]*gear[lane];if(!isfinite(value)) code=4;}
+    }
+    const unsigned failed=__ballot_sync(0xffffffffu,code!=0);
+    const int first=failed?__ffs(failed)-1:nu;
+    const int first_code=__shfl_sync(0xffffffffu,code,failed?first:0);
+    if(lane==0) status[w]=first_code;
+    if(lane<first) {length[lane]=value;moment[lane*nv+da[lane]]=gear[lane];}
+  }
+}
+
 __device__ LIBERO_POSITION_STAGE_INLINE void dynamics_status(int w, int *kind, int *code, int *tr,
                                                              int *out) {
   out[w] = kind[w] == 2 ? 25 : kind[w] == 3 ? 30 + code[w] : tr[w];
