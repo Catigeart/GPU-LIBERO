@@ -1136,3 +1136,22 @@ manifest. Historical evidence and exact executed tool snapshots remain in their
 original results directories. These experiments are not production validation
 commands. Reusable mathematical qualifiers, independent oracles and the GJK
 regression fixture remain in this repository.
+
+## FP64 motion replacement
+
+`fp64-motion --build-root ROOT --baseline FROZEN_SUBSTEP_SO --output RESULTS`
+uses one load-only N=2 native environment. `--task` selects a LIBERO-10 task;
+`--state` optionally supplies a saved FP64 endpoint. First it compares the
+motion/bias/passive region against the admitted native component functions,
+without Newton or integration. It checks 512/256/128-thread candidates, then
+short physical-substep composition, policy Post and task4 mixed cache misses.
+Floating-point checks use the accepted input-scaled FP64 error envelope;
+physical flow and invocation counters remain exact. It is not a 130-task gate.
+
+`--performance` selects the locally fastest thread candidate and compares one
+complete native control-step Graph against the frozen fused product. Each
+version has five warmups and twenty continuing control steps. Versions are
+interleaved with separate resident state snapshots; restore/save copies are
+outside CUDA events. Construction, reset, capture and transfers are excluded.
+GPU co-tenant snapshots and individual samples are retained. No runtime build,
+clock change, renderer or other-process intervention is permitted.

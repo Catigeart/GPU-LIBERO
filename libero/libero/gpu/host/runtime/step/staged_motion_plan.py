@@ -43,3 +43,25 @@ def motion_threads(plan, nbody):
     if not branches or path_cells > 4 * (nbody - 1):
         return 0
     return 128 if branches <= 16 else 256
+
+
+def passive_motion_plan(parent):
+    """Return branches plus subtree intervals, or None for component fallback.
+
+    Parent ordering alone is insufficient for the FP32 contiguous-subtree sum.
+    Checking the maximum descendant and its count proves there are no holes.
+    """
+    parent = np.asarray(parent, dtype=np.int32)
+    plan = build_motion_plan(parent)
+    nb = len(parent)
+    if nb > 64 or not 1 <= plan[0] <= 32:
+        return None
+    size = np.ones(nb, np.int32)
+    maximum = np.arange(nb, dtype=np.int32)
+    for body in range(nb-1, 0, -1):
+        p = parent[body]
+        size[p] += size[body]
+        maximum[p] = max(maximum[p], maximum[body])
+    if np.any(maximum != np.arange(nb) + size - 1):
+        return None
+    return np.concatenate((plan, size))

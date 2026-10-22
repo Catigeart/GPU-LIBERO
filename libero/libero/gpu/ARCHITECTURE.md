@@ -121,6 +121,46 @@ Normal qualified native fused execution performs 75 Newton solves, 50 factored m
 solves and 3 complete Post evaluations per control step. Recovery and alternative
 observer/debug policies can do additional work.
 
+### FP64 motion replacement
+
+The opt-in `prepare_substep_fusion(..., motion_passive=True)` path replaces the
+native fused body's cold motion/bias/passive mathematics with a standalone
+`cuda/step/fp64_motion_passive.cu::fp64_motion_passive_kernel`. The remaining
+body is `fused_substep.cu::motion_residual_kernel`, compiled from the maintained
+substep body with `FLASH_FP64_MOTION_PASSIVE`. It retains all three forward call
+sites, Newton/warmstart semantics, control, Post, checks and Euler integration.
+This path does not use the A/B/C decomposition below.
+
+The new producer follows `cuda/fp32/fused_motion_passive.cu`: one world block,
+one warp per branch (eight spatial lanes), independent body force production,
+contiguous-subtree bias reduction and DOF projection. Two fixed 384-double
+shared arenas overlay velocity and composite force; small bodies also fit the
+fluid wrench arena. Larger admitted bodies borrow the existing device fluid
+workspace. `motion_threads` may be 128, 256 or 512; 0 exercises the retained
+native producer in the residual without an extra motion launch.
+
+Native CPU2.3.7 spring/damping/fluid mathematics and input owners remain in use.
+The new kernel computes the complete private bias before constraint reference;
+the residual admits and commits it at the original reference-dependent point.
+One private ready integer per world qualifies only the immediately adjacent
+producer/residual pair. It does not authorize full forward reuse. Later forwards
+retain the state/position-generation cache and epoch publication. Position
+continuations run a fresh producer; acceleration-reset forward remains with
+its existing owner. Unsupported topology, diagnostics and exceptional inputs
+retain component calculation and error behavior.
+
+`host/runtime/step/peeled_motion.py::PeeledMotionSubstep` owns the descriptor,
+ready flags and load-only launch. The descriptor checks contiguous subtrees,
+64 bodies and 32 branches, matching the source algorithm's admitted domain;
+other topologies select the native fallback. `cmake/PeeledMotion.cmake` builds
+one dimension-general producer and one residual per catalogue NV, reusing the
+existing separately compiled Newton, Post, controller and vendor objects.
+The offline aggregate target is `flash_motion_substeps_all`; build it in the
+existing CMake tree to prepare every catalogue NV together with the canonical
+native products. Loading a partial development tree requires that selected NV's
+motion and canonical products are already current. Runtime never builds them.
+Acceptance and timing remain specific to the measured inputs and GPU load.
+
 ### Regional FP64 decomposition
 
 The optional staged entry retains the native three-forward schedule. Within

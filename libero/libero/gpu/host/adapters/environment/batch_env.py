@@ -306,7 +306,8 @@ class GpuBatchEnv:
 
     def prepare_substep_fusion(self, build_root, *, allow_compile=False,
                                fast_compile=False, device_lto=False, profile_newton=False,
-                               atomic_reductions=None, defer_post=True, single_solve=False, staged=False):
+                               atomic_reductions=None, defer_post=True, single_solve=False, staged=False,
+                               motion_passive=False, motion_threads=512):
         """Opt into native physical-substep CUDA Graph execution.
 
         This is an experimental native-batch entry. Ordinary execution is
@@ -320,6 +321,8 @@ class GpuBatchEnv:
         Set False to retain complete Post on every physical substep.
         single_solve is an explicit FP32 scheduling candidate. It does not
         change the default native schedule or qualify mathematical equivalence.
+        motion_passive selects the optional FP64 motion/passive kernel followed
+        by the remaining fused substep; motion_threads configures that producer.
         staged selects the optional FP64 prepare/Newton/Post-tail decomposition.
         It retains three complete solves and the original prefix/recovery paths;
         it is load-only unless offline compilation is explicitly permitted.
@@ -333,7 +336,8 @@ class GpuBatchEnv:
                     fast_compile=fast_compile,
                     device_lto=device_lto, profile_newton=profile_newton,
                     atomic_reductions=atomic_reductions, defer_post=defer_post,
-                    single_solve=single_solve, staged=staged)
+                    single_solve=single_solve, staged=staged,
+                    motion_passive=motion_passive, motion_threads=motion_threads)
 
     def _ids(self, ids):
         if ids is None:

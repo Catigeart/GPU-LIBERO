@@ -6,7 +6,8 @@
 // Collective preparation for the current position and velocity. No actuation,
 // Newton, warmstart update, or forward-complete publication occurs here.
 // The returned flag describes same-state numerical reuse for the FP64 path.
-__device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, int world, const int *motion_reuse = nullptr) {
+__device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, int world, const int *motion_reuse = nullptr,
+    const int *motion_prepared = nullptr) {
   const auto &workspace = args.forward_workspace;
   uint64_t *cache = workspace.metadata + size_t(world) * ForwardCacheWords;
   // The Start entry clears validity. Within this physical substep only the
@@ -15,7 +16,8 @@ __device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, i
   // a position rebuild changes generation even when state itself is unchanged.
   const bool reuse = motion_reuse ? motion_reuse[world] != 0 : forward_reuse(args, world);
   CF_STEP_PROFILE_STAGES(reuse ? CF_STEP_PROFILE_PHASE(VelocityReuse) : CF_STEP_PROFILE_PHASE(VelocityCold));
-  if (!motion_reuse) prepare_velocity(args, world, reuse);
+  const bool prepared = motion_prepared && motion_prepared[world] == 1;
+  if (!motion_reuse) prepare_velocity(args, world, reuse, NativeMotion{}, prepared);
   // Constraint velocity/reference acceleration.
   CF_STEP_PROFILE_NEXT(reuse ? CF_STEP_PROFILE_PHASE(ReferenceReuse) : CF_STEP_PROFILE_PHASE(ReferenceCold));
   if (threadIdx.x == 0) {
@@ -67,7 +69,7 @@ __device__ __forceinline__ bool prepare_dynamics(const SubstepArguments &args, i
     }
     __syncthreads();
     if (!reuse) {
-      {
+      if (!prepared || args.bias_forces.active[world] != 1) {
         const auto &in = args.bias_forces;
         physics_bias::d_rne_bias_cached(world, in.active, in.cdot, in.qvel, in.cinert, in.cvel, in.cdof, in.bp,
                                         in.ba, in.bn, in.db, in.gravity, in.disabled, in.nb, in.nv, in.cacc,

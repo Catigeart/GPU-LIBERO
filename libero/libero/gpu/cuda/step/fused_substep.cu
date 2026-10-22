@@ -13,6 +13,9 @@
 #include <type_traits>
 #include <cublasdx.hpp>
 #include "substep_kernel.cuh"
+#if defined(FLASH_FP64_MOTION_PASSIVE)
+#include "fp64_motion_passive.cuh"
+#endif
 #include "substep_shared_layout.cuh"
 #include "newton_solver.cuh"
 #include "newton_shared_layout.cuh"
@@ -65,9 +68,9 @@ __device__ __forceinline__ void solve_dynamics(const SubstepArguments &args, int
 // write; only the FP32 substep entry separates these two physical stages.
 __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, int world,
                                                  unsigned char *shared, bool post_outputs,
-                                                 int smooth_reuse_status = -1) {
+                                                 int smooth_reuse_status = -1, const int *motion_prepared = nullptr) {
   CF_STEP_PROFILE_SCOPE(Forward);
-  const bool reuse = prepare_dynamics(args, world);
+  const bool reuse = prepare_dynamics(args, world, nullptr, motion_prepared);
   solve_dynamics(args, world, shared, post_outputs, reuse, smooth_reuse_status);
 }
 
@@ -77,8 +80,14 @@ __device__ __forceinline__ void forward_dynamics(const SubstepArguments &args, i
 // This is the complete world-local substep body. Normal execution enters once.
 // Continuations exist only across the original parallel-prefix/reset boundaries.
 // A block-wide return always occurs after a barrier and a world-uniform predicate.
+#if defined(FLASH_FP64_MOTION_PASSIVE)
+__global__ void motion_residual_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
+                                       SubstepEntry entry, bool publish_post, const int *motion_prepared) {
+#else
 __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ arguments, bool policy_step,
                                      SubstepEntry entry, bool publish_post) {
+  const int *motion_prepared = nullptr;
+#endif
   const auto &args = *arguments;
   auto *shared = substep_shared_data();
   const int world = blockIdx.y;
@@ -99,7 +108,7 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // force/torque history); other substeps have no force consumer before the
     // final forward. Newton and warmstart still execute at all three points.
     // Admission and the parallel position prefix were launched by the caller.
-    forward_dynamics(args, world, shared, policy_step);
+    forward_dynamics(args, world, shared, policy_step, -1, motion_prepared);
     // This register value dies at a position suspension. The next entry starts
     // with -1; it cannot reuse a payload produced before a prefix refresh.
     const auto &smooth = args.smooth_commit;
@@ -122,7 +131,8 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
 
   if (entry == SubstepEntry::Start || entry == SubstepEntry::ControllerPosition) {
     // Controller.update requests its own forward, including its Newton/warmstart.
-    forward_dynamics(args, world, shared, policy_step, smooth_reuse_status);
+    forward_dynamics(args, world, shared, policy_step, smooth_reuse_status,
+        entry == SubstepEntry::ControllerPosition ? motion_prepared : nullptr);
     run_controller(args, world, policy_step);
 
     // MuJoCo mj_step: checkPos -> checkVel -> forward -> checkAcc -> Euler.
@@ -144,12 +154,13 @@ __global__ void fused_substep_kernel(const SubstepArguments *__restrict__ argume
     // A qualified control graph may defer force/sensor work in intermediate
     // substeps. The final substep keeps Post here, before Euler, exactly as in
     // mj_forward/mj_step. Every forward still solves Newton and publishes qacc.
-    forward_dynamics(args, world, shared, publish_post);
+    forward_dynamics(args, world, shared, publish_post, -1,
+        entry == SubstepEntry::PhysicsPosition ? motion_prepared : nullptr);
   }
   finish_substep(args, world, entry);
 }
 
-#if FLASH_REAL_BITS == 32
+#if FLASH_REAL_BITS == 32 && !defined(FLASH_FP64_MOTION_PASSIVE)
 // Experimental FP32 schedule. It is a distinct kernel, so the accepted
 // three-forward kernel keeps its own register and shared-memory allocation.
 __global__ void single_solve_substep_kernel(const SubstepArguments *__restrict__ arguments,
@@ -191,6 +202,7 @@ __global__ void single_solve_substep_kernel(const SubstepArguments *__restrict__
 }
 #endif
 
+#if !defined(FLASH_FP64_MOTION_PASSIVE)
 // Select exactly the suspended worlds. This small kernel performs no physics.
 __global__ void select_substep_continuation(const SubstepArguments *__restrict__ arguments,
                                             SubstepEntry entry, int worlds, int *predicate) {
@@ -206,4 +218,5 @@ __global__ void select_substep_continuation(const SubstepArguments *__restrict__
   }
   predicate[0] = any;
 }
+#endif // original selector is shared by the peeled host dispatcher
 } // namespace flash_libero

@@ -81,7 +81,8 @@ class NativeBatchedPhysics:
 
     def prepare_fused_substep_graph(self, build_root, *, allow_compile=False,
                                     fast_compile=False, device_lto=False, profile_newton=False,
-                                    atomic_reductions=None, defer_post=True, single_solve=False, staged=False):
+                                    atomic_reductions=None, defer_post=True, single_solve=False, staged=False,
+                               motion_passive=False, motion_threads=512):
         """Capture one readable fusion kernel per physical substep.
 
         Offline callers may permit compilation; ordinary execution loads only
@@ -91,17 +92,24 @@ class NativeBatchedPhysics:
         if self.debug or not self._graph_eligible():
             raise ValueError('substep fusion requires device-only sampling')
         from libero.gpu.host.runtime.step.fused_substep import FusedSubstep
-        if type(staged) is not bool:
-            raise TypeError('staged must be a bool')
+        if type(staged) is not bool or type(motion_passive) is not bool:
+            raise TypeError('staged and motion_passive must be bools')
+        if staged and motion_passive:
+            raise ValueError('select staged or motion_passive, not both')
         if staged:
             from libero.gpu.host.runtime.step.staged_substep import StagedSubstep
             FusedSubstep = StagedSubstep
+        extra = {}
+        if motion_passive:
+            from libero.gpu.host.runtime.step.peeled_motion import PeeledMotionSubstep
+            FusedSubstep = PeeledMotionSubstep
+            extra['motion_threads'] = motion_threads
         import warp as wp
         fusion = FusedSubstep(self.bundle.runtime, build_root,
                               allow_build=allow_compile,
                               fast_compile=fast_compile, device_lto=device_lto,
                               profile_newton=profile_newton, atomic_reductions=atomic_reductions,
-                              single_solve=single_solve)
+                              single_solve=single_solve, **extra)
         # Only the built-in device sampler has a proved read set (poses and
         # velocities, never intermediate cfrc/sensordata). Unknown observers
         # retain complete Post even if they permit graph capture.

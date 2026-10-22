@@ -203,6 +203,8 @@ function(flash_variant nv nq nm nj nu precision_bits osc_input osc_target)
   endforeach()
   flash_add_newton_cone_fixture("${suffix}" "${precision_bits}" "${mathdx_input}" "${mathdx_target}" ${definitions})
   if(precision_bits STREQUAL "64")
+    flash_add_peeled_motion("${suffix}" "${mathdx_input}" "${mathdx_target}"
+      "${osc_input}" "${osc_target}" ${definitions})
     flash_add_staged_substep("${suffix}" "${mathdx_input}" "${mathdx_target}"
       "${osc_input}" "${osc_target}" ${definitions})
   endif()

@@ -116,6 +116,26 @@ def prepare_staged(source, root, sdk, arch, **options):
     return manifest
 
 
+def prepare_motion(source, root, sdk, arch, **options):
+    """FP64 motion producer followed by the remaining native fused substep."""
+    if scalar.bits != 64 or options.get('single_solve') or options.get('profile_newton'):
+        raise ValueError('peeled motion requires FP64, three solves and no fused profiler')
+    manifest = prepare(source, root, sdk, arch, **options)
+    if manifest['config']['threads_per_world'] != 64:
+        raise ValueError('peeled motion retains 64-thread native Newton/OSC objects')
+    manifest['config'] = dict(manifest['config'], execution='motion-residual',
+                              motion_organization='fp32-warp-branch-fp64', motion_schedule='entry-first')
+    manifest['translation_units'] += 1
+    manifest['target'] = manifest['target'].replace('flash_substep', 'flash_substep_motion', 1)
+    manifest['library'] = str(Path(manifest['library']).with_name(
+        Path(manifest['library']).name.replace('substep', 'substep_motion', 1)))
+    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
+    name = Path(manifest['library']).stem.replace('substep_motion', 'manifest-motion', 1) + '.json'
+    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    return manifest
+
+
 def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     """One offline target for the entire task catalogue; no per-task builds."""
     from .substep_catalog import variants

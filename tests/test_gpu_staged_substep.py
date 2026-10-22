@@ -6,10 +6,27 @@ from unittest.mock import patch
 
 from libero.gpu.host.build import substep_native as build
 from libero.gpu.host.runtime.step.staged_motion_plan import build_motion_plan, motion_threads
+from libero.gpu.host.runtime.step.staged_motion_plan import passive_motion_plan as motion_plan
 import numpy as np
 
 
 class StagedProductTests(unittest.TestCase):
+    def test_motion_product_keeps_the_native_schedule_and_independent_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/'project/fused_substep.cu'
+            source.parent.mkdir()
+            source.write_text('// source fixture\n')
+            (source.parent/'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.24)\n')
+            with patch.object(build.scalar, 'bits', 64), patch.object(build, 'nvcc_path', return_value=str(root/'nvcc')):
+                fused = build.prepare(source, root/'cache', root/'sdk', 80, nv=57)
+                motion = build.prepare_motion(source, root/'cache', root/'sdk', 80, nv=57)
+            self.assertEqual(motion['folder'], fused['folder'])
+            self.assertNotEqual(motion['identity'], fused['identity'])
+            self.assertEqual(motion['target'], 'flash_substep_motion_nv57')
+            self.assertEqual(Path(motion['library']).name, 'substep_motion_nv57.so')
+            self.assertEqual(motion['config']['solves_per_substep'], 3)
+
     def test_staged_product_has_its_own_identity_and_reuses_build_tree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -50,6 +67,15 @@ class StagedProductTests(unittest.TestCase):
 
 
 class MotionPlanTests(unittest.TestCase):
+    def test_peeled_bias_requires_contiguous_subtrees(self):
+        self.assertIsNone(motion_plan([0, 0, 1, 0, 1]))
+        plan = motion_plan([0, 0, 1, 1, 0])
+        np.testing.assert_array_equal(plan[-5:], [5, 3, 1, 1, 1])
+
+    def test_peeled_topology_uses_component_fallback_outside_fp32_domain(self):
+        self.assertIsNone(motion_plan([0] * 34))
+        self.assertIsNone(motion_plan([0] + list(range(64))))
+
     def test_shared_prefix_has_one_public_owner(self):
         # Paths [1,2,4], [1,3], [5]; body1 is redundantly computed but only
         # the first path publishes it. Parent IDs need not form DFS intervals.

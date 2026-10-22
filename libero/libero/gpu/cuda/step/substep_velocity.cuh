@@ -21,7 +21,7 @@ __device__ inline bool forward_reuse(const SubstepArguments &args, int world) {
 }
 template<class Motion = NativeMotion>
 __device__ inline void prepare_velocity(const SubstepArguments &args, int world,
-                                       bool reuse, Motion motion = {}) {
+                                       bool reuse, Motion motion = {}, bool prepared = false) {
   const auto &workspace = args.forward_workspace;
   // Velocity and passive forces consume the current, already prepared position.
   if (args.state.requested_mask[world] != 0) {
@@ -38,21 +38,23 @@ __device__ inline void prepare_velocity(const SubstepArguments &args, int world,
             world, in.moment, in.qvel, in.active, in.position_status, in.nv, in.nu, in.velocity, in.status);
       }
       // The collective transmission helper publishes its outputs on every exit.
-      motion(args.body_velocity, world);
-      // d_comvel_bias_cached owns its exit synchronization on every path.
-      {
-        const auto &in = args.joint_passive;
-        physics_velocity::d_joint_passive_count(world, in.qpos, in.qvel, in.active, in.jtype, in.qadr, in.dadr,
-                                                in.stiffness, in.spring, in.damping, in.out, in.status, in.nv,
-                                                in.nq, in.njnt, in.joint_disjoint, in.joint_type_offsets,
-                                                in.joint_type_indices);
-      }
-      __syncthreads();
-      {
-        const auto &in = args.fluid_passive;
-        physics_velocity::d_fluid_parallel(world, in, workspace.fluid);
-      }
-      __syncthreads();
+      if (!prepared) {
+        motion(args.body_velocity, world);
+        // d_comvel_bias_cached owns its exit synchronization on every path.
+        {
+          const auto &in = args.joint_passive;
+          physics_velocity::d_joint_passive_count(world, in.qpos, in.qvel, in.active, in.jtype, in.qadr, in.dadr,
+                                                  in.stiffness, in.spring, in.damping, in.out, in.status, in.nv,
+                                                  in.nq, in.njnt, in.joint_disjoint, in.joint_type_offsets,
+                                                  in.joint_type_indices);
+        }
+        __syncthreads();
+        {
+          const auto &in = args.fluid_passive;
+          physics_velocity::d_fluid_parallel(world, in, workspace.fluid);
+        }
+        __syncthreads();
+      } // complete motion/passive values may come from the peeled producer
     }
     if (threadIdx.x == 0) {
       const auto &in = args.velocity_status;

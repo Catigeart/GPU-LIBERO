@@ -9,7 +9,7 @@ import sys
 
 def main():
     # Load standalone commands without importing unrelated reference qualifiers.
-    standalone={'cuda-runtime':'cuda_runtime','cuda-model':'cuda_model',
+    standalone={'fp64-motion':'fp64_motion','cuda-runtime':'cuda_runtime','cuda-model':'cuda_model',
                 'cuda-complete':'cuda_complete','cuda-functions':'cuda_functions',
                 'cuda-lifecycle':'cuda_lifecycle',
                 'mjwarp-convex-regression':'mjwarp_convex_regression'}
@@ -20,7 +20,7 @@ def main():
         module.add_arguments(parser)
         return module.main(parser.parse_args(sys.argv[2:]))
     parser = argparse.ArgumentParser(description=__doc__, epilog=
-        'Standalone commands: cuda-runtime, cuda-model, cuda-functions, '
+        'Standalone commands: fp64-motion, cuda-runtime, cuda-model, cuda-functions, '
         'cuda-lifecycle, cuda-complete, mjwarp-convex-regression. '
         'Use COMMAND --help for their arguments.')
     commands = parser.add_subparsers(dest='command', required=True)
