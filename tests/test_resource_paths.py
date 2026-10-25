@@ -105,14 +105,35 @@ class ResourcesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unsafe'):
             r._download_file(self.root, entry('../outside', b'bad'),
                              {'repository':'fixture', 'revision':'fixture'}, 'bddl_files')
-    @unittest.skipUnless(all((SOURCE/"libero/libero"/r._GROUP_FOLDERS[key]/item["path"]).is_file()
-                            for key, values in r.resource_manifest()["groups"].items()
-                            for item in values),
-                         "complete original assets are optional in source-only releases")
     def test_source_group_uses_existing_original_resources(self):
-        defaults = api.get_default_path_dict()
-        self.assertEqual(defaults['assets'], str(SOURCE/'libero/libero/assets'))
-        self.assertEqual(defaults['init_states'], str(SOURCE/'libero/libero/init_files'))
+        package = self.root/'bundled/libero/libero'
+        manifest = {'format': 1, 'revision': 'fixture', 'repository': 'fixture/repo',
+                    'groups': {}}
+        files = {}
+        for key, folder in r._GROUP_FOLDERS.items():
+            name = 'sample.bddl' if key == 'bddl_files' else 'sample.bin'
+            payload = b'fixture resource'
+            files[key] = package/folder/name
+            files[key].parent.mkdir(parents=True, exist_ok=True)
+            files[key].write_bytes(payload)
+            manifest['groups'][key] = [entry(name, payload)]
+        path = self.root/'bundled-manifest.json'
+        path.write_text(json.dumps(manifest))
+        with patch.object(api, '__file__', str(package/'__init__.py')), \
+                patch.object(r, '_MANIFEST_PATH', path), \
+                patch.object(r.urllib.request, 'urlopen', side_effect=AssertionError('network')):
+            defaults = api.get_default_path_dict()
+            for key, folder in r._GROUP_FOLDERS.items():
+                self.assertEqual(defaults[key], str(package/folder))
+            # Missing or truncated bundled resources must fall back per group.
+            files['assets'].unlink()
+            defaults = api.get_default_path_dict()
+            self.assertEqual(defaults['assets'], str(self.root/'cache/assets'))
+            self.assertEqual(defaults['init_states'], str(package/'init_files'))
+            files['init_states'].write_bytes(b'partial')
+            self.assertEqual(api.get_default_path_dict()['init_states'],
+                             str(self.root/'cache/init_files'))
+        self.assertFalse((self.root/'cache').exists())
     def test_source_only_install_chooses_cache_without_import_download(self):
         package = self.root/'source-only/libero/libero'; package.mkdir(parents=True)
         # A regular outer package prevents an editable install from overriding this fixture.

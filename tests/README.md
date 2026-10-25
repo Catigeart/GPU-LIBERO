@@ -76,6 +76,10 @@ The supported CPU check command also runs the vector protocol file. Its standalo
 command is useful for focused work; those test functions are not collected by
 unittest discovery. Individual optional suites retain their dependency requirements.
 
+CI installs `tools/requirements-ci.txt`, including robosuite's original host
+interfaces, MuJoCo 2.3.7 for native model intake, and Warp host types. The workflow
+sets `MUJOCO_GL=disable` and hides CUDA devices; no renderer or GPU is required.
+
 These tests use temporary fixtures and mock or injected runtime components. They do not compile CUDA, execute GPU physics, render through a real OpenGL context, or benchmark performance. They do not establish full-application numerical qualification.
 
 The BoxBox tests compile the maintained contact function for host execution and use MuJoCo's double-precision vector helpers. The captured regression fixture contains only the two boxes' sizes and transforms.

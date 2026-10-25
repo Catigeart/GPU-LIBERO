@@ -5,6 +5,7 @@ Only the real CPU observable methods and convert_quat body are loaded, avoiding
 environment construction, dependency initialization and any JIT compilation.
 """
 import ast
+import importlib.util
 from collections import OrderedDict
 from contextlib import nullcontext
 from copy import deepcopy
@@ -21,8 +22,12 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 GPU = ROOT/'libero/libero/gpu'
-CPU = Path('/rjs2/lhw/libero-cpu/.venv/lib/python3.10/site-packages/robosuite')
-CPU_DOMAIN = Path('/rjs2/lhw/libero-cpu/LIBERO/libero/libero/envs/bddl_base_domain.py')
+ROBOSUITE = importlib.util.find_spec('robosuite')
+if ROBOSUITE is None:
+    raise unittest.SkipTest('installed robosuite source required')
+CPU = Path(next(iter(ROBOSUITE.submodule_search_locations)))
+# The maintained domain retains the original CPU _setup_observables method.
+CPU_DOMAIN = ROOT/'libero/libero/envs/bddl_base_domain.py'
 ORIGINAL = runpy.run_path(str(CPU/'utils/observables.py'))
 
 

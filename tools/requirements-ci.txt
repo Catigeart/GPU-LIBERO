@@ -4,6 +4,17 @@ numpy>=1.24,<2
 PyYAML>=6,<7
 gym==0.25.2
 cloudpickle>=2.1,<4
+# Environment adapters reuse the original name/address and observable APIs.
+# Pin the native CPU model ABI used by the host-only intake tests.
+robosuite==1.4.0
+mujoco==2.3.7
+# robosuite 1.4.0 imports this without declaring it in its package metadata.
+termcolor>=1.1,<4
+# Goal/observation tests import original LIBERO task classes, without creating envs.
+bddl==1.0.1
+future>=0.18,<2
+easydict>=1.9,<2
+matplotlib>=3.5,<4
 # Native scalar/ABI/reset tests import Warp types without executing GPU work.
 # This is a CI-only dependency, not part of the independent CUDA FP32 extra.
 warp-lang==1.18.0

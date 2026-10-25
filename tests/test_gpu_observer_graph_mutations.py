@@ -19,11 +19,9 @@ import numpy as np
 
 
 BASE=Path(__file__).resolve().parents[1]/'libero/libero/gpu/host/adapters/observations'
-CPU=Path('/rjs2/lhw/libero-cpu/.venv/lib/python3.10/site-packages/robosuite/utils/observables.py')
-if not CPU.exists():
-    installed=importlib.util.find_spec('robosuite')
-    if installed is None:raise unittest.SkipTest('installed robosuite Observable source required')
-    CPU=Path(next(iter(installed.submodule_search_locations)))/'utils/observables.py'
+installed=importlib.util.find_spec('robosuite')
+if installed is None:raise unittest.SkipTest('installed robosuite Observable source required')
+CPU=Path(next(iter(installed.submodule_search_locations)))/'utils/observables.py'
 ORIGINAL=runpy.run_path(str(CPU))
 SCHEMA=runpy.run_path(str(BASE/'schema.py'))
 COMPAT=ModuleType('observer_graph_test.observable_compatibility')
