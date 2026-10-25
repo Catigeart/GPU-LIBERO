@@ -249,9 +249,11 @@ zeroing, graphs, imported Model/Data and external math libraries remain
 infrastructure. Local and public-forward qualification is distinct from the
 final130-task trajectory/performance comparison.
 
-Modern scenes are prepared by [scene_cache.py](scene_cache.py), with engine,
-asset, input/processed XML, options and source bindings. Runtime cache misses
-fail; explicit offline preparation creates modern MJBs. CPU2.3.7 MJBs are not
+Modern scenes are prepared by [scene_cache.py](scene_cache.py). Runtime uses
+engine versions, input XML, options and scene-parameter metadata for direct
+selection. Asset/library/model content validation and legacy-cache migration
+run only during explicit offline preparation. Runtime cache misses fail;
+explicit offline preparation creates modern MJBs. CPU2.3.7 MJBs are not
 loaded by the modern engine. The existing task factory remains the owner of
 shell construction and final XML processing.
 

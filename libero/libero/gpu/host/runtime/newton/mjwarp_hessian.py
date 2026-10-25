@@ -56,10 +56,7 @@ class HessianPlan:
         if not self.library_path.is_file():
             raise MissingCompiledProduct('Build CMake target flash_mjwarp_hessian_fp32 offline')
         self.library = ct.CDLL(str(self.library_path))
-        self.library.flash_mjwarp_hessian_source_id.restype = ct.c_char_p
         self.library.flash_mjwarp_hessian_arguments_bytes.restype = ct.c_size_t
-        if self.library.flash_mjwarp_hessian_source_id().decode() != source_id():
-            raise MissingCompiledProduct('Handwritten Hessian binary is stale; rebuild its CMake target offline')
         if self.library.flash_mjwarp_hessian_arguments_bytes() != ct.sizeof(HessianInputs):
             raise ValueError('Hessian C/Python ABI mismatch')
         if self.library.flash_mjwarp_hessian_arch() != device.arch:

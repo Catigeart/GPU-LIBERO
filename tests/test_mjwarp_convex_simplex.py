@@ -41,9 +41,9 @@ def test_default_and_entry_specific_abi(monkeypatch,tmp_path):
     p,f,s=fake_loader(monkeypatch,tmp_path);assert loader.load_leaf('convex',Args,p,s)[1] is f;assert loader.load_leaf('convex',Args,p,s,entry='simplex')[1] is f
 
 
-def test_stale_source_precedes_missing_new_entry(monkeypatch,tmp_path):
+def test_missing_new_entry_is_checked_without_source_authentication(monkeypatch,tmp_path):
     p,f,s=fake_loader(monkeypatch,tmp_path,entry=False,identity='old')
-    with pytest.raises(MissingCompiledProduct,match='stale'):loader.load_leaf('convex',Args,p,s,entry='simplex')
+    with pytest.raises(MissingCompiledProduct,match='lacks simplex entry'):loader.load_leaf('convex',Args,p,s,entry='simplex')
 
 
 def test_missing_entry_demands_offline_build(monkeypatch,tmp_path):

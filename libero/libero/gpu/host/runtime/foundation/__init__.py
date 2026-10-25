@@ -1,6 +1,6 @@
-"""Versioned shared metadata, binding and device admission protocol.
+"""Resident forward admission and device-buffer ownership.
 
-Mathematical producers remain owned by their D/C/S/N modules.
+Physical computation remains in the dynamics, collision and solver modules.
 """
-from .schema import FieldDescriptor, checked_product, content_sha256
-from .binding import BindingRegistry, BindingError
+from .schema import checked_product
+from .binding import BindingError

@@ -81,10 +81,10 @@ class CompatibilityBuildTests(unittest.TestCase):
             self.assertEqual(len(outer['events']), 1)
             self.assertEqual(outer['events'][0]['commands_executed'], [])
 
-    def test_private_signed_products_are_reclaimed_without_deleting_project(self):
+    def test_private_products_are_reclaimed_without_deleting_project(self):
         selected = self.root / 'project'
         selected.mkdir()
-        with product_cache_scope(self.root / 'products', authority_root=self.root / 'authority'):
+        with product_cache_scope(self.root / 'products'):
             with product_build() as run:
                 target = private_product_root(selected / 'collision')
                 target.mkdir(parents=True)
@@ -118,7 +118,7 @@ class CompatibilityBuildTests(unittest.TestCase):
             unit, header = folder / 'unit.cu', folder / 'header.cuh'
             unit.write_text(source); header.write_text('header')
             target = folder / ('random-' + label + '.so')
-            with patch.object(build_artifacts, 'current_product_authority', return_value=Authority()), \
+            with patch.object(build_artifacts, 'current_product_cache', return_value=Authority()), \
                  patch.object(build_artifacts, 'compiler_dependencies', return_value=[file_record(header)]), \
                  patch.object(build_artifacts, 'toolchain_record', return_value={'compiler': 'pinned compiler'}):
                 build_artifacts.receipted_artifact_build(
@@ -136,6 +136,31 @@ class CompatibilityBuildTests(unittest.TestCase):
         request('flag-change', flag='-O3')
         request('architecture-change', architecture=90)
         self.assertTrue(all(identity != captured[0] for identity in captured[2:]))
+
+    def test_direct_product_runtime_skips_compiler_and_dependency_queries(self):
+        def request(folder):
+            folder.mkdir()
+            unit, target = folder/'unit.cu', folder/'module.so'
+            unit.write_text('fixed generated source')
+            return build_artifacts.receipted_artifact_build(
+                commands=[['nvcc', '-O2', '-shared', str(unit), '-o', str(target)]],
+                units=[unit], outputs={'module.so': target}, architecture=80,
+                verify=lambda: self.assertEqual(target.read_bytes(), b'offline image'))
+        def compile_fixture(command, **kwargs):
+            Path(command[command.index('-o')+1]).write_bytes(b'offline image')
+            return SimpleNamespace(returncode=0)
+        with product_cache_scope(self.root/'products'), \
+             patch.object(build_artifacts, 'compiler_dependencies', return_value=[]), \
+             patch.object(build_artifacts, 'toolchain_record', return_value={'compiler': 'offline'}), \
+             patch.object(build_artifacts.subprocess, 'run', side_effect=compile_fixture):
+            self.assertFalse(request(self.root/'offline')['cache']['hit'])
+        with compilation_scope(False), product_cache_scope(self.root/'products'), \
+             patch.object(build_artifacts, 'compiler_dependencies', side_effect=AssertionError('dependency query')), \
+             patch.object(build_artifacts, 'toolchain_record', side_effect=AssertionError('toolchain query')), \
+             patch.object(build_artifacts.subprocess, 'run', side_effect=AssertionError('compiler invocation')):
+            result = request(self.root/'runtime')
+            self.assertTrue(result['cache']['hit'])
+            self.assertEqual(result['compile_commands_executed'], [])
 
     def test_provider_scope_covers_complete_environment_initialization(self):
         events = []

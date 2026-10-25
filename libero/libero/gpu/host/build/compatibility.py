@@ -1,8 +1,8 @@
 """Offline preparation of the public single-environment FP64 entry.
 
-This profile keeps signed private products, shares the unified project's
+This profile prepares ordinary native products, shares the unified project's
 constraint sources/Warp cache, and warms one ordinary control step to prepare
-lazy modules. Existing unsigned AOT binaries are not retroactively signed.
+lazy modules. Runtime construction neither signs products nor invokes compilers.
 """
 import json
 import os
@@ -42,7 +42,7 @@ def prepare(root, tasks, *, progress=None):
     root = Path(root).expanduser().resolve()
     rows = []
     result = dict(schema='libero-compatibility-build-v1', status='preparing', real_bits=64,
-                  signed_products=True, project=str(root), tasks=rows,
+                  product_storage='native-v1', project=str(root), tasks=rows,
                   physics_executed_for_module_warmup=True)
     folder = root / 'compatibility'
     # Invalidate an old ready marker before preparing a new task selection.

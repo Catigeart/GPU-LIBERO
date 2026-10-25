@@ -6,6 +6,12 @@ from unittest.mock import patch
 
 
 class SubstepBuildTests(unittest.TestCase):
+    def setUp(self):
+        from libero.gpu import precision
+        selected = patch.object(precision, 'bits', 64)
+        selected.start()
+        self.addCleanup(selected.stop)
+
     def test_single_solve_candidate_has_separate_admission_but_reuses_products(self):
         from libero.gpu.host.build import substep_native
         with tempfile.TemporaryDirectory() as directory:
@@ -49,7 +55,7 @@ class SubstepBuildTests(unittest.TestCase):
                     substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
                 execute.assert_not_called()
 
-    def test_thread_configuration_changes_identity_and_rejects_old_manifest(self):
+    def test_thread_configuration_changes_offline_recipe_without_changing_tree(self):
         from libero.gpu.host.build import substep_native
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -64,16 +70,13 @@ class SubstepBuildTests(unittest.TestCase):
                 entries += [arg[2:].split('=', 1)[0] + ':STRING=' + arg.split('=', 1)[1]
                             for arg in first['commands'][0] if arg.startswith('-D')]
                 cache.write_text('\n'.join(entries) + '\n')
-                self.assertTrue(substep_native._configured(first))
                 cache.write_text(cache.read_text().replace('FLASH_SUBSTEP_THREADS:STRING=64',
                                                           'FLASH_SUBSTEP_THREADS:STRING=128'))
-                self.assertFalse(substep_native._configured(first))
                 second = substep_native.prepare(source, root / 'cache', root / 'sdk', 80)
                 self.assertEqual(second['config']['threads_per_world'], 128)
                 self.assertIn('-DFLASH_SUBSTEP_THREADS=128', second['commands'][0])
                 self.assertNotEqual(first['identity'], second['identity'])
                 self.assertEqual(first['folder'], second['folder'])
-                self.assertTrue(substep_native._configured(second))
 
     def test_source_edits_keep_the_cmake_build_tree_and_runtime_is_load_only(self):
         from libero.gpu.host.build import substep_native
@@ -123,13 +126,54 @@ class SubstepBuildTests(unittest.TestCase):
             with compilation_scope(False),patch.object(substep_native.subprocess,'run') as execute:
                 with self.assertRaises(MissingCompiledProduct):substep_native.finish(first)
                 execute.assert_not_called()
-            from types import SimpleNamespace
             Path(profile['library']).write_bytes(b'profile fixture')
-            with compilation_scope(False),patch.object(substep_native,'_configured',return_value=True), \
-                    patch.object(substep_native.subprocess,'run',return_value=SimpleNamespace(
-                        returncode=0,stdout='ninja: no work to do.\n')) as execute:
+            with compilation_scope(False), patch.object(substep_native.subprocess,'run') as execute:
                 substep_native.finish(profile)
-                self.assertEqual(execute.call_args.args[0][-1],'flash_substep_newton_profile')
+                execute.assert_not_called()
+
+    def test_load_only_products_need_no_source_toolchain_or_writes(self):
+        from libero.gpu.host.build import substep_native
+        from libero.gpu.host.build.compilation import MissingCompiledProduct
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(substep_native.scalar, 'bits', 64), \
+                patch.object(substep_native, 'nvcc_path', side_effect=AssertionError('runtime called nvcc')):
+            root = Path(directory)
+            # No source, SDK or CMakeCache is installed. Product selection is
+            # sufficient here; ctypes and the runtime validate the actual ABI.
+            for prepare in (substep_native.prepare, substep_native.prepare_staged,
+                            substep_native.prepare_motion, substep_native.prepare_force):
+                with self.subTest(product=prepare.__name__):
+                    with patch.object(Path, 'mkdir', side_effect=AssertionError('runtime wrote directory')), \
+                            patch.object(Path, 'write_text', side_effect=AssertionError('runtime wrote recipe')), \
+                            patch.object(substep_native.subprocess, 'run', side_effect=AssertionError('runtime ran build tool')):
+                        manifest = prepare(root/'absent/kernel.cu', root/'cache', root/'sdk', 80,
+                                           nv=21, for_build=False)
+                        self.assertFalse(manifest['commands'])
+                        with self.assertRaises(MissingCompiledProduct):
+                            substep_native.finish(manifest)
+                    library = Path(manifest['library'])
+                    library.parent.mkdir(parents=True, exist_ok=True)
+                    library.write_bytes(b'product fixture')
+                    with patch.object(substep_native.subprocess, 'run', side_effect=AssertionError('runtime ran Ninja')):
+                        self.assertIs(substep_native.finish(manifest), manifest)
+            self.assertFalse(list(root.rglob('*.json')))
+            self.assertFalse(list(root.rglob('CMakeCache.txt')))
+
+    def test_fp32_controller_is_load_only(self):
+        from libero.gpu.host.backends.cuda_fp32.controller import controller_product
+        from libero.gpu.host.build.compilation import MissingCompiledProduct
+        from libero.gpu.host.build.project_paths import project_paths
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(subprocess, 'run', side_effect=AssertionError('runtime ran Ninja')):
+            root = Path(directory)
+            for fast in (False, True):
+                with self.assertRaises(MissingCompiledProduct):
+                    controller_product(root, fast_compile=fast)
+                library = project_paths(root).cmake / ('sm80-dev' if fast else 'sm80-release') / 'mjwarp_controller_fp32.so'
+                library.parent.mkdir(parents=True, exist_ok=True)
+                library.write_bytes(b'controller fixture')
+                self.assertEqual(controller_product(root, fast_compile=fast), library)
 
 
 if __name__ == "__main__":

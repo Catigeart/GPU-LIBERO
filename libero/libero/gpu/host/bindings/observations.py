@@ -259,6 +259,9 @@ def _batch_array_token(value):
 
 
 def _batch_scene_arrays(observer):
+    # Explicit rendering may lazily allocate transforms on a no-camera owner.
+    # Those resources are not inputs to its captured low-dimensional sampler.
+    if not observer.plan.image_specs:return {}
     arrays=dict(observer.visual_sources)
     trans=observer.scene_transforms
     if trans is not None:
@@ -351,15 +354,18 @@ def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=Non
     scene_roots=_batch_scene_arrays(observer)
     tokens={name:_batch_array_token(value) for name,value in roots.items()}
     scene_tokens={name:_batch_array_token(value) for name,value in scene_roots.items()}
-    scene_owner=observer.scene_transforms
+    has_scene=bool(observer.plan.image_specs)
+    scene_owner=observer.scene_transforms if has_scene else None
     scene_config=tuple(getattr(scene_owner,name,None) for name in
         ('nbody','ncam','nlight','nworld','host_camlight'))
     sample_callback=observer.sample
     def graph_guard():
+        """Cold native binding check; ordinary replay uses observer state flags."""
         current=binding.fields()
         current_scene=_batch_scene_arrays(observer)
         return (observer._cuda_direct_sampler is sampler and sampler.plan is plans[0] and
-                observer.sample is sample_callback and observer.scene_transforms is scene_owner and
+                observer.sample is sample_callback and
+                (observer.scene_transforms if has_scene else None) is scene_owner and
                 tuple(getattr(scene_owner,name,None) for name in
                     ('nbody','ncam','nlight','nworld','host_camlight'))==scene_config and
                 current.keys()==roots.keys() and current_scene.keys()==scene_roots.keys() and

@@ -80,13 +80,25 @@ class DeferredNativeBuildTests(unittest.TestCase):
                 compile_.assert_called_once()
                 self.assertEqual(bridge._ptx, b'qualified-test-product')
 
-    def test_source_drift_is_rejected_even_when_compile_is_deferred(self):
+    def test_deferred_bridge_does_not_read_source_or_discover_nvrtc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(Path, 'read_bytes', side_effect=AssertionError('source read')), \
+                    patch.dict(Bridge.__init__.__globals__, {
+                        'default_nvrtc': lambda: (_ for _ in ()).throw(AssertionError('NVRTC lookup'))}):
+                bridge = Bridge(kernel_source=Path(directory)/'absent.cu',
+                                build_dir=Path(directory), defer_compile=True)
+                self.assertIsNone(bridge.nvrtc_path)
+                self.assertIsNone(bridge._ptx)
+
+    def test_source_drift_is_rejected_on_actual_standalone_use(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)/'drift.cu'
             source.write_text('invalid frozen source')
-            with self.assertRaisesRegex(AssertionError, 'source drift'):
-                Bridge(kernel_source=source, build_dir=Path(directory),
-                       nvrtc_path='unused', defer_compile=True)
+            bridge = Bridge(kernel_source=source, build_dir=Path(directory),
+                            nvrtc_path='unused', defer_compile=True)
+            with self.assertRaisesRegex(AssertionError, 'source drift'), \
+                    patch.object(Bridge, '_driver', side_effect=AssertionError('unexpected driver')):
+                bridge.load()
 
     def test_reset_graph_captures_once_and_never_launches_a_child_graph_in_capture(self):
         tree = ast.parse((GPU/'host/runtime/step/recovery_runtime_r02.py').read_text())

@@ -29,7 +29,8 @@ def _written(mask:wp.array(dtype=wp.int32), actual:wp.array(dtype=wp.int64),
         step_valid[w]=0
 
 
-def make_boundary_callbacks(bundle, built):
+def make_boundary_callbacks(bundle, built, *, replacement_factory=None, replacement_assembler=None,
+                            admission=None, factory_entry=None, retain_cleanup=False):
     """Return real resident callbacks; unsupported static mutations fail explicitly."""
     runtime, stream = bundle.runtime, bundle.stream
     reset_ctrl = bundle.reset_ctrl
@@ -98,6 +99,8 @@ def make_boundary_callbacks(bundle, built):
             snapshot=continuation_snapshot(bundle)
             observations=old_components.observations.snapshot_continuation(stream=stream)
             preparation=prepare_parameter_model(bundle,built,changes,token,model_generation)
+            domain_lease = (None if admission is None else
+                admission.admission_domain_for_built(preparation.built, factory_entry=factory_entry))
             initial={key:np.array(value,copy=True) for key,value in bundle.initial_state.items()}
             old_components.release()
             # Old boundary callbacks share these cells. They must not retain
@@ -107,9 +110,15 @@ def make_boundary_callbacks(bundle, built):
             gc.collect()
             fresh=None
             try:
-                fresh=prepare_shape_physics(preparation.built,state=initial,device=stream.device,
+                prepare = prepare_shape_physics if replacement_factory is None else replacement_factory
+                fresh=prepare(preparation.built,state=initial,device=stream.device,
                     stream=stream,mode='diagnostic',with_controller=True,
                     model_spec=preparation.spec,constraint_package=preparation.constraint_package)
+                if factory_entry is not None:
+                    fresh.domain_admission=admission
+                    fresh.domain_lease=domain_lease
+                    fresh.cold_recovery_prepare=prepare
+                    fresh.domain_factory_entry=factory_entry
                 restore=restore_continuation(fresh,snapshot)
                 # All fresh static owners have passed their actual native/source
                 # binding validation. Publish the device generation only now.
@@ -125,7 +134,11 @@ def make_boundary_callbacks(bundle, built):
                     fresh.device_model_epoch.numpy()[0]!=token.next_generation):
                     raise RuntimeError('actual cold model publication failed')
                 fresh.continuation_evidence=restore
-                components=assemble_prepared(preparation.built,fresh,observation_continuation=observations)
+                if domain_lease is not None:
+                    from .recovery_cleanup_factory_r02 import _publication
+                    _publication(fresh,domain_lease,token.next_generation)
+                assemble = assemble_prepared if replacement_assembler is None else replacement_assembler
+                components=assemble(preparation.built,fresh,observation_continuation=observations)
                 return components,preparation.descriptor_plan
             except BaseException as error:
                 # Preserve actual pre-release observations even when no fresh
@@ -146,6 +159,9 @@ def make_boundary_callbacks(bundle, built):
                     try:close()
                     except BaseException as cleanup:
                         error.gpu_cleanup_errors=list(getattr(error,"gpu_cleanup_errors",()))+[str(cleanup)]
+                        if retain_cleanup:
+                            from libero.gpu.host.adapters.environment.cleanup_ownership_r02 import ReleaseOwner, attach_cleanup
+                            attach_cleanup(error,ReleaseOwner(fresh,method_name='close'))
                 raise
         return replacement_handler[0](build_new,token,model_generation)
     def evidence(world):

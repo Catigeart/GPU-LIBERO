@@ -88,7 +88,7 @@ class PairParameterCacheTests(unittest.TestCase):
         self.warp = SimpleNamespace(empty=Mock(side_effect=lambda *a, **k: object()),
             float64='f64', int32='i32', get_stream=Mock(return_value='stream'),
             synchronize_stream=Mock())
-        namespace = {'wp': self.warp, 'NativePlan': self.plan,
+        namespace = {'wp': self.warp, 'scalar': SimpleNamespace(wp_real=self.warp.float64), 'NativePlan': self.plan,
                      'GPU_ROOT': Path('/gpu'), 'UserDict': UserDict}
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), namespace)
         self.cache = namespace['_pair_parameter_cache']

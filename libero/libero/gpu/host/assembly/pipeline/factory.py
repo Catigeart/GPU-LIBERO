@@ -3,14 +3,9 @@
 All substitutions happen during construction. Original factories, source
 modules and the preceding fusion baseline are retained.
 """
-from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
-import ast
-import hashlib
-from pathlib import Path
 from functools import partial
 from types import SimpleNamespace
 
-from libero.gpu.host.assembly.compose import factory as first
 from libero.gpu.host.assembly.compose.backup import FusedEventRecoveringRuntime
 from libero.gpu.host.assembly.compose.s_rows import fused_workspace_type
 from libero.gpu.host.runtime.dynamics import wide_factory, wide_runtime
@@ -20,21 +15,14 @@ from libero.gpu.host.runtime.step import recovery_event_factory, s04_jar_special
 from . import dynamics, euler, recovery, newton
 from .collision import make_fused_adapter
 from .copies import FusedNoForwardHold, FusedRuntimePostAdapter as CopyPost
-
-
-class _HoldConstructor(ast.NodeTransformer):
-    def visit_Attribute(self, node):
-        if ast.unparse(node) == "r._NoForwardHold":
-            return ast.Name(id="_FusedHold", ctx=ast.Load())
-        return self.generic_visit(node)
-
-
-_original_initialize = first._derive(wide_runtime.GenericWideRuntimeDynamicsAdapter.__init__,
-                                    {"_FusedHold": FusedNoForwardHold}, _HoldConstructor())
+from .forward import FusedShapePhysicsForward, FusedFoundationForwardAdapter
+from .osc import FusedRuntimeControllerAdapter
+from libero.gpu.host.runtime.step.shape_assembly import ShapeAssembly
 
 
 def _initialize_dynamics(self, *args, **kwargs):
-    _original_initialize(self, *args, **kwargs)
+    wide_runtime.GenericWideRuntimeDynamicsAdapter.__init__(
+        self, *args, hold_type=FusedNoForwardHold, **kwargs)
     dynamics.prepare_dynamics(self)
 
 
@@ -48,31 +36,12 @@ class FusedRuntimePostAdapter(dynamics.FusedRuntimePostAdapter, CopyPost):
         super().__init__(*args, **kwargs)
 
 
-class _DynamicsSources(ast.NodeTransformer):
-    count = 0
-    def visit_Assign(self, node):
-        if any(isinstance(t, ast.Name) and t.id == "names" for t in node.targets):
-            if not isinstance(node.value, ast.Tuple):
-                raise ValueError("original source bundle tuple required")
-            gpu = (GPU_ROOT / '.')
-            paths = sorted(((GPU_ROOT / 'host/assembly/compose')).glob("*.py")) + sorted((GPU_ROOT / 'host/assembly/pipeline').glob("*.py"))
-            node.value.elts.extend(ast.Constant(value=str(p.relative_to(gpu))) for p in paths)
-            self.count += 1
-        return self.generic_visit(node)
-
-
 def prepare_from_built(*args, **kwargs):
-    transform = _DynamicsSources()
-    prepare = first._derive(wide_factory.prepare_from_built,
-        {"GenericRuntimeDynamicsAdapter": FusedWideDynamicsAdapter}, transform)
-    if transform.count != 1:
-        raise ValueError("one cold dynamics source bundle required")
-    return prepare(*args, **kwargs)
+    return wide_factory.prepare_from_built(*args, adapter_type=FusedWideDynamicsAdapter, **kwargs)
 
 
 def prepare_post(*args, **kwargs):
-    adapter = first._derive(wide_factory.prepare_post,
-        {"RuntimePostAdapter": FusedRuntimePostAdapter})(*args, **kwargs)
+    adapter = wide_factory.prepare_post(*args, adapter_type=FusedRuntimePostAdapter, **kwargs)
     # The original factory binds and freezes the post workspace before the
     # source launcher's validation can be used for cold planning.
     dynamics.prepare_post(adapter)
@@ -87,9 +56,8 @@ def _load_candidate(nv, nm, build_root):
 
 
 def _newton_factory(**kwargs):
-    adapter = first._derive(live_copy_api.prepare_live_copy_runtime,
-        {"load_candidate": _load_candidate,
-         "ColdNewtonRuntimeAdapter": newton.FusedFinalEventAdapter})(**kwargs)
+    adapter = live_copy_api.prepare_live_copy_runtime(
+        candidate_loader=_load_candidate, adapter_type=newton.FusedFinalEventAdapter, **kwargs)
     adapter.final_event = adapter.solver
     return adapter
 
@@ -99,63 +67,8 @@ def _cold_factories():
 
 
 FusedRuntime = recovery.runtime_type(euler.runtime_type(FusedEventRecoveringRuntime))
-_recovery_loop = first._derive(recovery_event_factory._recovery_loop,
-    {"RecoveringShapeRuntime": FusedRuntime,
-     "DataRecoveryWorkspace": recovery.FusedDataRecoveryWorkspace})
-
-
-class _ColdImports(ast.NodeTransformer):
-    dynamics = 0
-    euler = 0
-    inserted = 0
-
-    def visit_Constant(self, node):
-        if node.value == "libero.gpu.host.runtime.dynamics.wide_factory":
-            self.dynamics += 1
-            return ast.Constant(value="libero.gpu.host.assembly.pipeline.factory")
-        return node
-
-    def visit_ImportFrom(self, node):
-        if node.module == "libero.gpu.reference.integration.euler_integrator.wide_angle":
-            node.module = "libero.gpu.host.assembly.pipeline.euler"
-            node.names = [ast.alias(name="FusedEulerWorkspace", asname="WideAngleEulerWorkspace")]
-            self.euler += 1
-        return node
-
-    def visit_For(self, node):
-        node = self.generic_visit(node)
-        if ast.unparse(node.iter) == "ast.walk(tree)":
-            node.body.extend(ast.parse('''
-if isinstance(node, ast.ImportFrom) and node.module == "shape_physics":
-    node.module = "libero.gpu.host.assembly.pipeline.forward"
-    node.level = 0
-    node.names = [ast.alias(name="FusedShapePhysicsForward", asname="ShapePhysicsForward")]
-if isinstance(node, ast.ImportFrom) and node.module == "libero.gpu.host.runtime.dynamics.runtime_factory":
-    if any(alias.name == "prepare_post" for alias in node.names):
-        node.module = "libero.gpu.host.assembly.pipeline.factory"
-if isinstance(node, ast.ImportFrom) and node.module == "libero.gpu.host.runtime.foundation.runtime_adapter":
-    node.module = "libero.gpu.host.assembly.pipeline.forward"
-    node.names = [ast.alias(name="FusedFoundationForwardAdapter", asname="FoundationForwardAdapter")]
-if isinstance(node, ast.ImportFrom) and node.module == "libero.gpu.host.runtime.dynamics.runtime_adapter":
-    if any(alias.name == "RuntimeControllerAdapter" for alias in node.names):
-        node.module = "libero.gpu.host.assembly.pipeline.osc"
-        node.names = [ast.alias(name="FusedRuntimeControllerAdapter", asname="RuntimeControllerAdapter")]
-if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name) and node.func.value.id == "sm"
-        and node.func.attr == "PositionReferenceWorkspace"):
-    node.func = ast.Call(func=ast.Name(id="_fused_s_workspace_type", ctx=ast.Load()),
-                         args=[node.func], keywords=[])
-''').body)
-            self.inserted += 1
-        return node
-
-    def visit_Call(self, node):
-        node = self.generic_visit(node)
-        if isinstance(node.func, ast.Name) and node.func.id == "dict" and any(
-                k.arg == "_recovery_loop" for k in node.keywords):
-            node.keywords.append(ast.keyword(arg="_fused_s_workspace_type",
-                                value=ast.Name(id="_fused_s_workspace_type", ctx=ast.Load())))
-        return node
+_recovery_loop = partial(recovery_event_factory._recovery_loop,
+    runtime_type=FusedRuntime, recovery_workspace_type=recovery.FusedDataRecoveryWorkspace)
 
 
 def _validate_controller_selection(dynamics_owner, controller):
@@ -194,23 +107,20 @@ def _validate_selection(bundle):
 
 
 def prepare_fused_physics(*args, newton_diagnostic_profile='compatible', **kwargs):
-    if kwargs.get("mode", "diagnostic") != "diagnostic":
-        raise ValueError("large fusion candidate requires explicit diagnostic mode")
-    transform = _ColdImports()
+    if kwargs.get("mode", "diagnostic") not in ("production", "diagnostic"):
+        raise ValueError("unsupported execution mode")
     def cold_factories():
         return (make_fused_adapter,
                 partial(_newton_factory, diagnostic_profile=newton_diagnostic_profile), 'cn')
-    prepare = first._derive(recovery_event_factory.prepare_recovery_event_physics,
-        {"_event_cold_factories": cold_factories, "_recovery_loop": _recovery_loop,
-         "_fused_s_workspace_type": fused_workspace_type}, transform)
-    if (transform.dynamics, transform.euler, transform.inserted) != (1, 1, 1):
-        raise ValueError("exact original cold substitutions required")
-    bundle = prepare(*args, **kwargs)
+    assembly = ShapeAssembly(dynamics_factory=prepare_from_built,
+        post_factory=prepare_post, cold_factories=cold_factories,
+        foundation_type=FusedFoundationForwardAdapter, forward_type=FusedShapePhysicsForward,
+        controller_type=FusedRuntimeControllerAdapter, euler_type=euler.FusedEulerWorkspace,
+        runtime_factory=_recovery_loop, constraint_workspace_type=fused_workspace_type)
+    bundle = recovery_event_factory.prepare_recovery_event_physics(
+        *args, _assembly=assembly, **kwargs)
     try:
         bundle.fusion_batch = 3
-        gpu = (GPU_ROOT / '.')
-        paths = sorted(((GPU_ROOT / 'host/assembly/compose')).glob("*.py")) + sorted((GPU_ROOT / 'host/assembly/pipeline').glob("*.py"))
-        bundle.fusion_source_manifest = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
         bundle.fusion_dynamics_catalog = dynamics.plan_catalog(bundle.dynamics)
         bundle.fusion_post_catalog = dynamics.plan_catalog(bundle.post)
         bundle.validate_fusion_selection = lambda: _validate_selection(bundle)

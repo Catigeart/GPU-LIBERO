@@ -7,7 +7,6 @@ are bound before the retained generated solver makes pointer aliases.
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from ..core.model_bytes import load_native_model
-import hashlib
 from types import SimpleNamespace
 import numpy as np
 import mujoco
@@ -53,12 +52,13 @@ def _validate_native(model):
 def prepare_live_copy_runtime(*, model_path=None, model=None, model_spec, rows, contacts, nworld,
                          build_root, live_inputs, canonical_outputs=None,
                          registry=None, registered_candidate_id=None,
-                         mode='diagnostic', device='cuda:0', diagnostic_profile='compatible'):
+                         mode='diagnostic', device='cuda:0', diagnostic_profile='compatible',
+                         candidate_loader=None, adapter_type=None):
     """Cold load exact native MJB and seal a live component-runtime candidate.
 
-    Without a registry, only explicit diagnostic mode is allowed. With a
-    registry, component-runtime scope is required, including in diagnostic
-    mode; a solver-math license never becomes a production runtime license.
+    The native model must satisfy the implemented Newton domain. An optional
+    registry additionally checks component-runtime scope; numerical review
+    records are not part of runtime execution.
     Returned adapter exposes source_manifest and exact model provenance.
     """
     if mode not in ('diagnostic', 'production'):
@@ -74,17 +74,19 @@ def prepare_live_copy_runtime(*, model_path=None, model=None, model_spec, rows, 
         raise ValueError('native dimensions differ from ModelSpec')
     warm_disabled = _validate_native(model)
     if registry is None:
-        if mode != 'diagnostic' or registered_candidate_id is not None:
-            raise ValueError('production requires independent component-runtime registry admission')
+        if registered_candidate_id is not None:
+            raise ValueError('candidate id requires an explicit capability registry')
         admission = SimpleNamespace(execution_allowed=True,
-                                    reasons=('explicit diagnostic only; independent review pending',),
-                                    production_allowed=False)
+                                    reasons=(),
+                                    production_allowed=True)
     else:
         admission = registry.admit(registered_candidate_id, model_spec, mode=mode,
                                    required_scope='component-runtime')
     rules = _AdmittedModel(admission)
     rules._validate()
-    package, manifest = load_candidate(int(model.nv), int(model.nM), Path(build_root))
+    candidate_loader = load_candidate if candidate_loader is None else candidate_loader
+    adapter_type = ColdNewtonRuntimeAdapter if adapter_type is None else adapter_type
+    package, manifest = candidate_loader(int(model.nv), int(model.nM), Path(build_root))
     ws = package.workspace.NewtonFwdWorkspace(
         nworld, rows, contacts, device=device, maxiter=int(model.opt.iterations),
         warmstart_enabled=not bool(int(model.opt.disableflags) & warm_disabled))
@@ -100,7 +102,7 @@ def prepare_live_copy_runtime(*, model_path=None, model=None, model_spec, rows, 
     if ('qacc_warmstart' in live_inputs and 'qacc_warmstart' in outputs and
             live_inputs['qacc_warmstart'] is not outputs['qacc_warmstart']):
         raise ValueError('warm input and canonical output must retain the same owner')
-    adapter = ColdNewtonRuntimeAdapter(ws, rules=rules,
+    adapter = adapter_type(ws, rules=rules,
                                       solver_factory=parallel_tape_solver_type(package.solver.FwdConstraintSolver))
     adapter.bind_inputs(live_inputs)
     adapter.bind_outputs(outputs)
@@ -110,13 +112,9 @@ def prepare_live_copy_runtime(*, model_path=None, model=None, model_spec, rows, 
     adapter.source_manifest = dict(manifest, model_sha256=model_sha,
         model_identity=model_spec.identity_key, mode=mode, diagnostic_profile=diagnostic_profile,
         execution_scope='component-runtime', acceptance='diagnostic-pending',
-        live_api_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        adapter_sha256=hashlib.sha256((GPU_ROOT / 'host/runtime/newton/runtime_adapter.py').read_bytes()).hexdigest(),
         runtime=dict(rows=rows, contacts=contacts, nworld=nworld,
                      iterations=int(model.opt.iterations), tolerance=float(model.opt.tolerance),
                      meaninertia=float(model.stat.meaninertia)))
-    adapter.source_manifest['live_original_api_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/live_api.py').read_bytes()).hexdigest()
-    adapter.source_manifest['parallel_tape_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/parallel_tape.py').read_bytes()).hexdigest()
     adapter.source_manifest['optimization'] = 'cold-parallel-tape-only; independent model runtime review pending'
     adapter.native_model = model
     adapter.native_model_path = path

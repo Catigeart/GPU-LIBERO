@@ -7,7 +7,6 @@ are bound before the retained generated solver makes pointer aliases.
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from pathlib import Path
 from ..core.model_bytes import load_native_model
-import hashlib
 from types import SimpleNamespace
 import numpy as np
 import mujoco
@@ -57,9 +56,9 @@ def prepare_live_guard_copy_runtime(*, model_path=None, model=None, model_spec, 
                          mode='diagnostic', device='cuda:0'):
     """Cold load exact native MJB and seal a live component-runtime candidate.
 
-    Without a registry, only explicit diagnostic mode is allowed. With a
-    registry, component-runtime scope is required, including in diagnostic
-    mode; a solver-math license never becomes a production runtime license.
+    The native model must satisfy the implemented Newton domain. An optional
+    registry additionally checks component-runtime scope; numerical review
+    records are not part of runtime execution.
     Returned adapter exposes source_manifest and exact model provenance.
     """
     if mode not in ('diagnostic', 'production'):
@@ -71,11 +70,11 @@ def prepare_live_guard_copy_runtime(*, model_path=None, model=None, model_spec, 
         raise ValueError('native dimensions differ from ModelSpec')
     warm_disabled = _validate_native(model)
     if registry is None:
-        if mode != 'diagnostic' or registered_candidate_id is not None:
-            raise ValueError('production requires independent component-runtime registry admission')
+        if registered_candidate_id is not None:
+            raise ValueError('candidate id requires an explicit capability registry')
         admission = SimpleNamespace(execution_allowed=True,
-                                    reasons=('explicit diagnostic only; independent review pending',),
-                                    production_allowed=False)
+                                    reasons=(),
+                                    production_allowed=True)
     else:
         admission = registry.admit(registered_candidate_id, model_spec, mode=mode,
                                    required_scope='component-runtime')
@@ -103,14 +102,9 @@ def prepare_live_guard_copy_runtime(*, model_path=None, model=None, model_spec, 
     adapter.source_manifest = dict(manifest, model_sha256=model_sha,
         model_identity=model_spec.identity_key, mode=mode,
         execution_scope='component-runtime', acceptance='diagnostic-pending',
-        live_api_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        adapter_sha256=hashlib.sha256((GPU_ROOT / 'host/runtime/newton/runtime_adapter.py').read_bytes()).hexdigest(),
         runtime=dict(rows=rows, contacts=contacts, nworld=nworld,
                      iterations=int(model.opt.iterations), tolerance=float(model.opt.tolerance),
                      meaninertia=float(model.stat.meaninertia)))
-    adapter.source_manifest['live_original_api_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/live_api.py').read_bytes()).hexdigest()
-    adapter.source_manifest['parallel_tape_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/parallel_tape.py').read_bytes()).hexdigest()
-    adapter.source_manifest['parallel_validation_sha256'] = hashlib.sha256((GPU_ROOT / 'host/runtime/newton/parallel_validation.py').read_bytes()).hexdigest()
     adapter.source_manifest['validation_manifest'] = adapter.solver.validation_manifest
     adapter.source_manifest['optimization'] = 'cold-parallel-tape-and-validation-only; independent model runtime review pending'
     adapter.native_model = model

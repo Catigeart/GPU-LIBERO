@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from libero.gpu.host.backends.mjwarp import scene_cache
 from libero.gpu.host.build.compilation import MissingCompiledProduct
-from libero.gpu.host.runtime.core.model_bytes import model_bytes, memory_record, checked_records, load_native_model
+from libero.gpu.host.runtime.core.model_bytes import model_bytes, load_native_model
 
 GPU = Path(__file__).resolve().parents[1] / 'libero/libero/gpu'
 
@@ -36,9 +36,12 @@ class SceneLifetimeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        binding = patch.object(scene_cache, 'binding', return_value={'engine': 'fixed', 'assets': 'actual'})
+        binding = patch.object(scene_cache, 'binding', return_value={'engine': {'python': 'fixed'}})
         binding.start()
         self.addCleanup(binding.stop)
+        inputs = patch.object(scene_cache, 'offline_inputs', return_value={'assets': {}, 'library_sha256': 'lib'})
+        inputs.start()
+        self.addCleanup(inputs.stop)
         self.files = scene_files()
 
     def publish(self):
@@ -46,7 +49,8 @@ class SceneLifetimeTests(unittest.TestCase):
         folder.mkdir(parents=True)
         raw = b'offline model'
         (folder / 'model.mjb').write_bytes(raw)
-        (folder / 'receipt.json').write_text(json.dumps(dict(binding=record,
+        (folder / 'receipt.json').write_text(json.dumps(dict(schema='modern-scene-v2', binding=record,
+            offline_inputs={'assets': {}, 'library_sha256': 'lib'},
             model_sha256=hashlib.sha256(raw).hexdigest(), processed_xml_sha256='processed')))
         return folder
 
@@ -60,13 +64,13 @@ class SceneLifetimeTests(unittest.TestCase):
                     self.assertIsNotNone(row[2])
         self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()})
 
-    def test_missing_or_corrupt_input_fails_without_creating_runtime_directories(self):
+    def test_missing_input_fails_without_creating_runtime_directories(self):
         with self.assertRaises(MissingCompiledProduct):
             with self.files(self.root, 'xml', {}, {}, None, prepare=False):
                 pass
         self.assertEqual(list(self.root.iterdir()), [])
         folder = self.publish()
-        (folder / 'model.mjb').write_bytes(b'corrupt')
+        (folder / 'model.mjb').unlink()
         before = set(self.root.rglob('*'))
         with self.assertRaises(MissingCompiledProduct):
             with self.files(self.root, 'xml', {}, {}, None, prepare=False):
@@ -128,7 +132,7 @@ class EnvironmentCloseTests(unittest.TestCase):
 
 class SharedCodeTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc') and importlib.util.find_spec('warp'), 'requires cc and Warp host bindings')
-    def test_stateless_code_loads_from_one_fixed_signed_file_with_separate_callers(self):
+    def test_stateless_code_loads_from_one_fixed_file_without_a_compiler_or_key(self):
         from libero.gpu.host.build import native
         from libero.gpu.host.build.compilation import compilation_scope
         from libero.gpu.host.build.product_cache import product_cache_scope
@@ -147,14 +151,15 @@ class SharedCodeTests(unittest.TestCase):
                  patch.object(native, 'compiler_dependencies', return_value=[]), \
                  patch.object(native, 'toolchain_record', return_value={'components': [native.file_record(source)]}), \
                  patch.object(native.subprocess, 'run', side_effect=build), \
-                 product_cache_scope(root/'products', authority_root=root/'authority'):
+                 product_cache_scope(root/'products'):
                 kwargs = dict(required_symbols=('answer',), shared=True)
                 _, prepared = native._compile_library_receipted('probe', 'actual admitted source', root/'offline', **kwargs)
                 key = prepared['product_cache']['key']
-                inputs = root/'products'/'signed-v1'/key/'inputs'
+                inputs = Path(prepared['product_cache']['directory'])/'inputs'
                 inputs.mkdir(exist_ok=True)
                 (inputs/'unit0.cu').write_text('actual admitted source')
                 with compilation_scope(False), \
+                     patch.object(native, 'nvcc_path', side_effect=AssertionError('runtime compiler discovery')), \
                      patch.object(native, 'compiler_dependencies', side_effect=AssertionError('runtime compiler query')), \
                      patch.object(native, 'toolchain_record', side_effect=AssertionError('runtime toolchain query')):
                     first, a = native._compile_library_receipted('probe', 'actual admitted source', root/'first', **kwargs)
@@ -168,20 +173,6 @@ class SharedCodeTests(unittest.TestCase):
 
 
 class ModelTransportTests(unittest.TestCase):
-    def test_immutable_payload_and_file_pins_keep_exact_content_checks(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'source'
-            path.write_bytes(b'actual source')
-            record = dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
-            self.assertEqual(checked_records([memory_record(b'actual model'), record])[0][0], b'actual model')
-            with self.assertRaises(TypeError):
-                memory_record(bytearray(b'mutable'))
-            with self.assertRaises(ValueError):
-                checked_records([dict(data=b'other', sha256=record['sha256'])])
-            path.write_bytes(b'changed source')
-            with self.assertRaises(ValueError):
-                checked_records([record])
-
     @unittest.skipUnless(importlib.util.find_spec('mujoco'), 'requires MuJoCo model binding')
     def test_native_buffer_serialization_matches_file_and_clone_identity(self):
         import copy
@@ -238,7 +229,7 @@ class ModelTransportTests(unittest.TestCase):
                 functions = [n for n in ast.parse(path.read_text()).body if isinstance(n, ast.FunctionDef)
                     and (n.name == '_validate_native' or n.name.startswith('prepare_live'))]
                 scope = dict(load_native_model=load_native_model, mujoco=mujoco, SimpleNamespace=SimpleNamespace,
-                    Path=Path, load_candidate=candidate,
+                    Path=Path, load_candidate=candidate, ColdNewtonRuntimeAdapter=object,
                     _AdmittedModel=lambda admission: SimpleNamespace(_validate=lambda: None))
                 exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), 'exec'), scope)
                 function = scope[next(n.name for n in functions if n.name.startswith('prepare_live'))]

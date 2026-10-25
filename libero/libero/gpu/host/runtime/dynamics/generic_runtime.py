@@ -1,7 +1,7 @@
 """New-model resident dynamics backend, including real controller operands.
 
 No PRE whitelist or fixed-model licence is borrowed. This adapter requires
-native source admission for the actual model, reuses original arithmetic, and
+structural admission for the actual model, reuses original arithmetic, and
 publishes only device-successful results. Numerical acceptance is separate.
 """
 import libero.gpu.precision as scalar
@@ -27,8 +27,8 @@ class GenericRuntimeDynamicsAdapter:
     """Same assembly-facing phase API as fixed LiveDynamicsAdapter.
 
     ``candidate_ids`` includes kinematics, frames, mass and dynamics. The last
-    candidate must cover the complete new/original arithmetic source bundle.
-    ``robot`` is an actual pinned decoder robot_metadata member.
+    candidate covers the actual model and supported parameter domain.
+    ``robot`` is an actual decoder robot_metadata member.
     """
     def __init__(self,arrays,metadata,spec,capacity,*,robot,registry,candidate_ids,
                  source_records,metadata_record,state_epoch,first_error,stream,mode='production',device='cuda:0'):
@@ -41,8 +41,6 @@ class GenericRuntimeDynamicsAdapter:
         self.state_epoch,self.first_error=state_epoch,first_error
         d=metadata['dimensions'];self.nv=int(d['nv']);self.nq=int(d['nq']);self.nbody=int(d['nbody']);self.nsite=int(d['nsite'])
         self.nu=int(d['nu'])
-        if not registry.candidates[candidate_ids['dynamics']].source_files:
-            raise ValueError('complete dynamics arithmetic source bundle required')
         fields=('body_parentid','body_dofadr','body_dofnum','dof_bodyid','dof_jntid','jnt_type')
         static,_=native_fields(arrays,metadata,spec,fields,source_records=source_records,
             metadata_record=metadata_record,registry=registry,candidate_id=candidate_ids['dynamics'],mode=mode)

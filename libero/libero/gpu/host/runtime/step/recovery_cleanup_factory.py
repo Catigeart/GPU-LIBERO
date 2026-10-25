@@ -3,33 +3,14 @@
 Sampler history and domain admission wrap this owner once at the public entry.
 No registered numerical receipt is inferred from diagnostic execution.
 """
-import ast
-import inspect
 from . import recovery_final_event_environment_factory as source
 from libero.gpu.host.adapters.environment import cleanup_factory_r02 as cleanup
 
-def _derive(function, callback=False, prepare=None):
-    tree=ast.parse(inspect.getsource(function))
-    changes=0
-    for node in ast.walk(tree):
-        if isinstance(node,ast.ImportFrom) and node.module=="libero.gpu.host.runtime.step.recovery_final_event_environment":
-            node.module="libero.gpu.host.runtime.step.recovery_cleanup_environment";changes+=1
-        elif callback and isinstance(node,ast.ImportFrom) and node.module=="libero.gpu.host.runtime.step.environment_cleanup_r02":
-            node.module="libero.gpu.host.runtime.step.recovery_cleanup_environment";changes+=1
-    if changes!=1:raise ValueError("one actual callback route required")
-    if prepare is not None:
-        for node in ast.walk(tree):
-            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=="prepare_shape_physics":node.func.id="_prepare_with_domain"
-    ast.fix_missing_locations(tree)
-    namespace=dict(vars(cleanup if callback else source))
-    namespace["assemble_prepared"]=assemble_prepared
-    if prepare is not None:namespace["_prepare_with_domain"]=prepare
-    exec(compile(tree,inspect.getfile(function)+":shape-recovery-cleanup","exec"),namespace)
-    return namespace[function.__name__]
-
 def assemble_prepared(built,prepared,*,observation_continuation=None):
-    return _derive(cleanup.assemble_prepared,callback=True)(
-        built,prepared,observation_continuation=observation_continuation)
+    from .recovery_cleanup_environment import make_boundary_callbacks
+    return cleanup.assemble_prepared(
+        built,prepared,observation_continuation=observation_continuation,
+        callback_factory=make_boundary_callbacks)
 
 def _publication(bundle,lease,expected):
     import warp as wp
@@ -66,7 +47,7 @@ def create(built,*,admission=None,physics_factory=None):
                     attach_cleanup(primary,ReleaseOwner(bundle,"close"))
                 raise
         return bundle
-    return _derive(source.create,prepare=prepare)(built)
+    return source.create(built,physics_factory=prepare,assembler=assemble_prepared)
 
 def rebuild_components(built,previous,*,admission=None,physics_factory=None):
     # Actual metadata shape gate; never the old fixed 48/43 shortcut.

@@ -57,8 +57,7 @@ class FusedControlDrive:
                 if other.capacity and max(value.ptr,other.ptr)<min(value.ptr+value.capacity,other.ptr+other.capacity):
                     raise ValueError('Control output overlaps actuation/mass storage: '+key)
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_control_drive offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_control_drive_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_control_drive_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale control/drive; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_control_drive_arch()!=self.stream.device.arch:raise ValueError('Control/drive architecture differs')
         for name,kind in (('prepare',ControlPrepareInputs),('control',ControllerSolveData),
                           ('actuation',ActuationInputs),('smooth',SmoothForceInputs),('mass',MassSolveInputs)):

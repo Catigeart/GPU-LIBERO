@@ -11,7 +11,8 @@ from .wide_position import GenericWidePositionWorkspace
 
 class GenericWideRuntimeDynamicsAdapter(GenericRuntimeDynamicsAdapter):
     def __init__(self,arrays,metadata,spec,capacity,*,robot,registry,candidate_ids,
-                 source_records,metadata_record,state_epoch,first_error,stream,mode='production',device='cuda:0'):
+                 source_records,metadata_record,state_epoch,first_error,stream,mode='production',device='cuda:0',
+                 smooth_type=GenericSmoothWorkspace,hold_type=r._NoForwardHold):
         from libero.gpu.reference.dynamics.comvel.kernel import ComVelModel
         from libero.gpu.reference.dynamics.rne_bias.kernel import RNEBiasModel
         from libero.gpu.reference.control.osc.controller import PandaOSCWorkspace
@@ -21,8 +22,6 @@ class GenericWideRuntimeDynamicsAdapter(GenericRuntimeDynamicsAdapter):
         self.state_epoch,self.first_error=state_epoch,first_error
         d=metadata['dimensions'];self.nv=int(d['nv']);self.nq=int(d['nq']);self.nbody=int(d['nbody']);self.nsite=int(d['nsite'])
         self.nu=int(d['nu'])
-        if not registry.candidates[candidate_ids['dynamics']].source_files:
-            raise ValueError('complete dynamics arithmetic source bundle required')
         fields=('body_parentid','body_dofadr','body_dofnum','dof_bodyid','dof_jntid','jnt_type')
         static,_=native_fields(arrays,metadata,spec,fields,source_records=source_records,
             metadata_record=metadata_record,registry=registry,candidate_id=candidate_ids['dynamics'],mode=mode)
@@ -60,7 +59,7 @@ class GenericWideRuntimeDynamicsAdapter(GenericRuntimeDynamicsAdapter):
                 vel_status=self.transmission.velocity_status,active=self.actuation_active),**common)
         self.qfrc_applied=wp.zeros((capacity,self.nv),dtype=scalar.wp_real,device=self.device)
         self.xfrc_applied=wp.zeros((capacity,self.nbody,6),dtype=scalar.wp_real,device=self.device)
-        self.acceleration=GenericSmoothWorkspace(arrays,metadata,spec,capacity,candidate_id=candidate_ids['dynamics'],
+        self.acceleration=smooth_type(arrays,metadata,spec,capacity,candidate_id=candidate_ids['dynamics'],
             inputs=dict(passive=self.passive.qfrc,bias=self.public['qfrc_bias'],applied=self.qfrc_applied,
                 actuator=self.actuation.qfrc_actuator,xfrc=self.xfrc_applied,xipos=body(self.position.frames.xipos,3),
                 subtree_com=body(self.position.subtree_com,3),cdof=self.position.cdof.reshape((capacity,self.nv,6)),
@@ -118,7 +117,7 @@ class GenericWideRuntimeDynamicsAdapter(GenericRuntimeDynamicsAdapter):
         self.stages=self
         self.robot=robot;self.metadata=metadata
         self._objects=(self.position,self.transmission,self.passive,self.actuation,self.acceleration,self.jacobian,self.control)
-        self._holds={phase:r._NoForwardHold(fields,capacity,self.device) for phase,fields in {
+        self._holds={phase:hold_type(fields,capacity,self.device) for phase,fields in {
             'position':{**{k:getattr(self.position,k) for k in ('subtree_com','cinert','cdof','crb','result_kind','first_code','first_stage')},
                 **{'body.'+k:getattr(self.position.body,k) for k in ('qpos','xpos','xquat','xmat','xanchor','xaxis','status')},
                 **{'frame.'+k:getattr(self.position.frames,k) for k in ('xipos','ximat','geom_xpos','geom_xmat','site_xpos','site_xmat','status')},

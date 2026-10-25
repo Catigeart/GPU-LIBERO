@@ -1,6 +1,4 @@
 """Opt-in CUDA Newton integration, preserving the batch-three adapters."""
-from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
-import hashlib
 from pathlib import Path
 import warp as wp
 from libero.gpu.host.assembly.pipeline.factory import prepare_fused_physics as previous
@@ -20,9 +18,6 @@ def prepare_fused_physics(*args,cuda_build_root=None,**kwargs):
         loop._reset_forward_graph=capture.graph
         bundle.persistent_cuda_core=core
         bundle.cuda_newton_manifest=core.manifest
-        for path in (Path(__file__),(GPU_ROOT / 'reference/newton/persistent_entry/__init__.py'),
-                     (GPU_ROOT / 'host/runtime/newton/persistent_cuda.py')):
-            bundle.fusion_source_manifest[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
         return bundle
     except BaseException:
         bundle.close()

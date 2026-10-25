@@ -132,6 +132,6 @@ The F position chain binds model counts during cold construction. Its 14 finite 
 - C portal reuse remains on; support caching and temporal caching remain off by default.
 - Standalone tile16 capacity128 remains independent of the complete solver.
 - Negative or mixed performance domains retain the original implementation.
-- Cold source authentication preserves source/build/policy/owner binding, explicit invalidation, and error behavior.
+- Runtime binding preserves model policy, buffer ownership, explicit invalidation and error behavior. Offline builds retain dependency checks; runtime source certificates and unused provenance frameworks are being removed as described in `ENVIRONMENT_LIFECYCLE.md`.
 
 Historical independent-function checks used FP64 error accumulation, backward residuals, and sensitivity. Indices, stable order, capacity, copy bit patterns, and protected writes retain exact contracts. Cold compilation/resource checks do not substitute for numerical execution, and local results do not establish complete application correctness or whole-step speedups. No new GPU qualification is performed by this documentation update.

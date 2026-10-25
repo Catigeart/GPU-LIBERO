@@ -3,6 +3,7 @@ import libero.gpu.precision as scalar
 from pathlib import Path
 from types import SimpleNamespace
 import importlib
+from functools import partial
 import sys
 import tempfile
 import gc
@@ -15,19 +16,20 @@ from libero.gpu.host.runtime.core.build_lifetime import managed_build
 
 
 from .generic_prepare import _cold_factories
+from .shape_assembly import ShapeAssembly
 
 
 @managed_build
 def prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                             mode='diagnostic', with_controller=True, tape_steps=0,
                             model_spec=None, constraint_package=None, nworld=1, memory_budget=None,
-                            capture_entry_witness=False):
+                            capture_entry_witness=False, _assembly=None):
     stream = wp.get_stream(device) if stream is None else stream
     try:
         return _prepare_shape_physics(built,state=state,device=device,stream=stream,
             mode=mode,with_controller=with_controller,tape_steps=tape_steps,
             model_spec=model_spec,constraint_package=constraint_package,nworld=nworld,memory_budget=memory_budget,
-            capture_entry_witness=capture_entry_witness)
+            capture_entry_witness=capture_entry_witness, _assembly=_assembly)
     except BaseException as error:
         # Synchronize pending allocations/copies before dropping failed local
         # arenas. The original exception/trace remains available to the runner.
@@ -44,9 +46,9 @@ def prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
 def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
                              mode='diagnostic', with_controller=True, tape_steps=0,
                              model_spec=None, constraint_package=None, nworld=1, memory_budget=None,
-                             capture_entry_witness=False):
-    if mode != 'diagnostic':
-        raise ValueError('raw-model full-chain production acceptance is pending')
+                             capture_entry_witness=False, _assembly=None):
+    if mode not in ('production', 'diagnostic'):
+        raise ValueError('unsupported execution mode')
     model = built.native_model
     from .shape_schema import RuntimeShape
     runtime_shape = RuntimeShape.from_native_metadata(built.metadata)
@@ -59,12 +61,25 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
     from libero.gpu.host.runtime.foundation.runtime_adapter import FoundationForwardAdapter
     from libero.gpu.host.runtime.collision.runtime_adapter import plan_model_capacity
     from libero.gpu.model.collision_static import static_from_model
-    collision_factory, newton_factory, copy_choice = _cold_factories()
     from libero.gpu.host.runtime.core.generation import model_spec_for_native_metadata
     from libero.gpu.reference.integration.euler_integrator.generic_workspace import GenericEulerWorkspace
     from .contact_transport import ContactTransport
     from .shape_physics import ShapePhysicsForward
     from .shape_counter import ShapeCountedResidentStepRuntime
+    # Resolve constructor choices before any allocation or live binding. Keep
+    # the base names explicit so the numerical assembly below stays readable.
+    from .generic_prepare import _cold_factories
+    assembly = ShapeAssembly() if _assembly is None else _assembly
+    prepare_from_built = assembly.dynamics_factory or prepare_from_built
+    prepare_post = assembly.post_factory or prepare_post
+    _cold_factories = assembly.cold_factories or _cold_factories
+    FoundationForwardAdapter = assembly.foundation_type or FoundationForwardAdapter
+    ShapePhysicsForward = assembly.forward_type or ShapePhysicsForward
+    RuntimeControllerAdapter = assembly.controller_type or RuntimeControllerAdapter
+    GenericEulerWorkspace = assembly.euler_type or GenericEulerWorkspace
+    if assembly.runtime_factory is not None:
+        ShapeCountedResidentStepRuntime = partial(assembly.runtime_factory, model=model)
+    collision_factory, newton_factory, copy_choice = _cold_factories()
     shared_spec = model_spec
     # New parameter generations use their actual freshly generated S identity;
     # the component factories independently recheck the native read sets.
@@ -74,6 +89,9 @@ def _prepare_shape_physics(built, *, state, device='cuda:0', stream=None,
     sys.path.insert(0, str(package.parent))
     identity = importlib.import_module(package.name+'.identity')
     sm = importlib.import_module(package.name+'.workspace')
+    if assembly.constraint_workspace_type is not None:
+        sm = SimpleNamespace(PositionReferenceWorkspace=
+            assembly.constraint_workspace_type(sm.PositionReferenceWorkspace))
     sa = importlib.import_module(package.name+'.runtime_adapter')
     if type(nworld) is not int or nworld < 1:
         raise ValueError("positive integer nworld required")

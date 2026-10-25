@@ -16,13 +16,25 @@ This source checkout includes a small regression suite for installation and publ
 | `test_deferred_native_build.py` | Deferred reference compilation, preserved source/PTX rejection, and lazy reset graph capture. |
 | `test_gpu_build_cache.py` | Persistent build reuse, stable generated namespaces, changed source/flags, tampered artifacts, and verified migration of prior builds. |
 | `test_gpu_build_lifetime.py` | Current temporary runtime ownership, constructor failure, close retries, and independent replacement generations; does not use the retired storage manager. |
-| `test_gpu_legacy_storage.py` | Explicit offline maintenance of retired storage: process leases, crash recovery, damaged markers, and deletion boundaries. |
-| `test_gpu_compatibility_build.py` | Offline/load-only authority, fixed build identity, private artifact cleanup, library/function ownership, and launcher retirement. |
-| `test_gpu_cache_hardening.py` | Signed product completion, budgets, source/toolchain drift, and read-only authority loading. |
+| `test_gpu_compatibility_build.py` | Offline/load-only boundaries, fixed build identity, private artifact cleanup, library/function ownership, and launcher retirement. |
+| `test_gpu_cache_hardening.py` | Ordinary product files, legacy read-only reuse, budgets, offline dependency invalidation and runtime ABI checks. |
+| `test_fp64_model_intake.py` | Direct model/metadata handoff without repeated source reads or MJB serialization; array, dimension, domain and external-file checks remain. |
+| `test_portable_intake_management.py` | MuJoCo 2.3.7 model/package binding and updates without decoder/source certificates or producer authentication; actual model changes, callbacks, parameter permissions, owner replacement and commit/invalidation contracts remain checked. Skips on other MuJoCo versions. |
+| `test_collision_load_only.py` | Native collision loading without compiler/image/SDK fingerprint checks or identity files; ABI, CUDA query/launch errors, cache lifetime and legacy recipe selection remain. Uses simulated CUDA exports; no physics execution. |
+| `test_newton_load_only.py` | Offline Newton build versus runtime selection, loaded-kernel ABI/resource query, no runtime SDK/compiler/source checks, missing or mismatched products and failed publication. Uses simulated compiler/CUDA exports. |
+| `test_collision_model_binding.py` | Resident collision static/context checks without source scans or file leases; loaded export, parameter, buffer, stream and close contracts, plus descriptive decoder intake. Host-only fixtures. |
+| `test_fp32_load_only.py` | CUDA runtime/fused bindings without source certificates; portable scene data checks and read-only legacy scene reuse. |
+| `test_gpu_capability_registry.py` | In-memory domain/capacity/rejection checks without development files; explicit offline qualification still checks provenance. |
 | `test_gpu_environment_lifecycle.py` | Read-only scene/project loads, partial close retry, shared stateless code, and in-memory model/Newton intake. |
 | `test_gpu_substep_build.py` | Stable CMake build directories across single-substep source edits and load-only runtime boundaries. |
+| `test_cuda_fp32_bridges.py` | Stream-owned library reuse, independent streams and products, ABI failures and CUDA error propagation. |
+| `test_mjwarp_products.py` | Reference component selection without Ninja; ABI, architecture and symbol checks remain at binding; source files are not read. |
+| `test_gpu_goal_read_plan.py` | Built-in field hints, changed callbacks, lazy same-boundary reads, contacts, and visual side effects. |
+| `test_gpu_shape_assembly.py`, `test_gpu_startup.py` | Explicit FP64 constructor selection, startup behavior, failure cleanup and retained compatibility entries. |
 | `test_gpu_controller_copy_plan.py` | Cold all-world copy packets, odd tails, private gate wiring and snapshot/field alias fallback. |
-| `test_gpu_aot_build.py` | Complete task/shape instance coverage, runtime template loading, rejected cache misses, and compilation guards in Warp worker threads. |
+| `test_gpu_aot_build.py` | Complete task/shape instance coverage; runtime template loading checks model/presence without file hashes, while offline indexing rejects stale sources; cache misses and Warp worker compilation guards. |
+| `test_gpu_ready_session.py` | Task-local readiness and compatibility sessions without source or whole-bank hashing. |
+| `test_gpu_observer_graph_mutations.py`, `test_gpu_batch_direct_observations.py` | Public observable changes, callback fallback, cold Graph binding checks and explicit lazy rendering. |
 | `gpu_product_compatibility/test_camera_contract.py` | Camera keys, shapes, segmentation mapping, and observation clocks using an injected bridge. |
 | `gpu_product_compatibility/test_observable_extensions.py` | Original Observable callbacks, filters, clocks, and owner transfer using a fake facade. |
 | `gpu_product_compatibility/test_render_model_owner.py` | Isolation of graphics model storage using an injected renderer. |

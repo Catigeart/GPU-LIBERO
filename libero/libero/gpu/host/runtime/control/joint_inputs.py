@@ -1,6 +1,5 @@
 """Cold verified single-arm selectors and device-native joint input gathering."""
 import libero.gpu.precision as scalar
-import json
 from pathlib import Path
 import numpy as np
 import warp as wp
@@ -17,8 +16,7 @@ class GenericJointInputsWorkspace:
         self.static,self.admission=native_fields(arrays,metadata,spec,self.FIELDS,
             source_records=source_records,metadata_record=metadata_record,registry=registry,
             candidate_id=candidate_id,mode=mode)
-        original=json.loads(Path(metadata_record["path"]).read_text())
-        if robot not in original.get("robot_metadata",()):raise ValueError("joint selectors absent from actual metadata source")
+        if robot not in metadata.get("robot_metadata",()):raise ValueError("joint selectors absent from actual metadata source")
         d=metadata["dimensions"];validate_d_topology(self.static,d)
         self.capacity,self.device=int(capacity),wp.get_device(device)
         self.spec,self.registry,self.candidate_id,self.mode=spec,registry,candidate_id,mode

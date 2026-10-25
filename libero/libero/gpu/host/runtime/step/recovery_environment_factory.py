@@ -4,7 +4,7 @@ Only diagnostic execution is requested here. Source admission and numerical
 qualification belong to the runtime owners; this factory grants neither.
 """
 import numpy as np
-import inspect
+from libero.gpu.host.runtime.core.model_bytes import actual_decoder_record
 import hashlib
 from pathlib import Path
 from collections.abc import Mapping
@@ -29,16 +29,6 @@ def default_integration_state(model):
 
 
 
-def actual_decoder_record(built):
-    """Pin the actual class producer's loaded source, never infer a path by name."""
-    pin=built.metadata['decoder_pin']
-    if type(built).__module__ != pin['module']:
-        raise ValueError('built model decoder module differs from captured producer')
-    source=Path(inspect.getfile(type(built))).resolve()
-    digest=hashlib.sha256(source.read_bytes()).hexdigest()
-    if digest != pin['source_sha256']:
-        raise ValueError('actual loaded model decoder source differs from captured SHA')
-    return {'path':str(source),'sha256':digest}
 
 def _native_intake_package(built):
     """Pure exact native static intake; no MjData or CPU physics."""

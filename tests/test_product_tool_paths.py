@@ -50,14 +50,13 @@ class ColdToolPathTests(unittest.TestCase):
             exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(native), "exec"), namespace)
             self.assertEqual(str(namespace["nvcc"]), expected)
         self.assertEqual(len(calls), 1)
-        for name in ("handwritten_cuda.py", "persistent_cuda.py"):
-            source = (gpu_source() / "host/runtime/newton" / name).read_text()
+        for name in ("host/build/newton.py", "host/runtime/newton/persistent_cuda.py"):
+            source = (gpu_source() / name).read_text()
             self.assertNotIn("'/usr/local/cuda/bin/nvcc'", source)
             self.assertIn("nvcc_path()", source)
         source = (gpu_source() / "host/runtime/newton/handwritten_cuda.py").read_text()
-        self.assertIn("str(Path(compiler).parent/'cuobjdump')", source)
-        self.assertEqual(str(Path("/custom toolkit/bin/nvcc").parent / "cuobjdump"),
-                         "/custom toolkit/bin/cuobjdump")
+        self.assertNotIn('nvcc_path()', source)
+        self.assertNotIn('cuobjdump', source)
 
     def test_compiler_child_config_default_and_explicit(self):
         warp_before = "warp" in sys.modules

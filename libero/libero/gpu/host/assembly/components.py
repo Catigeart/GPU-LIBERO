@@ -1,6 +1,5 @@
 """Cold entry for handwritten CUDA fusion, with explicit component selection."""
-from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
-import hashlib
+from libero.gpu.host.paths import GPU_ROOT
 import importlib
 import os
 from contextlib import nullcontext
@@ -179,13 +178,7 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
             from libero.gpu.host.bindings.reset_preservation import install as install_reset_preservation
             manifests['reset_preservation']=install_reset_preservation(bundle,root/'reset_preservation')
         foundation=loop.forward.f
-        # Re-seal the explicitly selected cold replacement methods, retaining
-        # the original guards against subsequent hot method/owner changes.
-        foundation._backend_methods=tuple(
-            (name,getattr(foundation.backend,name).__func__,
-             getattr(foundation.backend,name).__func__.__code__,
-             getattr(foundation.backend,name).__func__.__defaults__)
-            for name,_,_,_ in foundation._backend_methods)
+        # Validate retained owners after installing the selected components.
         foundation.validate_bindings()
         if reuse_epoch:
             # Establish the same explicit-begin cold contract as the exact
@@ -224,9 +217,6 @@ def prepare_cuda_physics(*args,cuda_build_root=None,mathdx_root=None,
             bundle.post_assembly_hook=post_assembly_hook
         bundle.cuda_requested_components=selected
         bundle.cuda_retained_components=tuple(k for k in COMPONENTS if k not in selected)
-        for path in (*(GPU_ROOT / 'cuda').rglob('*'),*(GPU_ROOT / 'host').rglob('*')):
-            if path.suffix in ('.py','.cu','.cuh'):
-                bundle.fusion_source_manifest[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
         def execution_trace():
             result={f"{index}:{p.manifest['name']}:{p.manifest['sha256'][:12]}":
                     p.execution_count.numpy().tolist()

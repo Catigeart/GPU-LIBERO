@@ -47,7 +47,12 @@ The command above imports the inputs using CPU MuJoCo 3.16.0 and builds only
 the independent runtime/transport, shared handwritten CUDA targets and
 independently compiled FP32 fusion targets.
 It advances zero physics substeps. Existing compatible CMake products are reused.
-`--skip-build` prepares scenes only. Preparation and execution must be serialized
+`--skip-build` prepares scenes only. After upgrading from the legacy scene cache,
+run this once for the task profiles you use; it validates and imports compatible
+old MJBs into the direct-load format without compiling CUDA. Ordinary environment
+construction never scans old cache directories or hashes asset/binary contents.
+Offline preparation validates those contents; runtime retains format, model
+layout and task association checks. Preparation and execution must be serialized
 on shared GPU machines. Runtime construction defaults to `allow_compile=False`.
 
 ```python

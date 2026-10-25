@@ -17,8 +17,15 @@ CPU_TESTS = ("test_installation_layout.py", "test_resource_paths.py", "test_prod
              "test_native_capsule_sources.py", "test_fp32_fusion_schedule.py", "test_gpu_staged_substep.py", "test_gpu_subtree_topology.py", "test_gpu_memory_budget.py", "test_gpu_batch_env.py",
              "test_deferred_native_build.py", "test_release_inputs.py",
              "test_validation_tools.py", "test_validation_runner.py", "test_validation_precision.py", "test_precision_policy.py",
-             "test_gpu_build_lifetime.py", "test_gpu_legacy_storage.py", "test_gpu_compatibility_build.py", "test_gpu_cache_hardening.py",
-             "test_gpu_environment_lifecycle.py")
+             "test_gpu_build_lifetime.py", "test_gpu_compatibility_build.py", "test_gpu_cache_hardening.py",
+             "test_gpu_substep_build.py", "test_cuda_fp32_bridges.py", "test_mjwarp_products.py",
+             "test_gpu_goal_read_plan.py", "test_gpu_aot_build.py", "test_gpu_ready_session.py",
+             "test_gpu_shape_assembly.py", "test_gpu_constructor_wiring.py", "test_gpu_continuation_transport.py", "test_gpu_startup.py",
+             "test_gpu_observer_graph_mutations.py", "test_gpu_batch_direct_observations.py",
+             "test_gpu_batch_graph_eligibility.py", "test_gpu_model_only_observable_fallback.py",
+             "test_gpu_environment_lifecycle.py", "test_gpu_capability_registry.py", "test_fp32_load_only.py", "test_fp64_model_intake.py",
+             "test_collision_load_only.py", "test_collision_model_binding.py", "test_portable_intake_management.py",
+             "test_newton_load_only.py")
 
 
 def source_files(root):

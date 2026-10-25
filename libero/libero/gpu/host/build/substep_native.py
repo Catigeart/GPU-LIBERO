@@ -17,26 +17,34 @@ def _write_changed(path, text):
 
 
 def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, profile_newton=False,
-            nv=39, atomic_reductions=None, single_solve=False):
+            nv=39, atomic_reductions=None, single_solve=False, for_build=True):
+    """Select a product; only offline build preparation needs the toolchain.
+
+    Load-only callers use ``for_build=False``. They neither create directories
+    nor write recipes, and do not need nvcc or the original CMake source tree.
+    Actual library ABI and dimensions are checked by the runtime binding.
+    """
     if type(single_solve) is not bool or single_solve and scalar.bits != 32:
         raise ValueError('single_solve requires an explicit FP32 candidate')
     from .substep_catalog import select_variant
     variant = select_variant(nv)
     source = Path(source).resolve()
     sdk = Path(sdk).resolve()
-    candidates = [p for p in source.parents if (p / 'CMakeLists.txt').is_file()]
-    project = next((p for p in candidates if (p / 'setup.py').is_file()), None)
-    if project is None:
-        # Wheels retain the GPU package's own CMakeLists.txt; a checkout
-        # prefers the repository entry above it.
-        project = next(iter(candidates), None)
-    if project is None:
-        raise FileNotFoundError('No maintained CMake project for CUDA source: ' + str(source))
-    compiler = Path(nvcc_path()).resolve()
+    project = compiler = None
+    if for_build:
+        candidates = [p for p in source.parents if (p / 'CMakeLists.txt').is_file()]
+        project = next((p for p in candidates if (p / 'setup.py').is_file()), None)
+        if project is None:
+            # Wheels retain the package CMake entry; checkouts prefer the root.
+            project = next(iter(candidates), None)
+        if project is None:
+            raise FileNotFoundError('No maintained CMake project for CUDA source: ' + str(source))
+        compiler = Path(nvcc_path()).resolve()
     profile = ('dev' if fast_compile else 'release') + ('-lto' if device_lto else '')
     root = cmake_root(root)
     folder = root / f'sm{arch}-{profile}'
-    folder.mkdir(parents=True, exist_ok=True)
+    if for_build:
+        folder.mkdir(parents=True, exist_ok=True)
     # None follows the CMake option (ON for a new tree). False selects the
     # explicitly ordered comparison binary in the same configured build tree.
     default_atomic = True
@@ -59,7 +67,7 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
         default_atomic = True
     # Source contents do not determine the build directory. Ninja's compiler
     # depfiles track each translation unit and its actual included headers.
-    config = dict(product='single-physical-substep', project=str(project), compiler=str(compiler), sdk=str(sdk),
+    config = dict(product='single-physical-substep', sdk=str(sdk),
                   schedule='step1-osc-step2' if single_solve else 'cpu-three-forwards',
                   solves_per_substep=1 if single_solve else 3, single_solve=single_solve,
                   arch=int(arch), real_bits=scalar.bits, fast_compile=bool(fast_compile), device_lto=bool(device_lto),
@@ -67,6 +75,8 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
                   atomic_reductions=False if ordered else default_atomic,
                   default_atomic_reductions=default_atomic,
                   jacobian_cache=default_cache, transpose_method=default_transpose, threads_per_world=threads)
+    if for_build:
+        config.update(project=str(project), compiler=str(compiler))
     identity = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     configure = ['cmake', '-S', str(project), '-B', str(folder), '-G', 'Ninja',
                  '-DCMAKE_BUILD_TYPE=Release', f'-DCMAKE_CUDA_COMPILER={compiler}',
@@ -83,15 +93,15 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
     # Three compile slots plus one independent vendor/final link slot.
     build = ['cmake', '--build', str(folder), '--target', target, '--parallel', '4']
     result = dict(identity=identity, config=config, source=str(source), folder=str(folder),
-                  library=str(folder / library), target=target, commands=[configure, build],
+                  library=str(folder / library), target=target, commands=[configure, build] if for_build else [],
                   compilation_database=str(folder / 'compile_commands.json'),
                   source_generation=False, build_system='CMake/Ninja',
                   translation_units=11 if config['atomic_reductions'] else 8)
     manifest_name = (('manifest-newton-profile' if profile_newton else 'manifest') + variant.suffix +
                      ('-single-solve' if single_solve else '') +
                      ('-ordered' if ordered else '') + ('-fp32' if scalar.bits == 32 else '') + '.json')
-    _write_changed(folder / manifest_name,
-                   json.dumps(result, indent=2))
+    if for_build:
+        _write_changed(folder / manifest_name, json.dumps(result, indent=2))
     return result
 
 
@@ -109,10 +119,12 @@ def prepare_staged(source, root, sdk, arch, **options):
     manifest['target'] = manifest['target'].replace('flash_substep', 'flash_substep_staged', 1)
     manifest['library'] = str(Path(manifest['library']).with_name(
         Path(manifest['library']).name.replace('substep', 'substep_staged', 1)))
-    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    if manifest['commands']:
+        manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
     manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
     name = Path(manifest['library']).stem.replace('substep_staged', 'manifest-staged', 1) + '.json'
-    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    if options.get('for_build', True):
+        _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
     return manifest
 
 
@@ -129,10 +141,12 @@ def prepare_motion(source, root, sdk, arch, **options):
     manifest['target'] = manifest['target'].replace('flash_substep', 'flash_substep_motion', 1)
     manifest['library'] = str(Path(manifest['library']).with_name(
         Path(manifest['library']).name.replace('substep', 'substep_motion', 1)))
-    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    if manifest['commands']:
+        manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
     manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
     name = Path(manifest['library']).stem.replace('substep_motion', 'manifest-motion', 1) + '.json'
-    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    if options.get('for_build', True):
+        _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
     return manifest
 
 
@@ -145,15 +159,19 @@ def prepare_force(source, root, sdk, arch, **options):
     manifest['target'] = manifest['target'].replace('flash_substep_motion', 'flash_substep_force', 1)
     manifest['library'] = str(Path(manifest['library']).with_name(
         Path(manifest['library']).name.replace('substep_motion', 'substep_force', 1)))
-    manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
+    if manifest['commands']:
+        manifest['commands'][1][manifest['commands'][1].index('--target') + 1] = manifest['target']
     manifest['identity'] = hashlib.sha256(json.dumps(manifest['config'], sort_keys=True).encode()).hexdigest()
     name = Path(manifest['library']).stem.replace('substep_force', 'manifest-force', 1) + '.json'
-    _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
+    if options.get('for_build', True):
+        _write_changed(Path(manifest['folder']) / name, json.dumps(manifest, indent=2))
     return manifest
 
 
 def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     """One offline target for the entire task catalogue; no per-task builds."""
+    if not options.get('for_build', True):
+        raise ValueError('prepare_all is an offline build operation')
     from .substep_catalog import variants
     manifest = (prepare_staged if staged else prepare)(source, root, sdk, arch, **options)
     profiled = manifest['config']['profile_newton']
@@ -181,42 +199,16 @@ def prepare_all(source, root, sdk, arch, *, staged=False, **options):
     return manifest
 
 
-def _configured(manifest):
-    cache = Path(manifest['folder']) / 'CMakeCache.txt'
-    if not cache.exists():
-        return False
-    entries = {}
-    for line in cache.read_text().splitlines():
-        if ':' in line and '=' in line and not line.startswith(('#', '//')):
-            key, value = line.split('=', 1)
-            entries[key.split(':', 1)[0]] = value
-    c = manifest['config']
-    return all(entries.get(key) == value for key, value in {
-        'CMAKE_CUDA_COMPILER': c['compiler'], 'FLASH_MATHDX_ROOT': c['sdk'],
-        'CMAKE_BUILD_TYPE': 'Release', 'CMAKE_HOME_DIRECTORY': c['project'],
-        'FLASH_CUDA_ARCH': str(c['arch']),
-        'FLASH_SUBSTEP_THREADS': str(c['threads_per_world']),
-        'FLASH_FAST_COMPILE': 'ON' if c['fast_compile'] else 'OFF',
-        'FLASH_GLOBAL_DEVICE_LTO': 'ON' if c['device_lto'] else 'OFF',
-        'FLASH_NEWTON_ATOMIC_REDUCTIONS': 'ON' if c['default_atomic_reductions'] else 'OFF',
-        'FLASH_NEWTON_JACOBIAN_CACHE': 'ON' if c.get('jacobian_cache', True) else 'OFF',
-        'FLASH_NEWTON_TRANSPOSE_METHOD': str(c.get('transpose_method', 0)),
-    }.items())
-
-
 def finish(manifest, *, allow_build=False):
     folder = Path(manifest['folder'])
     if not allow_build:
-        if _configured(manifest) and Path(manifest['library']).is_file():
-            # Dry-run only: reject stale products without executing configure,
-            # compilation, or linking during environment construction.
-            check = subprocess.run(['ninja', '-C', str(folder), '-n', manifest.get('target','flash_substep')],
-                                   capture_output=True, text=True)
-            if check.returncode == 0 and 'ninja: no work to do.' in check.stdout:
-                return manifest
-        raise MissingCompiledProduct('CMake substep product is missing or stale: ' +
-                                     str(folder) + '. Build it offline before creating the environment.')
+        if Path(manifest['library']).is_file():
+            return manifest
+        raise MissingCompiledProduct('CMake substep product is missing: ' +
+                                     manifest['library'] + '. Build it offline before creating the environment.')
     require_compilation('CMake substep modules', folder)
+    if not manifest['commands']:
+        raise ValueError('Prepare with for_build=True before an offline build')
     rows = []
     for phase, command in zip(('configure', 'build'), manifest['commands']):
         tick = time.perf_counter()

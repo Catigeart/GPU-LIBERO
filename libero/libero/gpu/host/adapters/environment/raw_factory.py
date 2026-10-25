@@ -4,9 +4,7 @@ Only diagnostic execution is requested here. Source admission and numerical
 qualification belong to the runtime owners; this factory grants neither.
 """
 import numpy as np
-import inspect
-import hashlib
-from pathlib import Path
+from libero.gpu.host.runtime.core.model_bytes import actual_decoder_record
 from collections.abc import Mapping
 from .assembly import assemble_single_world_task
 from .resident_runtime import ResidentPhysicsFacadeRuntime, fixed_root_descriptors, fixed_contact_reader
@@ -29,16 +27,7 @@ def default_integration_state(model):
 
 
 
-def actual_decoder_record(built):
-    """Pin the actual class producer's loaded source, never infer a path by name."""
-    pin=built.metadata['decoder_pin']
-    if type(built).__module__ != pin['module']:
-        raise ValueError('built model decoder module differs from captured producer')
-    source=Path(inspect.getfile(type(built))).resolve()
-    digest=hashlib.sha256(source.read_bytes()).hexdigest()
-    if digest != pin['source_sha256']:
-        raise ValueError('actual loaded model decoder source differs from captured SHA')
-    return {'path':str(source),'sha256':digest}
+
 def create(built):
     """Callable runtime-factory entry, requiring actual owner modules/callbacks."""
     from libero.gpu.host.runtime.core.namespace import require_canonical_gpu_namespace

@@ -54,10 +54,7 @@ class MassFactorPlan:
         self.path=Path(library).resolve()
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_mjwarp_mass_factor_fp32 offline')
         self.library=ct.CDLL(str(self.path))
-        self.library.flash_mjwarp_mass_factor_source_id.restype=ct.c_char_p
         self.library.flash_mjwarp_mass_factor_arguments_bytes.restype=ct.c_size_t
-        if self.library.flash_mjwarp_mass_factor_source_id().decode()!=source_id():
-            raise MissingCompiledProduct('Mass factor binary is stale; rebuild offline')
         if self.library.flash_mjwarp_mass_factor_arguments_bytes()!=ct.sizeof(MassFactorInputs):
             raise ValueError('Mass factor C/Python ABI differs')
         if not stream.device.is_cuda or self.library.flash_mjwarp_mass_factor_arch()!=stream.device.arch:

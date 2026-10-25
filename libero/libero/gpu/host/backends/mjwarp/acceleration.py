@@ -14,15 +14,13 @@ def caller_unsupported_reason(model,data):
 
 
 def mass_product(root,*,fast_compile=False,component='mass_solve'):
-    import subprocess
     from libero.gpu.host.build.project_paths import project_paths
     from libero.gpu.host.build.compilation import MissingCompiledProduct
     folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
     if component not in ('mass_solve','smooth_force'):raise ValueError('invalid acceleration product')
     target='flash_mjwarp_'+component+'_fp32'
     library=folder/('mjwarp_'+component+'_fp32.so')
-    result=subprocess.run(['ninja','-C',str(folder),'-n',target],capture_output=True,text=True)
-    if not library.is_file() or result.returncode or 'ninja: no work to do.' not in result.stdout:
+    if not library.is_file():
         raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
     return library
 

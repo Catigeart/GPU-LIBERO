@@ -5,9 +5,6 @@ check rejection at finalize is recorded separately as rejected_final_entry;
 intermediate errors cannot masquerade as a completed native acceleration.
 """
 import libero.gpu.precision as scalar
-import ast
-import inspect
-import hashlib
 import warp as wp
 from libero.gpu.host.runtime.newton import live_copy_api as original
 wp.set_module_options({"enable_backward":False,"fuse_fp":True,"fast_math":False})
@@ -70,16 +67,6 @@ class FinalEventAdapter(original.ColdNewtonRuntimeAdapter):
 
 
 def prepare_final_event_runtime(**kwargs):
-    tree=ast.parse(inspect.getsource(original.prepare_live_copy_runtime))
-    changes=0
-    for n in ast.walk(tree):
-        if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="ColdNewtonRuntimeAdapter":
-            n.func.id="FinalEventAdapter";changes+=1
-    if changes!=1:raise ValueError("one actual cold adapter constructor required")
-    ast.fix_missing_locations(tree)
-    namespace=dict(vars(original));namespace["FinalEventAdapter"]=FinalEventAdapter
-    exec(compile(tree,original.__file__+":final-event-cold","exec"),namespace)
-    adapter=namespace["prepare_live_copy_runtime"](**kwargs)
-    adapter.source_manifest["final_event_diagnostic_source_sha256"]=hashlib.sha256(open(__file__,"rb").read()).hexdigest()
+    adapter = original.prepare_live_copy_runtime(adapter_type=FinalEventAdapter, **kwargs)
     adapter.final_event=adapter.solver
     return adapter

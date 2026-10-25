@@ -1,5 +1,6 @@
 """Independent runtime ownership/copy/Graph checks with Warp imports forbidden."""
 import importlib.abc
+import ctypes as ct
 import json
 import sys
 from pathlib import Path
@@ -43,6 +44,7 @@ def main(args):
             loop.launch();assert counter.numpy()[0]==0
             loop.close()
             assert not any(k.split('.')[0] in ('warp','mujoco_warp') for k in sys.modules)
+        runtime.lib.flash_runtime_source_id.restype=ct.c_char_p
         report=dict(passed=True,worlds=2,scope=['allocation','typed views','current-input Graph copy','zero-width fields','vector storage','device conditional while and repeated reset'],warp_imported=False,integrations=0,performance=None,arch=device.arch,
             runtime_source_id=runtime.lib.flash_runtime_source_id().decode())
         args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))

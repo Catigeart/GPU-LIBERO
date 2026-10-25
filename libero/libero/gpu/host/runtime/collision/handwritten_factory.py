@@ -3,10 +3,8 @@ from contextlib import contextmanager
 
 
 def prepare_collision_admission(static,*,context=None,options=None):
-    from libero.gpu.host.paths import GPU_ROOT
     from .cold_geometry import CollisionColdAdmission
-    maintained=() if not isinstance(context,dict) else context.get('maintained_source_paths',())
-    return CollisionColdAdmission(static,gpu_root=GPU_ROOT,context=context,options=options,maintained_sources=maintained)
+    return CollisionColdAdmission(static, context=context, options=options)
 
 
 @contextmanager

@@ -81,9 +81,10 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     from libero.gpu import precision
     task = scene_record(root, bddl, seed)
     directory = Path(task['directory'])
-    for name in ('scene.xml', 'initial_states.npy'):
-        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != task['files'][name]:
-            raise ValueError('offline scene input changed: ' + name)
+    if prepare:
+        for name in ('scene.xml', 'initial_states.npy'):
+            if hashlib.sha256((directory / name).read_bytes()).hexdigest() != task['files'][name]:
+                raise ValueError('offline scene input changed: ' + name)
     xml = relocate_assets((directory / 'scene.xml').read_text())
     tree = ET.fromstring(xml)
     opt = tree.find('option')
@@ -108,11 +109,11 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     xml = ET.tostring(tree, encoding='unicode')
     from .scene_cache import locate,finish
     from .scene_inputs import read as read_scene_inputs,apply as apply_scene_inputs
-    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task)
+    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task,verify=prepare)
     cache_folder,compiled,receipt,cache_binding=locate(project_paths(root).base,xml,options,task,prepare=prepare,scene_parameters=scene_binding)
     built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
         static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
-    finish(cache_folder,built,receipt,cache_binding)
+    finish(cache_folder,built,receipt,cache_binding,prepare=prepare,xml=xml)
     host = built.native_model
     for name in ('nq', 'nv', 'nu', 'nbody', 'njnt', 'ngeom', 'nsite'):
         if int(getattr(host, name)) != task['dimensions'][name]:

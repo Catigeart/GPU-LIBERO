@@ -16,14 +16,12 @@ def caller_unsupported_reason(model,data):
 
 
 def velocity_product(root,*,component='velocity',fast_compile=False):
-    import subprocess
     from libero.gpu.host.build.project_paths import project_paths
     from libero.gpu.host.build.compilation import MissingCompiledProduct
     if component not in ('velocity','bias','postconstraint','passive'):raise ValueError('invalid motion product')
     folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
     target=f'flash_mjwarp_{component}_fp32';library=folder/f'mjwarp_{component}_fp32.so'
-    r=subprocess.run(['ninja','-C',str(folder),'-n',target],capture_output=True,text=True)
-    if not library.is_file() or r.returncode or 'ninja: no work to do.' not in r.stdout:
+    if not library.is_file():
         raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
     return library
 

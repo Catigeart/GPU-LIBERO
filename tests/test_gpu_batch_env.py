@@ -308,6 +308,48 @@ class BatchEnvTests(unittest.TestCase):
         self.assertEqual(env.calls[0], ('modify', ('sensor', 'sampling_rate', 40), {'stream': env.stream}))
         self.assertEqual(env.calls[1], ('add', ('custom',), {'stream': env.stream}))
 
+    def test_predicate_prefetch_miss_uses_same_batch_event_without_callback_replay(self):
+        env = self.environment()
+        boundary = SimpleNamespace(**runpy.run_path(str(SOURCE.parents[1] / 'observations/boundary.py')))
+        env._goal_plans = [SimpleNamespace(fields_for=lambda shell: ('qpos',))] * env.num_envs
+        reads, effects, visuals = [], [], []
+        fields = {'qpos': np.arange(4).reshape(4, 1),
+                  'body_xquat': np.tile([1., 0., 0., 0.], (4, 1, 1)),
+                  'contact': [{'geom1': [i], 'geom2': [i+1]} for i in range(4)],
+                  'ncon': np.ones(4, dtype=np.int32)}
+        def snapshot(names):
+            # step has synchronized once and still holds environment ownership.
+            self.assertEqual(env.calls.count('check'), 1)
+            self.assertTrue(env._lock._is_owned())
+            reads.append(tuple(names))
+            return {name: fields[name] for name in names}
+        env._snapshot = snapshot
+        old_sims = []
+        for world, shell in enumerate(env.shells):
+            old_sims.append(object())
+            shell.sim = old_sims[-1]
+            runtime = module._WorldBoundary(env, world)
+            env._facades[world] = SimpleNamespace(
+                model=SimpleNamespace(site_rgba=np.ones((1, 4))),
+                snapshot_fields=runtime.read_fields,
+                update_visual_parameters=lambda changes, world=world: visuals.append((world, changes)))
+            def callback(action, shell=shell, world=world):
+                effects.append(world)
+                self.assertEqual(shell.sim.data.qpos[0], world)
+                self.assertEqual(shell.sim.data.body_xquat[0, 0], 1.)
+                self.assertEqual(shell.sim.data.contact[0].geom1, world)
+                self.assertEqual(shell.sim.data.ncon, 1)
+                shell.sim.model.site_rgba[0, 3] = 0.
+                return 1., False, {}
+            shell._post_action = callback
+        with patch.dict(sys.modules, {'libero.gpu.host.adapters.observations.boundary': boundary}):
+            env.step(np.zeros((4, 7)))
+        self.assertEqual(reads, [('qpos',), ('body_xquat',), ('contact', 'ncon')])
+        self.assertEqual(effects, list(range(4)))
+        self.assertEqual([world for world, changes in visuals], list(range(4)))
+        self.assertTrue(all(shell.sim is old for shell, old in zip(env.shells, old_sims)))
+        self.assertIsNone(env._snapshot_cache)
+
 
 if __name__ == '__main__':
     unittest.main()

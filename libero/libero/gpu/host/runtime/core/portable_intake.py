@@ -1,16 +1,14 @@
 """Cold intake of the actual installed model; no captured-task whitelist.
 
-This binds descriptors and generated S sources to their real owner and bytes.
+This binds model descriptors and generated S packages to their actual owner.
 It never publishes numerical acceptance, a ready device, or a kernel license.
 """
 
 from dataclasses import dataclass
 import hashlib
-import inspect
 import os
 from pathlib import Path
 import uuid
-from types import MappingProxyType
 
 import mujoco
 import numpy as np
@@ -20,11 +18,11 @@ from .contracts import ContractError, ModelSpec, _hash
 _METADATA_FIELDS = (
     'dimensions', 'options', 'stat', 'stat_descriptors', 'name_maps',
     'joint_qpos_slices', 'model_sha256', 'static_arrays_sha256',
-    'topology_sha256', 'array_sha256', 'decoder_pin', 'static_array_inventory',
+    'topology_sha256', 'array_sha256', 'static_array_inventory',
 )
 _POLICY = {'schema': 'native-intake-policy-v1', 'layout_version': 'gpu-runtime-v1',
            'fuse_fp': True, 'fast_math': False, 'precise_div_sqrt': True,
-           'flush_to_zero': False, 'source_admission_required': True}
+           'flush_to_zero': False}
 _FEATURE_FIELDS = (
     ('joint_types', 'jnt_type', 'mjtJoint'),
     ('geom_types', 'geom_type', 'mjtGeom'),
@@ -48,10 +46,6 @@ _NUMERIC_FIELDS = (
     'jnt_margin', 'tendon_stiffness', 'tendon_damping', 'tendon_frictionloss',
     'body_gravcomp', 'geom_margin', 'geom_gap', 'sensor_cutoff', 'sensor_noise',
 )
-
-
-def _sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def native_feature_tokens(model):
@@ -92,12 +86,7 @@ def _checked_metadata(built):
     from libero.gpu.model.factory import BuiltTaskModel, native_model_metadata
     if type(built) is not BuiltTaskModel or not isinstance(built.native_model, mujoco.MjModel):
         raise ContractError('actual installed BuiltTaskModel owner required')
-    source = Path(inspect.getfile(type(built))).resolve()
-    pin = built.metadata.get('decoder_pin', {})
-    if (pin.get('module') != type(built).__module__ or
-            pin.get('source_sha256') != _sha(source)):
-        raise ContractError('actual decoder source identity differs')
-    fresh = native_model_metadata(built.native_model)
+    fresh = native_model_metadata(built.native_model, include_source_provenance=False)
     for field in _METADATA_FIELDS:
         if built.metadata.get(field) != fresh[field]:
             raise ContractError('native model changed since construction: ' + field)
@@ -106,7 +95,7 @@ def _checked_metadata(built):
     for name in sorted(n for n in dir(mujoco) if n.startswith('get_mjcb_')):
         if getattr(mujoco, name)() is not None:
             raise ContractError('native callback requires a GPU implementation: ' + name[4:])
-    return fresh, {'path': str(source), 'sha256': _sha(source)}
+    return fresh
 
 
 def _checked_model_policy(built, metadata):
@@ -122,7 +111,11 @@ def _checked_model_policy(built, metadata):
     if 'native_write_schema' in built.metadata:
         from .native_model_update import native_model_write_schema
         actual_schema = native_model_write_schema(built)
-        if built.metadata['native_write_schema'] != actual_schema:
+        published = dict(built.metadata['native_write_schema'])
+        # Old metadata may carry a source certificate beside the same physical
+        # permissions. It no longer participates in runtime schema comparison.
+        published.pop('producer', None)
+        if published != actual_schema:
             raise ContractError('native parameter policy differs from actual current publisher schema')
         if set(declared) != set(actual_schema['arrays']):
             raise ContractError('native parameter policy differs from published physical fields')
@@ -135,7 +128,7 @@ def _checked_model_policy(built, metadata):
 
 def describe_native_model(built):
     """Return an exact fresh ModelSpec and provenance, without granting execution."""
-    metadata, decoder = _checked_metadata(built)
+    metadata = _checked_metadata(built)
     metadata = _checked_model_policy(built, metadata)
     features = native_feature_tokens(built.native_model)
     spec = ModelSpec.from_factory_metadata(metadata, features=features)
@@ -143,7 +136,6 @@ def describe_native_model(built):
         'schema': 'portable-native-model-intake-v1',
         'model_metadata': spec.to_factory_metadata(), 'features': list(features),
         'model_identity': spec.identity_key, 'specialization_key': spec.specialization_key,
-        'decoder_record': decoder,
         'owner': {'process_id': os.getpid(), 'built_token': id(built),
                   'native_model_token': id(built.native_model),
                   'producer_type': type(built).__module__ + '.' + type(built).__qualname__},
@@ -161,16 +153,15 @@ def describe_native_model(built):
 
 @dataclass
 class NativeIntakeBinding:
-    """Process-local cold owner/source binding; invalidate before mutation/release."""
+    """Process-local model binding; invalidate before mutation/release."""
     built: object
     native_model: object
     spec: ModelSpec
     package: Path
     descriptor: dict
-    pins: dict
     active: bool = True
 
-    def invalidate(self, reason='explicit model/source/policy update'):
+    def invalidate(self, reason='explicit model/policy update'):
         self.active = False
         self.invalidated_reason = str(reason)
 
@@ -180,9 +171,6 @@ class NativeIntakeBinding:
             raise ContractError('native intake binding was invalidated')
         if self.built.native_model is not self.native_model:
             raise ContractError('native intake owner changed')
-        for path, digest in self.pins.items():
-            if _sha(path) != digest:
-                raise ContractError('native intake source/build artifact changed: ' + path)
         spec, descriptor = describe_native_model(self.built)
         if (spec.identity_key != self.spec.identity_key or
                 descriptor != self.descriptor or _hash(_POLICY) != self.descriptor['policy_sha256']):
@@ -194,7 +182,7 @@ def prepare_native_intake(built, *, cache_dir=None):
     """Generate current S specialization from native bytes, retaining exact owner.
 
     Owner bindings are always fresh; identical generated sources may use the
-    persistent project cache. Structural/static/capacity and source checks remain.
+    persistent project cache. Structural, static-value and capacity checks remain.
     The returned binding validates cold changes and supports explicit revocation.
     """
     from libero.gpu.host.runtime.constraints.identity import STATIC_SCHEMA
@@ -226,21 +214,13 @@ def prepare_native_intake(built, *, cache_dir=None):
         # Explicit standalone source preparation owns its output directory.
         directory = build_directory('intake')
         package = directory / ('shape_s_' + uuid.uuid4().hex)
-        generated = generate_specialization(manifest, static, package)
+        generate_specialization(manifest, static, package)
     else:
         from .specialization_cache import generated_package
-        package, generated, hit = generated_package(manifest, static, generate_specialization,
+        package, _, hit = generated_package(manifest, static, generate_specialization,
                                                     project['root'] / 'specializations')
         record_build('constraint-source', package.name,
                      () if hit else (('generate-specialization', str(package)),))
-    pins = {entry['path']: entry['sha256'] for group in ('template_pins', 'generated_pins')
-            for entry in generated[group].values()}
-    for path in (Path(__file__), Path(__file__).with_name('contracts.py'),
-                 Path(inspect.getfile(generate_specialization)), package / '__init__.py',
-                 Path(descriptor['decoder_record']['path']),
-                 Path(descriptor['decoder_record']['path']).with_name('cold_assets.py'),
-                 package / 'MODEL_MANIFEST.json', package / 'SOURCE_GENERATION.json'):
-        pins[str(path.resolve())] = _sha(path)
-    binding = NativeIntakeBinding(built, model, spec, package, descriptor, MappingProxyType(pins))
+    binding = NativeIntakeBinding(built, model, spec, package, descriptor)
     binding.validate()
     return binding

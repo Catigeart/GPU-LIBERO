@@ -8,7 +8,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 import ctypes as ct
-import hashlib
 import math
 import numpy as np
 
@@ -47,13 +46,9 @@ def dtype(value):
 
 
 class Runtime:
-    """Load an independently built C ABI, with source admission before use."""
+    """Load an independently built C ABI, with typed entry points."""
     def __init__(self,library):
-        from libero.gpu.host.paths import GPU_ROOT
         self.path=Path(library).resolve();self.lib=ct.CDLL(str(self.path))
-        self.lib.flash_runtime_source_id.restype=ct.c_char_p
-        expected=hashlib.sha256((GPU_ROOT/'cuda/runtime/runtime.cu').read_bytes()).hexdigest()
-        if self.lib.flash_runtime_source_id().decode()!=expected:raise RuntimeError('Stale independent CUDA runtime; rebuild offline')
         ptr=ct.c_void_p;size=ct.c_size_t;integer=ct.c_int
         signatures=dict(device=[integer,ct.POINTER(integer),ct.POINTER(size),ct.POINTER(size)],
             attribute=[integer,integer,ct.POINTER(integer)],

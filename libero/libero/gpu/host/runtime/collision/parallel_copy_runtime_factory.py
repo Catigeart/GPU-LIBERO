@@ -10,7 +10,7 @@ from .parallel_finalize_copy import source_derived_workspace_class
 
 def make_parallel_copy_adapter(static, plan, *, source_owner, source_paths,
                                stream, device='cuda:0', borrow_detector_raw=True,
-                               capsule_source_root=None):
+                               capsule_source_root=None, workspace_type=None):
     if not isinstance(plan, CollisionCapacityPlan):
         raise TypeError('CollisionCapacityPlan required')
     actual = plan_capacity(static, plan.nworld,
@@ -21,7 +21,7 @@ def make_parallel_copy_adapter(static, plan, *, source_owner, source_paths,
             'req_slots', 'contact_capacity')})
     if actual != plan:
         raise ValueError('capacity plan does not match the actual model')
-    candidate_class = source_derived_workspace_class()
+    candidate_class = source_derived_workspace_class() if workspace_type is None else workspace_type
     workspace = candidate_class(static, plan.nworld, device=device,
         borrow_detector_raw=borrow_detector_raw, **plan.workspace_kwargs())
     if capsule_source_root is not None:

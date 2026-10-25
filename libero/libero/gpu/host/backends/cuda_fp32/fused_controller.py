@@ -38,8 +38,7 @@ class FusedController:
         self.path=Path(library);self.library=None
         if not self.eligible:return
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_controller offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_controller_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_controller_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale fused controller; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_controller_arch()!=c.stream.device.arch:raise ValueError('Fused controller architecture differs')
         for entry,kind in (('prepare',ControlPrepareInputs),('solve',ControllerSolveData)):
             size=getattr(lib,'flash_fp32_controller_'+entry+'_bytes');size.restype=ct.c_size_t

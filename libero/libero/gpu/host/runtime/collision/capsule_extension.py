@@ -206,7 +206,7 @@ def prepare_workspace_extension(workspace, destination):
         'source_candidate': identity, 'actual_native_execution': native['execution_binding'],
         'consumer_guard_file': str((GPU_ROOT / 'host/runtime/collision/detectors.py')),
         'consumer_guard_sha256': sha((GPU_ROOT / 'host/runtime/collision/detectors.py')),
-        'actual_build_path': native['build_path'], 'actual_build_sha256': native['build_sha256'],
+        'actual_build_path': native['build_path'],
         'route_assignments': {f'{a},{b}': (DET_CAPSULE_BOX_NATIVE if (a, b) == (3, 6) else DET_CONVEX_MPR) for a, b in ROUTES},
         'qualification': 'new opt-in candidate pending independent validation'}
 

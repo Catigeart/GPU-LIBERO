@@ -62,7 +62,7 @@ from libero.gpu.host.factory import prepare_cuda_physics
 
 This entry supports `nworld` and `dataflow_profile="fast"` or `"compatible"`. The physics preparation default is `"fast"`; existing internal component profiles remain independently configured. The same module exposes `create` for environment assembly.
 
-Sequential batch environments may share an explicitly qualified build session:
+Sequential native batch environments may share an optional build-selection handle:
 
 ```python
 from libero.gpu import precision
@@ -81,19 +81,19 @@ with qualify_ready_session(build_root, num_envs=8, seed=0) as ready:
 
 This session API applies to the native products. Select FP64 before importing
 typed modules; the independent FP32 backend uses its own offline preparation.
-Qualification uses CPU filesystem checks to validate the complete current
-manifest, all task bindings and all artifact SHA256 values once. Keep the source
-and build tree immutable throughout the session. Subsequent constructors check
-the full source file set and file metadata (device, inode, mode, size, mtime and
-ctime); an ordinary change permanently invalidates the session. Requalification
-performs the full content checks again. This is a process-local optimization,
-not a filesystem lock or protection against forged metadata. Sessions reject
-serialization and reuse after a fork or close. Prepared scene hashes and
-product-specific loading checks still run independently. Omitting
-`ready_session` retains strict full-bank hash validation for each construction.
-Changed source requires a matching offline-qualified manifest; the session API
-never refreshes a manifest or grants compilation authority. `ready.info` exposes
-small qualification metadata; `ready.record` returns a detached manifest copy.
+The retained `qualify_ready_session` name now creates a lightweight compatibility
+handle for a build root, world count and seed. With or without this handle,
+construction reads the offline manifest and checks the requested task and
+observation profile. It does not hash the source tree or every artifact in the
+build bank. Prepared scene and product-specific ABI/source checks remain at
+their own loading boundaries. Full build hashes are used by offline preparation
+and reuse checks, not repeated by this readiness entry.
+
+World count remains part of the native build contract because some generated
+kernels specialize it; the seed identifies prepared scene data. A session
+neither writes the manifest nor permits compilation. Closing it prevents further
+use; it does not own environments or libraries. `ready.info` describes this
+lightweight validation and `ready.record` returns a detached manifest copy.
 
 A batch freezes one detached model snapshot shared by all world facades.
 Per-world writable model and visual views remain private and are allocated on
@@ -598,9 +598,11 @@ FP64, FMA, division, square-root, and FTZ options remain explicit.
 The final host link rejects unresolved symbols, including missing CUDA fatbin
 registration symbols.
 
-Ordinary runtime construction is load-only. It checks the completed CMake product
-and Ninja's dry-run result and rejects missing/stale products. Offline callers may
-explicitly permit a CMake build. Build inputs are maintained project files; there
+Ordinary runtime construction is load-only. It locates completed CMake products
+and checks the loaded precision, ABI, dimensions and numerical configuration.
+It does not run Ninja or discover nvcc, and does not write build recipes. Source
+dependency freshness belongs to the explicit offline CMake build; rebuild after
+changing CUDA before starting a new process. Build inputs are maintained project files; there
 is no execution recorder, numbered-stage dispatch, pointer dispatch table, or
 runtime CUDA source generator in this fusion entry.
 

@@ -1,0 +1,44 @@
+{
+  "schema": "native-fp64-performance-summary-v1",
+  "gpu": "NVIDIA A100-SXM4-40GB",
+  "worlds": 2,
+  "cameras": false,
+  "warmup_control_steps_per_task": 5,
+  "timed_control_steps_per_task": 20,
+  "measurements_per_task": 1,
+  "physical_substeps_per_control": 25,
+  "unit": "environment control steps per second, summed across both worlds",
+  "aggregation": "sum(worlds * timed control steps) / sum(CUDA-event elapsed seconds)",
+  "timing_interval": "captured device control Graph; excludes environment construction, reset, Graph capture, action staging, host observation packaging and host task predicates",
+  "historical_public_step_comparison_allowed": false,
+  "published_files": {
+    "fp64-native-summary-20261025.csv": "274d3fa4be612f7ac78d0b29f4a95afc9b9487d3bb2dee105d650af9f7f44f39",
+    "fp64-paired-20261022.csv": "4819c51fbd4cca07898eeb1c90167ec71c4e7295d5ab8c9331775208b82d6d2b",
+    "fp64-current-standalone-20261025.csv": "6aad926c3a4e7c7a5ee68452fc1cfdc0f87da9a84b061fc6c83ce513a0b65a1d"
+  },
+  "paired_run": {
+    "workspace_evidence": "results/fp64_alignment_20261022/catalogue-final",
+    "source_identity": "57a53e6af9cc61a40e5cdb3cfde77ca04e78104eb7047fb753f1a3648fb9dc27",
+    "tasks": 130,
+    "strict_endpoint_passes": 127,
+    "physically_qualified_exceptions": 3,
+    "other_gpu_process_sampled": 1,
+    "version_order": "frozen and current alternated per timed control; independent continuing state per version",
+    "state_restore_save_inside_events": false,
+    "workspace_summary_sha256": "97b24b24a757c9f045f5823669827c5a562d818c240390f9525788c256b9c5b8"
+  },
+  "standalone_run": {
+    "dates": "2026-10-23 to 2026-10-25",
+    "workspace_evidence": "results/fp64_current_20261023/gpu-run",
+    "tasks": 130,
+    "other_gpu_process_sampled": 0,
+    "prior_source_identity": "57a53e6af9cc61a40e5cdb3cfde77ca04e78104eb7047fb753f1a3648fb9dc27",
+    "prior_source_tasks": 76,
+    "current_source_identity": "e999e7c715aea88251d0a568adc94965d6908e4d09cb4e7dddda707cb0a29c28",
+    "source_transition": "Runtime Euler nM/njnt versus packed EulerData nm/nj admission; only NV39 selects aligned path",
+    "prior_source_selected_substep": "PeeledForceSubstep for all 76 non-NV39 tasks",
+    "contended_measurements_discarded_and_rerun": 8,
+    "workspace_summary_sha256": "d91da8749fdaf491b58ebe2d5c29fbc2d4f3c769ff7e381b5b3ef8b56bbb6014"
+  },
+  "interpretation": "The paired ratio compares two versions inside one paired experiment. The standalone current result is a separate measurement, not a second paired ratio or a public step() wall-clock timing."
+}

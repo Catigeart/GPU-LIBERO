@@ -32,8 +32,7 @@ class FusedCenteredMass:
         self.interval=self.tree.prepare_intervals()
         self.path=Path(library)
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_position offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_position_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_position_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale fused position; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_position_arch()!=self.stream.device.arch:raise ValueError('Fused position architecture differs')
         for name,kind in (('centered',ComPosInputs),('mass',MassMatrixInputs)):
             size=getattr(lib,'flash_fp32_position_'+name+'_bytes');size.restype=ct.c_size_t

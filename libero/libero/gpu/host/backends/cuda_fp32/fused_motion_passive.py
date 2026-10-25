@@ -45,8 +45,7 @@ class FusedMotionPassive:
         self.path=Path(library);self.library=None
         if not self.eligible:return
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_motion_passive offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_motion_passive_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_motion_passive_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale motion/passive; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_motion_passive_arch()!=self.stream.device.arch:raise ValueError('Motion/passive architecture differs')
         for name,kind in (('velocity',VelocityInputs),('bias',BiasInputs),('fluid',FluidInputs),('passive',PassiveInputs)):
             f=getattr(lib,'flash_fp32_motion_passive_'+name+'_bytes');f.restype=ct.c_size_t

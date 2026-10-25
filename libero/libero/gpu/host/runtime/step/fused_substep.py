@@ -42,7 +42,8 @@ class FusedSubstep:
         self.manifest = substep_native.prepare(GPU_ROOT / "cuda/step/fused_substep.cu",
             build_root, core.manifest["mathdx_root"], self.stream.device.arch,
             fast_compile=fast_compile, device_lto=device_lto, profile_newton=profile_newton,
-            nv=self.variant.nv, atomic_reductions=atomic_reductions, single_solve=single_solve)
+            nv=self.variant.nv, atomic_reductions=atomic_reductions, single_solve=single_solve,
+            for_build=allow_build)
         self._graphs = {}
         self.load(allow_build=allow_build)
 

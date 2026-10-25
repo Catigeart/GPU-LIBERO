@@ -1,9 +1,9 @@
-"""Exact cold product reuse for maintained direct CUDA compiler builders."""
+"""Offline direct CUDA builds and load-only reuse of their ordinary artifacts."""
 import os
 from pathlib import Path
 import subprocess
 from .build_receipts import canonical, digest, file_record, compiler_dependencies, toolchain_record
-from .product_cache import current_product_authority, compiler_environment_record
+from .product_cache import current_product_cache, compiler_environment_record
 
 
 def receipted_artifact_build(*, commands, units, outputs, architecture,
@@ -15,9 +15,11 @@ def receipted_artifact_build(*, commands, units, outputs, architecture,
     artifact files and has passed ``verify`` on those actual files; its caller
     keeps all original owner/module/resource/ABI gates there.
     """
-    authority=current_product_authority()
-    if authority is None:
-        raise RuntimeError('direct product build requires explicit product authority scope')
+    cache=current_product_cache()
+    if cache is None:
+        raise RuntimeError('direct product build requires an explicit product cache scope')
+    from .compilation import compilation_allowed
+    offline = compilation_allowed()
     commands=[list(map(str,command)) for command in commands]
     for command in commands:
         if any(arg in ('--use_fast_math','-use_fast_math','--fmad=false','--ftz=true',
@@ -53,6 +55,11 @@ def receipted_artifact_build(*, commands, units, outputs, architecture,
             if arg.endswith(('.o','.a')):continue
             flags.append(arg)
         per_unit_flags.append(flags)
+    selection = {'schema':'maintained-direct-build-inputs-v1',
+        'units':[{'bytes':len(raw),'sha256':digest(raw)} for raw in expected_sources],
+        'closure':{source_aliases.get(k,k):v for k,v in closure.items()},
+        'commands':normalized,'architecture':architecture,
+        'policy':{'fma':True,'precise_div':True,'precise_sqrt':True,'ftz':False}}
     def current_inputs():
         if any(p.read_bytes()!=raw for p,raw in zip(units,expected_sources)):
             raise RuntimeError('generated CUDA source changed during product admission')
@@ -66,22 +73,19 @@ def receipted_artifact_build(*, commands, units, outputs, architecture,
         toolchain=toolchain_record(compiler,per_unit_flags[0])
         toolchain=dict(toolchain);toolchain['environment_sha256']=compiler_environment_record()['sha256']
         toolchain['environment_schema']='compiler-input-environment-v1'
-        return {'schema':'maintained-direct-build-inputs-v1',
-            'units':[{'bytes':len(raw),'sha256':digest(raw)} for raw in expected_sources],
-            'closure':{source_aliases.get(k,k):v for k,v in closure.items()},
-            'commands':normalized,'architecture':architecture,
+        return {**selection,
             'dependencies':sorted([dict(row,path=source_aliases.get(row['path'],row['path']))
                 for row in dependencies.values()],key=lambda row:row['path']),
             'archives':[file_record(p) for p in archives], 'toolchain':toolchain,
             'policy':{'fma':True,'precise_div':True,'precise_sqrt':True,'ftz':False}}
     # Child compilers must see exactly the bound compiler-input environment.
     # Callers' cache/tmp/worker variables may differ; compiler variables may not.
-    current_environment=compiler_environment_record()
-    if env is not None:
+    if offline and env is not None:
+        current_environment=compiler_environment_record()
         child_environment=compiler_environment_record(env)
         if child_environment!=current_environment:
             raise ValueError('direct builder child compiler environment differs from admitted inputs')
-    identity=current_inputs()
+    identity=current_inputs() if offline else selection
     def validate():
         if current_inputs()!=identity:
             raise RuntimeError('CUDA source/dependency/toolchain/archive changed during product admission')
@@ -98,6 +102,6 @@ def receipted_artifact_build(*, commands, units, outputs, architecture,
             path=outputs[name];path.parent.mkdir(parents=True,exist_ok=True)
             path.write_bytes(raw)
         verify()
-    _,receipt,status=authority.obtain_artifacts(identity,required_symbols,names=outputs,
+    _,receipt,status=cache.obtain_artifacts(identity,required_symbols,names=outputs,
         build=build,validate=validate,exports=materialize)
     return {'receipt':receipt,'cache':status,'compile_commands_executed':[] if status['hit'] else commands}

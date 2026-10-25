@@ -42,9 +42,6 @@ class SolverStatePlan:
         if not self.library_path.is_file():
             raise MissingCompiledProduct('Build flash_mjwarp_solver_state_fp32 offline')
         self.library=ct.CDLL(str(self.library_path))
-        self.library.flash_mjwarp_solver_state_source_id.restype=ct.c_char_p
-        if self.library.flash_mjwarp_solver_state_source_id().decode()!=source_id():
-            raise MissingCompiledProduct('Solver state binary is stale; rebuild its CMake target offline')
         for name,structure in (('init',InitInputs),('stop',StopInputs)):
             method=getattr(self.library,'flash_mjwarp_solver_state_'+name+'_bytes');method.restype=ct.c_size_t
             if method()!=ct.sizeof(structure):raise ValueError('Solver state C/Python ABI differs: '+name)

@@ -52,8 +52,7 @@ class FusedControlPrepare:
         self.arguments=ControlPrepareInputs(c._gather_arguments(),j.arguments,c.points.ptr,c.buffers['policy'].ptr)
         self.n=n;self.path=Path(library)
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_control_prepare offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_control_prepare_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_control_prepare_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale control preparation; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_control_prepare_arch()!=stream.device.arch:raise ValueError('Control preparation architecture differs')
         size=lib.flash_fp32_control_prepare_arguments_bytes;size.restype=ct.c_size_t
         if size()!=ct.sizeof(ControlPrepareInputs):raise ValueError('Control preparation ABI differs')

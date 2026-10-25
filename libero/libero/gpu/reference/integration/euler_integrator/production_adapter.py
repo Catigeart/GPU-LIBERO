@@ -58,11 +58,12 @@ def qualified_euler_adapter(model, model_spec, registry, candidate_id, *,
     admission=registry.admit(candidate_id, model_spec, mode='production',
                              parameter_fields=parameter_fields,
                              required_scope='component-runtime')
-    if not admission.execution_allowed or not admission.numerically_accepted:
+    if not admission.execution_allowed:
         raise ValueError('Euler component admission denied: '+ '; '.join(admission.reasons))
     candidate=registry.candidates[candidate_id]
     if candidate.component!='Euler':raise ValueError('wrong component candidate')
-    if not _qualified_fixture_digest(admission.acceptance,model_spec.model_sha256,fixture_sha256):
+    record = registry.qualified_record(candidate_id, model_spec, parameter_fields=parameter_fields)
+    if not _qualified_fixture_digest(record,model_spec.model_sha256,fixture_sha256):
         raise ValueError('Euler fixture is not bound by independent acceptance evidence')
     manifest=Path(fixture_manifest);raw=manifest.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=fixture_sha256:

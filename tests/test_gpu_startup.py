@@ -12,6 +12,7 @@ import numpy as np
 
 from libero.gpu.host.adapters.environment.facade import GpuSimFacade, SharedModelMetadata
 from libero.gpu.host.build import startup
+from libero.gpu.host.runtime.step.shape_assembly import ShapeAssembly
 
 
 GPU = Path(__file__).resolve().parents[1] / 'libero/libero/gpu'
@@ -114,19 +115,17 @@ class Array:
 class NewtonStartupTests(unittest.TestCase):
     def test_public_native_profile_propagates_through_cold_factories(self):
         calls = []
-        class Transform:
-            dynamics = euler = inserted = 1
-        def derive(function, replacements, transform):
-            def prepare(*args, **kwargs):
-                factories = replacements['_event_cold_factories']()
-                factories[1](rows=30052)
-                return SimpleNamespace(runtime=object(), dynamics=object(), post=object(), close=lambda: None)
-            return prepare
+        def prepare(*args, _assembly, **kwargs):
+            factories = _assembly.cold_factories()
+            factories[1](rows=30052)
+            return SimpleNamespace(runtime=object(), dynamics=object(), post=object(), close=lambda: None)
         pipeline = GPU/'host/assembly/pipeline/factory.py'
         namespace = dict(Path=Path, hashlib=hashlib, partial=partial, GPU_ROOT=GPU,
-            first=SimpleNamespace(_derive=derive), _ColdImports=Transform,
+            ShapeAssembly=ShapeAssembly, prepare_from_built=object(), prepare_post=object(),
+            FusedFoundationForwardAdapter=object(), FusedShapePhysicsForward=object(),
+            FusedRuntimeControllerAdapter=object(), euler=SimpleNamespace(FusedEulerWorkspace=object()),
             make_fused_adapter=object(), _newton_factory=lambda **kw: calls.append(kw),
-            recovery_event_factory=SimpleNamespace(prepare_recovery_event_physics=object()),
+            recovery_event_factory=SimpleNamespace(prepare_recovery_event_physics=prepare),
             _recovery_loop=object(), fused_workspace_type=object(),
             dynamics=SimpleNamespace(plan_catalog=lambda obj: {}), _validate_selection=lambda obj: True)
         exec(compile(ast.Module(body=[node(pipeline, 'prepare_fused_physics')], type_ignores=[]),
@@ -151,7 +150,8 @@ class NewtonStartupTests(unittest.TestCase):
             allocations.append(array)
             return array
         warp = SimpleNamespace(zeros=allocate, full=allocate, float64='f64', int32='i32')
-        scope = dict(wp=warp, _f64_1=lambda a: a, _i32_1=lambda a: a,
+        scope = dict(wp=warp, scalar=SimpleNamespace(wp_real='f64'),
+                     _f64_1=lambda a: a, _i32_1=lambda a: a,
                      NewtonFwdWorkspace=object, TAPE_SLOT_CAP=256, TRACECAP=52, NV=43)
         exec(compile(ast.Module(body=[solver_class], type_ignores=[]), '<retained-solver>', 'exec'), scope)
         class Workspace:
@@ -171,7 +171,7 @@ class NewtonStartupTests(unittest.TestCase):
             disableflags=0, tolerance=1.e-8), stat=SimpleNamespace(meaninertia=1.),
             dof_Madr=np.arange(43), dof_parentid=np.arange(43), dof_simplenum=np.ones(43))
         scope.update(Path=Path, hashlib=hashlib, SimpleNamespace=SimpleNamespace, np=np,
-            mujoco=SimpleNamespace(MjModel=SimpleNamespace(from_binary_path=lambda p: model)),
+            load_native_model=lambda **kw: (model, Path(kw['model_path'])),
             _validate_native=lambda m: 1, _AdmittedModel=lambda a: SimpleNamespace(_validate=lambda: None),
             load_candidate=lambda *a: (SimpleNamespace(workspace=SimpleNamespace(NewtonFwdWorkspace=Workspace),
                 solver=SimpleNamespace(FwdConstraintSolver=scope['FwdConstraintSolver'])), {}),

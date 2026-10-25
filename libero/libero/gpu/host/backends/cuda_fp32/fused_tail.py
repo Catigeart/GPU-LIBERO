@@ -28,10 +28,7 @@ class FusedAdvance:
         if not self.path.is_file():
             raise MissingCompiledProduct('Build flash_fp32_fused_tail offline')
         self.library=lib=ct.CDLL(str(self.path))
-        lib.flash_fp32_tail_source_id.restype=ct.c_char_p
         lib.flash_fp32_tail_arguments_bytes.restype=ct.c_size_t
-        if lib.flash_fp32_tail_source_id().decode()!=source_id():
-            raise MissingCompiledProduct('Stale FP32 fused tail; rebuild flash_fp32_fused_tail offline')
         if lib.flash_fp32_tail_arguments_bytes()!=ct.sizeof(EulerInputs):
             raise ValueError('FP32 fused tail ABI differs')
         if lib.flash_fp32_tail_arch()!=self.stream.device.arch:

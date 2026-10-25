@@ -8,12 +8,10 @@ from libero.gpu.host.runtime.dynamics.mjwarp_publication import PublicationState
 
 
 def publication_product(root,*,fast_compile=False):
-    import subprocess
     from libero.gpu.host.build.project_paths import project_paths
     from libero.gpu.host.build.compilation import MissingCompiledProduct
     folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release');path=folder/'mjwarp_publication_fp32.so';target='flash_mjwarp_publication_fp32'
-    check=subprocess.run(['ninja','-C',str(folder),'-n',target],capture_output=True,text=True)
-    if not path.is_file() or check.returncode or 'ninja: no work to do.' not in check.stdout:raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
+    if not path.is_file():raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
     return path
 
 

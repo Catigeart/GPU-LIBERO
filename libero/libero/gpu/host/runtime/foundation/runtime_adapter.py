@@ -8,8 +8,8 @@ import libero.gpu.precision as scalar
 from pathlib import Path
 import hashlib
 import warp as wp
-from ..core.model_bytes import checked_records, source_ref, source_bytes
-from ..core.static_readset import immutable_array, StaticReadsetSeal
+from ..core.model_bytes import source_ref
+from ..core.static_readset import immutable_array, StaticReadsetSeal, native_arrays, native_field_digest as _native_field_digest
 from .device import SharedProtocol
 from .binding import array_token, allocation_origin, origin_token
 from .schema import checked_product
@@ -40,18 +40,15 @@ class FoundationForwardAdapter:
     launch_position(stream=None), launch_velocity(stream=None). Its qpos, qvel, state_epoch,
     stream and device roots remain stable; it owns forward_epoch and publishes
     actual position/velocity valid/written only after its real device work.
-    source_records are exact source licences, not a replacement source guard.
+    source_records are optional diagnostic provenance; no source files are read.
     expected_state_epoch and state_valid must be independently prepared device
     arrays owned by the step state producer. No host publication is accepted.
     """
     def __init__(self, backend, *, mask, expected_state_epoch, state_valid,
-                 nq, nv, source_records, stream):
+                 nq, nv, stream, source_records=()):
         if type(nq) is not int or type(nv) is not int or nq <= 0 or nv <= 0:
             raise ValueError('positive model nq/nv required')
-        if not source_records:
-            raise ValueError('pinned original backend/model source licence required')
-        self.source_records = checked_records(source_records)
-        self._source_records = self.source_records
+        self.source_records = tuple((source_ref(record), record['sha256']) for record in source_records)
         self.backend, self._backend, self.stream = backend, backend, stream
         self.nq, self.nv = nq, nv
         if backend.stream is not stream or not stream.device.is_cuda:
@@ -76,9 +73,6 @@ class FoundationForwardAdapter:
         self._roots = tuple((n, getattr(self, n), array_token(getattr(self, n))) for n in
                             ('qpos','qvel','state_epoch','expected_state_epoch','state_valid'))
         self._stream = (id(stream), int(stream.cuda_stream), int(stream.device.context))
-        self._backend_methods = tuple((n, getattr(type(backend), n),
-                                       getattr(type(backend),n).__code__, getattr(type(backend),n).__defaults__) for n in
-                                      ('validate_bindings','begin_forward','launch_position','launch_velocity'))
         with wp.ScopedStream(stream):
             self.admitted = wp.zeros(self.nworld, dtype=wp.int32, device=stream.device)
             self.errors = wp.zeros(self.nworld, dtype=wp.int32, device=stream.device)
@@ -112,13 +106,10 @@ class FoundationForwardAdapter:
             raise ValueError('resident state dtype/shape/stream device mismatch')
 
     def validate_bindings(self):
-        if self.backend is not self._backend or self.source_records != self._source_records:
-            raise ValueError('runtime backend/source licence replaced')
+        if self.backend is not self._backend:
+            raise ValueError('runtime backend owner replaced')
         if (id(self.stream), int(self.stream.cuda_stream), int(self.stream.device.context)) != self._stream or self.backend.stream is not self.stream:
             raise ValueError('runtime stream/context replaced')
-        for name, method, code, defaults in self._backend_methods:
-            if getattr(getattr(self.backend, name), '__func__', None) is not method or method.__code__ is not code or method.__defaults__ is not defaults:
-                raise ValueError('qualified backend method replaced: ' + name)
         self.backend.validate_bindings()
         for a, record in self._origins:
             _check_origin(a, record)
@@ -209,43 +200,16 @@ import numpy as np
 from libero.gpu.reference.position.body_kinematics.workspace import FrozenModel, STATIC, _read_set_hash
 
 
-def _native_field_digest(name, array):
-    a = np.ascontiguousarray(array)
-    h = hashlib.sha256()
-    h.update(name.encode('utf-8') + b'\0')
-    h.update(a.dtype.str.encode('ascii') + b'\0')
-    h.update(str(a.shape).encode('ascii') + b'\0')
-    h.update(a.tobytes())
-    return h.hexdigest()
-
-
-def _pin_native_metadata(metadata, spec, records, metadata_record, fields):
-    import json
-    path = source_ref(metadata_record)
-    digest = metadata_record['sha256']
-    if (path,digest) not in records or hashlib.sha256(source_bytes(path)).hexdigest() != digest:
-        raise ValueError('authoritative native metadata source pin missing')
-    original = json.loads(source_bytes(path))
-    for name in ('model_sha256','static_arrays_sha256','dimensions','decoder_pin'):
-        if metadata[name] != original[name]:
-            raise ValueError('native metadata differs from pinned original: '+name)
-    for name in fields:
-        if metadata['array_sha256'].get(name) != original['array_sha256'].get(name):
-            raise ValueError('native field metadata differs from pinned original: '+name)
-
 def _model_admission(registry, candidate_id, spec, mode, base_spec):
     # The derived descriptor and its exact native readset are never rewritten.
-    # Only an independently qualified, explicitly supported generation can
-    # transfer production permission from an immutable base identity.
+    # Both generations must remain in the implementation domain. A changed
+    # generation needs explicit field validation at the update boundary.
     if base_spec is not None and mode == 'production':
         admission = registry.admit_generation(candidate_id, base_spec, spec,
                                                required_scope='component-runtime')
-        if admission.execution_allowed and (admission.acceptance is None or
-                admission.acceptance.execution_scope != 'component-runtime'):
-            raise ValueError('generation requires component-runtime qualification')
         return admission
     # A finite private/math licence must never become public runtime permission.
-    # Diagnostic execution remains available for actual new-model qualification.
+    # The legacy mode label does not substitute for the supported model scope.
     return registry.admit(candidate_id, spec, mode=mode,
                           required_scope='component-runtime' if mode == 'production' else None)
 
@@ -253,42 +217,24 @@ class PreparedKinematicModel(FrozenModel):
     """Count-parametric original K model with an exact native static readset.
 
     Cold preparation only. metadata is actual model-only decoder output, arrays
-    its copied native leaves. registry/model identity/source candidate admission
-    is mandatory; a structural diagnostic licence is never numerical acceptance.
-    Parameter changes retain base_spec and require exact derived native readsets
-    plus independent generation admission; the old base guard is unchanged.
+    its shared immutable native leaves. Structural capability checks remain
+    mandatory. Parameter changes construct a fresh snapshot; bindings are never
+    silently replaced during execution.
     """
     def __init__(self, arrays, metadata, spec, *, registry, candidate_id,
-                 source_records, metadata_record, mode='production', base_spec=None):
-        if not source_records:
-            raise ValueError('native static decoding/source records required')
-        self.source_records = checked_records(source_records)
-        _pin_native_metadata(metadata,spec,self.source_records,metadata_record,STATIC)
+                 source_records=(), metadata_record=None, mode='production', base_spec=None):
         self.spec, self.registry, self.candidate_id, self.mode = spec, registry, candidate_id, mode
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:
             raise ValueError('actual model/static identity differs from structural spec')
-        if metadata['decoder_pin']['source_sha256'] not in {digest for _,digest in self.source_records}:
-            raise ValueError('original model-only decoder source pin missing')
-        if spec.model_sha256 not in {digest for _,digest in self.source_records}:
-            raise ValueError('actual model MJB file source pin missing')
         self.base_spec = base_spec
         self._base_identity = None if base_spec is None else base_spec.identity_key
         self.admission = _model_admission(registry,candidate_id,spec,mode,base_spec)
-        candidate = registry.candidates[candidate_id]
-        if candidate.source_sha256 not in {digest for _,digest in self.source_records}:
-            raise ValueError('registered original kernel source pin missing')
         if not self.admission.execution_allowed:
             raise ValueError('kinematic candidate admission: ' + '; '.join(self.admission.reasons))
         self.dims = {name:getattr(spec.dimensions,name) for name in ('nq','nbody','njnt','nmocap')}
         if any(metadata['dimensions'][name] != value for name,value in self.dims.items()):
             raise ValueError('native dimensions differ')
-        self.arrays = {}
-        for name in STATIC:
-            a = np.array(arrays[name], copy=True, order='C')
-            if metadata['array_sha256'].get(name) != _native_field_digest(name,a):
-                raise ValueError('actual native kinematic field digest differs: ' + name)
-            a = immutable_array(a)
-            self.arrays[name] = a
+        self.arrays = native_arrays(arrays, metadata, spec, STATIC)
         self.kind = 'runtime-native-qualified-candidate'
         self.field_sha256 = _read_set_hash(self.arrays,self.dims)
         self.spec_sha256 = spec.identity_key
@@ -302,7 +248,9 @@ class PreparedKinematicModel(FrozenModel):
         n,a = self.dims,self.arrays
         dimensions=tuple(sorted(n.items()))
         seal=getattr(self,'_readset_seal',None)
-        digest=seal.current_digest(a,dimensions,lambda:_read_set_hash(a,n)) if seal is not None else _read_set_hash(a,n)
+        if seal is None or not seal.valid(a,dimensions):
+            raise ValueError('prepared family kinematic owner/layout replaced')
+        digest=self.field_sha256
         if (self.spec.identity_key, digest, dimensions) != self._identity:
             raise ValueError('prepared family kinematic readset replaced')
         if (None if self.base_spec is None else self.base_spec.identity_key) != self._base_identity:
@@ -352,15 +300,16 @@ def prepare_frame_arrays(arrays, metadata, spec, nworld):
               'geom_bodyid':(g,),'geom_pos':(g,3),'geom_quat':(g,4),'geom_sameframe':(g,),
               'site_bodyid':(s,),'site_pos':(s,3),'site_quat':(s,4),'site_sameframe':(s,)}
     prepared = {}
+    fields = native_arrays(arrays, metadata, spec, MODEL_FIELDS)
     for name in MODEL_FIELDS:
-        raw = np.array(arrays[name],copy=True,order='C')
+        raw = fields[name]
         dtype = np.dtype('float64' if name in FLOAT_FIELDS else 'int32')
         native_types = (np.dtype('uint8'),np.dtype('int32')) if name.endswith('_sameframe') else (dtype,)
-        if raw.dtype not in native_types or raw.shape != shapes[name] or _native_field_digest(name,raw) != metadata['array_sha256'].get(name):
+        if raw.dtype not in native_types or raw.shape != shapes[name]:
             raise ValueError('frame actual native readset differs: ' + name)
         # Original mjtByte sameframe -> original kernel int32 ABI. This is
         # an exact static integer extension after native bytes are pinned.
-        a = raw.astype(dtype,copy=True)
+        a = raw if raw.dtype == dtype else immutable_array(raw.astype(dtype))
         if name in FLOAT_FIELDS and not np.isfinite(a).all():
             raise ValueError('nonfinite original frame static: ' + name)
         a.flags.writeable = False
@@ -380,31 +329,23 @@ class PreparedFrameWorkspace(FrameWorkspace):
 
     A separate factory, never a change to FrameWorkspace's fixed-model guard.
     Registry production requires exact new model numerical/write/source review.
-    The diagnostic path only allocates a source-qualified original-kernel case.
+    The diagnostic path prepares the supplied native model with original kernels.
     """
     def __init__(self, arrays, metadata, spec, nworld, *, registry, candidate_id,
-                 source_records, metadata_record, mode='production', device='cuda:0', body_inputs=None, base_spec=None):
+                 source_records=(), metadata_record=None, mode='production', device='cuda:0', body_inputs=None, base_spec=None):
         if type(nworld) is not int or nworld < 1:
             raise ValueError('positive actual world count required')
-        records = checked_records(source_records)
-        if not records:
-            raise ValueError('actual frame readset source licence required')
-        _pin_native_metadata(metadata,spec,records,metadata_record,MODEL_FIELDS)
-        digests = {digest for _,digest in records}
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:
             raise ValueError('frame native model/static identity differs')
-        if metadata['decoder_pin']['source_sha256'] not in digests or spec.model_sha256 not in digests:
-            raise ValueError('actual frame model/decoder pin absent')
         self.base_spec = base_spec
         self._base_identity = None if base_spec is None else base_spec.identity_key
         self.admission = _model_admission(registry,candidate_id,spec,mode,base_spec)
-        if not self.admission.execution_allowed or registry.candidates[candidate_id].source_sha256 not in digests:
-            raise ValueError('frame candidate source/model admission refused')
+        if not self.admission.execution_allowed:
+            raise ValueError('frame model admission refused')
         self.spec,self.registry,self.candidate_id,self.mode = spec,registry,candidate_id,mode
-        self.source_records = records
         prepared,b,g,s = prepare_frame_arrays(arrays,metadata,spec,nworld)
         self._frame_configuration = (nworld,b,g,s,str(wp.get_device(device)),spec.identity_key)
-        prepared={name:immutable_array(value) for name,value in prepared.items()}
+        prepared=dict(prepared)
         self._native_static = prepared
         self.tail_static_sha256 = _tail_static_sha256(prepared)
         self._readset_seal=StaticReadsetSeal(prepared,self._frame_configuration,self.tail_static_sha256)
@@ -445,7 +386,9 @@ class PreparedFrameWorkspace(FrameWorkspace):
         if (self.nworld,self.nbody,self.ngeom,self.nsite,str(self.device),self.spec.identity_key) != self._frame_configuration or set(self.static) != set(MODEL_FIELDS):
             raise ValueError('prepared frame configuration changed')
         seal=getattr(self,'_readset_seal',None)
-        digest=seal.current_digest(self._native_static,self._frame_configuration,lambda:_tail_static_sha256(self._native_static)) if seal is not None else _tail_static_sha256(self._native_static)
+        if seal is None or not seal.valid(self._native_static,self._frame_configuration):
+            raise ValueError('frame native static owner/layout changed')
+        digest=self.tail_static_sha256
         if digest != self.tail_static_sha256:
             raise ValueError('frame native static source changed')
         if (None if self.base_spec is None else self.base_spec.identity_key) != self._base_identity:
@@ -474,31 +417,19 @@ class PreparedCamlightModel(FrozenCamlightModel):
     Non-fixed native camera/light modes remain a declared structural limitation.
     """
     def __init__(self, arrays, metadata, spec, *, registry, candidate_id,
-                 source_records, metadata_record, mode='production', base_spec=None):
-        records = checked_records(source_records)
-        if not records:raise ValueError('actual camlight source licence required')
-        _pin_native_metadata(metadata,spec,records,metadata_record,CAMLIGHT_FIELDS)
-        digests={digest for _,digest in records}
+                 source_records=(), metadata_record=None, mode='production', base_spec=None):
         if metadata['model_sha256'] != spec.model_sha256 or metadata['static_arrays_sha256'] != spec.static_arrays_sha256:
             raise ValueError('camlight actual model identity differs')
-        if metadata['decoder_pin']['source_sha256'] not in digests or spec.model_sha256 not in digests:
-            raise ValueError('camlight actual model/decoder pin absent')
         self.base_spec = base_spec
         self._base_identity = None if base_spec is None else base_spec.identity_key
         self.admission = _model_admission(registry,candidate_id,spec,mode,base_spec)
-        if not self.admission.execution_allowed or registry.candidates[candidate_id].source_sha256 not in digests:
-            raise ValueError('camlight source/model registry admission refused')
+        if not self.admission.execution_allowed:
+            raise ValueError('camlight model admission refused')
         self.spec,self.registry,self.candidate_id,self.mode=spec,registry,candidate_id,mode
         self.nbody=spec.dimensions.nbody
         self.ncam=len(arrays['cam_bodyid']);self.nlight=len(arrays['light_bodyid'])
-        self.arrays={}
-        for name in CAMLIGHT_FIELDS:
-            a=np.array(arrays[name],copy=True,order='C')
-            if _native_field_digest(name,a) != metadata['array_sha256'].get(name):
-                raise ValueError('actual native camlight field differs: '+name)
-            a=immutable_array(a);self.arrays[name]=a
+        self.arrays=native_arrays(arrays,metadata,spec,CAMLIGHT_FIELDS)
         self.kind='runtime-native-camlight-candidate'
-        self.source_records=records
         self.static_sha256=_camlight_digest(self.arrays)
         self._configuration=(self.nbody,self.ncam,self.nlight,spec.identity_key,self.static_sha256)
         self._readset_seal=StaticReadsetSeal(self.arrays,self._configuration[:-1],self.static_sha256)
@@ -509,7 +440,9 @@ class PreparedCamlightModel(FrozenCamlightModel):
     def validate(self):
         configuration=(self.nbody,self.ncam,self.nlight,self.spec.identity_key)
         seal=getattr(self,'_readset_seal',None)
-        digest=seal.current_digest(self.arrays,configuration,lambda:_camlight_digest(self.arrays)) if seal is not None else _camlight_digest(self.arrays)
+        if seal is None or not seal.valid(self.arrays,configuration):
+            raise ValueError('camlight native static owner/layout changed')
+        digest=self.static_sha256
         if configuration+(digest,) != self._configuration:
             raise ValueError('camlight prepared static identity changed')
         if (None if self.base_spec is None else self.base_spec.identity_key) != self._base_identity:

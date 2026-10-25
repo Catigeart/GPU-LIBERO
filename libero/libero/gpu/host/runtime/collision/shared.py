@@ -8,8 +8,6 @@ from __future__ import annotations
 import libero.gpu.precision as scalar
 
 import ctypes as ct
-import hashlib
-import json
 import warp as wp
 
 FLOAT_FIELDS = {
@@ -131,28 +129,6 @@ def _plan_exports(plan, detector):
         if detector else (plan.library.launch,))
 
 
-def _method_token(method):
-    function = getattr(method, '__func__', method)
-    return (id(getattr(method, '__self__', None)), id(function), id(getattr(function, '__code__', None)),
-        id(getattr(function, '__defaults__', None)), tuple(id(v) for v in (getattr(function, '__defaults__', None) or ())),
-        id(getattr(function, '__kwdefaults__', None)), tuple((k,id(v)) for k,v in sorted((getattr(function, '__kwdefaults__', None) or {}).items())),
-        tuple(id(c.cell_contents) for c in (getattr(function, '__closure__', None) or ())))
-
-
-def _handwritten_methods(ws):
-    return tuple((id(plan),tuple((name,_method_token(getattr(plan,name))) for name in
-        (('validate','launch','launch_compact_producer','launch_parallel_producer') if i == 0 else ('validate_bindings','launch'))))
-        for i,plan in enumerate(_handwritten_plans(ws)))
-
-
-def _admission_methods(admission):
-    seal = admission.static_seal
-    return (id(admission),id(admission.files),tuple(_method_token(getattr(admission,name)) for name in
-        ('validate','authority_token','_identity','_verify_files')),
-        tuple(_method_token(getattr(admission.files,name)) for name in ('digest','verification')),
-        None if seal is None else (id(seal),_method_token(seal.valid),_method_token(seal.current_digest)))
-
-
 def _native_retained(ws):
     if getattr(ws, '_detector_backend', 'legacy') == 'legacy':
         native = ws.detect.native
@@ -176,7 +152,8 @@ def _native_token(ws):
         admission = getattr(ws, '_collision_cold_admission', None)
         if admission is None:
             raise DeviceBindingError('handwritten_only requires its retained cold admission')
-        admission.validate()
+        if not admission.sealed or admission.revoked:
+            raise DeviceBindingError('collision model binding is not installed or was revoked')
         if ws.detect.native is not None:
             raise DeviceBindingError('handwritten_only unexpectedly retained baseline native')
         records = []
@@ -189,7 +166,7 @@ def _native_token(ws):
                 plan.validate_bindings()
                 parameter_abi = tuple((name, ctype.__name__, ct.sizeof(ctype)) for name, ctype in plan.params._fields_)
                 params_owner = id(plan.params), ct.addressof(plan.params)
-            # Actual loaded library/export, pointer owners, and compiled source identity.
+            # Actual loaded library/export, argument layout and buffer owners.
             owners = tuple((id(a), int(a.ptr or 0), tuple(a.shape), tuple(a.strides),
                 a.dtype.__name__, str(a.device), id(getattr(a, '_ref', None)))
                 for a in plan.owners)
@@ -197,26 +174,17 @@ def _native_token(ws):
                 tuple((id(t), t.__name__) for t in (function.argtypes or ())),
                 id(function.restype), getattr(function.restype, '__name__', None))
                 for function in _plan_exports(plan, i == 0))
-            methods = tuple((name, _method_token(getattr(plan, name))) for name in
-                (('validate', 'launch', 'launch_compact_producer') if i == 0 else ('validate_bindings', 'launch')))
             records.append((id(plan), id(plan.library), int(plan.library._handle),
-                exports, methods,
-                parameter_abi, params_owner, bytes(plan.params).hex(), owners, str(plan.device),
-                hashlib.sha256(json.dumps(plan.manifest, sort_keys=True,
-                    separators=(',', ':')).encode()).hexdigest()))
+                exports, parameter_abi, params_owner, bytes(plan.params).hex(), owners, str(plan.device)))
         return ('handwritten_only-v1', tuple(records))
     native = ws.detect.native
     library = native['library']
-    execution = native['execution_binding']
     function = library.launch_native
     # This is the loaded export used by native.launch_native, rather than a
     # provider's descriptive module label. No kernel or physics call occurs.
     return (id(native), id(library), int(library._handle), id(function),
             int(ct.cast(function, ct.c_void_p).value),
-            tuple(native['adapter_abi']), native['device'],
-            native['build_path'], native['build_sha256'], id(execution),
-            hashlib.sha256(json.dumps(execution, sort_keys=True,
-                separators=(',', ':')).encode()).hexdigest())
+            tuple(native['adapter_abi']), native['device'])
 
 class DeviceInputBinding:
     """One immutable source graph, retained for eager and captured launches."""
@@ -286,9 +254,6 @@ class DeviceInputBinding:
         self._retained.extend(self._modules.values())
         self._native = None if getattr(ws, '_detector_backend', 'legacy') == 'handwritten_only' else _native_token(ws)
         self._admission = getattr(ws, '_collision_cold_admission', None)
-        self._admission_methods = None if self._admission is None else _admission_methods(self._admission)
-        self._admission_authority = None
-        self._native_methods = None
         if self._native is not None:
             self._retained.extend(_native_retained(ws))
 
@@ -305,9 +270,6 @@ class DeviceInputBinding:
         self.validate(ws, self.stream, allow_unsealed=True)
         token = _native_token(ws)  # requires actual complete installed plans
         self._native = token
-        self._native_methods = _handwritten_methods(ws)
-        self._admission_methods = _admission_methods(self._admission)
-        self._admission_authority = self._admission.authority_token()
         self._retained.extend(_native_retained(ws))
         self._arguments = _argument_arrays(ws)
         self._argument_tokens = {name: array_token(a) for name, a in self._arguments.items()}
@@ -321,15 +283,8 @@ class DeviceInputBinding:
             raise DeviceBindingError('handwritten_only backend must be sealed before launch/capture')
         if getattr(ws, '_detector_backend', 'legacy') == 'handwritten_only':
             admission = getattr(ws, '_collision_cold_admission', None)
-            # Check actual owner/method/proof replacement before any mutable callback.
-            if admission is None or admission is not self._admission:
-                raise DeviceBindingError('handwritten_only requires its retained cold admission')
-            current_methods = _admission_methods(admission)
-            if current_methods[:4] != self._admission_methods[:4] or (not pending and current_methods != self._admission_methods):
-                raise DeviceBindingError('collision admission methods/files/seal replaced')
-            if not pending and (admission.authority_token() != self._admission_authority or
-                    _handwritten_methods(ws) != self._native_methods):
-                raise DeviceBindingError('collision admission authority/plan methods changed')
+            if admission is None or admission is not self._admission or admission.workspace is not ws:
+                raise DeviceBindingError('handwritten_only requires its retained model binding')
             admission.validate(require_installed=not pending)
         if (id(stream), str(stream.device), int(stream.cuda_stream)) != self._stream_token:
             raise DeviceBindingError('bound stream replaced')

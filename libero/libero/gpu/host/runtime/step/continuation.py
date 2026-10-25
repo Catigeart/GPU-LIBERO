@@ -6,9 +6,14 @@ import warp as wp
 
 
 def _scalar_layout(array):
-    dtype={scalar.wp_real:np.dtype(np.float64),wp.float32:np.dtype(np.float32),
-           wp.int32:np.dtype(np.int32),wp.int64:np.dtype(np.int64)}.get(array.dtype)
-    return (array.shape,dtype) if dtype is not None else None
+    """Match Warp's NumPy layout without downloading an array to discover it."""
+    from warp._src.types import dtype_to_numpy
+    dtype = array.dtype
+    if hasattr(dtype, 'numpy_dtype'):
+        return tuple(array.shape), np.dtype(dtype.numpy_dtype())
+    if hasattr(dtype, '_wp_scalar_type_'):
+        return (*array.shape, *dtype._shape_), np.dtype(dtype_to_numpy(dtype._wp_scalar_type_))
+    return tuple(array.shape), np.dtype(dtype_to_numpy(dtype))
 
 
 def continuation_arrays(bundle):
@@ -72,12 +77,15 @@ def controller_static_headers(bundle):
     return result
 
 
-def continuation_snapshot(bundle):
+def continuation_snapshot(bundle, *, verify=False):
     wp.synchronize_stream(bundle.stream)
     arrays=continuation_arrays(bundle)
     data={key:array.numpy().copy() for key,array in arrays.items()}
     headers={key:dict(shape=list(value.shape),dtype=value.dtype.str,
-        bytes=value.nbytes,sha256=hashlib.sha256(value.tobytes()).hexdigest()) for key,value in data.items()}
+        bytes=value.nbytes) for key,value in data.items()}
+    if verify:
+        for key,value in data.items():
+            headers[key]['sha256']=hashlib.sha256(value.tobytes()).hexdigest()
     return dict(schema='gpu-boundary-continuation-v1',data=data,headers=headers,
         controller_static_headers=controller_static_headers(bundle),
         source_model_sha256=bundle.model_spec.model_sha256,
@@ -86,34 +94,40 @@ def continuation_snapshot(bundle):
                                       'private scratch not visible through canonical/public read set'])
 
 
-def restore_continuation(bundle,snapshot):
-    """Restore bytes into fresh retained owners, before external publication."""
-    arrays=continuation_arrays(bundle)
-    if controller_static_headers(bundle)!=snapshot['controller_static_headers']:
-        raise ValueError('new arena controller static configuration differs')
-    if set(arrays)!=set(snapshot['data']):
+def _restore_arrays(bundle, snapshot, *, verify=False):
+    arrays = continuation_arrays(bundle)
+    if set(arrays) != set(snapshot['data']) or set(arrays) != set(snapshot['headers']):
         raise ValueError('new arena continuation field set differs')
-    for key,array in arrays.items():
-        value=snapshot['data'][key]
-        header=snapshot['headers'][key]
-        if (list(value.shape)!=header['shape'] or value.dtype.str!=header['dtype'] or
-                hashlib.sha256(value.tobytes()).hexdigest()!=header['sha256']):
-            raise ValueError('boundary snapshot drift: '+key)
-        layout=_scalar_layout(array)
-        if layout is None:
-            actual_layout=array.numpy()
-            layout=(actual_layout.shape,actual_layout.dtype)
-        if tuple(layout[0])!=value.shape or layout[1]!=value.dtype:
-            raise ValueError('new arena shape/dtype differs: '+key)
+    # Validate the complete transfer before enqueueing its first write.
+    for key, array in arrays.items():
+        value, header = snapshot['data'][key], snapshot['headers'][key]
+        if not isinstance(value, np.ndarray):
+            raise TypeError('continuation field must be a NumPy array: ' + key)
+        layout = _scalar_layout(array)
+        if (layout != (value.shape, value.dtype) or list(value.shape) != header['shape'] or
+                value.dtype.str != header['dtype'] or value.nbytes != header['bytes']):
+            raise ValueError('new arena continuation shape/dtype differs: ' + key)
+        if verify and hashlib.sha256(value.tobytes()).hexdigest() != header.get('sha256'):
+            raise ValueError('diagnostic boundary snapshot drift: ' + key)
     with wp.ScopedStream(bundle.stream):
-        for key,array in arrays.items():array.assign(snapshot['data'][key])
+        for key, array in arrays.items():
+            array.assign(snapshot['data'][key])
     wp.synchronize_stream(bundle.stream)
-    for key,array in arrays.items():
-        actual=array.numpy()
-        if not np.array_equal(actual.view(np.uint8).reshape(-1),snapshot['data'][key].view(np.uint8).reshape(-1)):
-            raise ValueError('actual continuation byte transport differs: '+key)
-    return dict(schema='gpu-boundary-continuation-restore-v1',fields=len(arrays),
-        data_bitwise_equal=True,new_model_sha256=bundle.model_spec.model_sha256,
+    if verify:
+        for key, array in arrays.items():
+            if array.numpy().tobytes() != snapshot['data'][key].tobytes():
+                raise ValueError('actual continuation byte transport differs: ' + key)
+    return len(arrays)
+
+
+def restore_continuation(bundle, snapshot, *, verify=False):
+    """Restore retained state; full readback verification is explicitly opt-in."""
+    if controller_static_headers(bundle) != snapshot['controller_static_headers']:
+        raise ValueError('new arena controller static configuration differs')
+    count = _restore_arrays(bundle, snapshot, verify=verify)
+    return dict(schema='gpu-boundary-continuation-restore-v1', fields=count,
+        transport_completed=True, data_bitwise_equal=True if verify else None,
+        new_model_sha256=bundle.model_spec.model_sha256,
         derived_age='retained old generation; new forward must republish current generation',
         CPU_physics=False)
 
@@ -161,7 +175,7 @@ def validate_native_controller_transition(bundle, snapshot, plan):
             'declared_native_fields': list(plan.array_fields)}
 
 
-def restore_native_model_continuation(bundle, snapshot, plan):
+def restore_native_model_continuation(bundle, snapshot, plan, *, verify=False):
     """Restore exact old dynamic bytes under an explicit new-static transition.
 
     A new physical identity does not make old derived values current: model
@@ -170,30 +184,9 @@ def restore_native_model_continuation(bundle, snapshot, plan):
     """
     plan.validate_base()
     transition = validate_native_controller_transition(bundle, snapshot, plan)
-    arrays = continuation_arrays(bundle)
-    if set(arrays) != set(snapshot['data']):
-        raise ValueError('native replacement continuation field set differs')
-    for key, array in arrays.items():
-        value = snapshot['data'][key]
-        header = snapshot['headers'][key]
-        if (list(value.shape) != header['shape'] or value.dtype.str != header['dtype'] or
-                hashlib.sha256(value.tobytes()).hexdigest() != header['sha256']):
-            raise ValueError('native boundary snapshot drift: ' + key)
-        layout = _scalar_layout(array)
-        if layout is None:
-            actual_layout = array.numpy()
-            layout = (actual_layout.shape, actual_layout.dtype)
-        if tuple(layout[0]) != value.shape or layout[1] != value.dtype:
-            raise ValueError('native replacement dimension/capacity differs: ' + key)
-    with wp.ScopedStream(bundle.stream):
-        for key, array in arrays.items():
-            array.assign(snapshot['data'][key])
-    wp.synchronize_stream(bundle.stream)
-    for key, array in arrays.items():
-        if array.numpy().tobytes() != snapshot['data'][key].tobytes():
-            raise ValueError('actual native continuation byte transport differs: ' + key)
-    return {'schema': 'gpu-native-model-continuation-restore-v1', 'fields': len(arrays),
-            'data_bitwise_equal': True, 'new_model_sha256': bundle.model_spec.model_sha256,
+    count = _restore_arrays(bundle, snapshot, verify=verify)
+    return {'schema': 'gpu-native-model-continuation-restore-v1', 'fields': count,
+            'transport_completed': True, 'data_bitwise_equal': True if verify else None, 'new_model_sha256': bundle.model_spec.model_sha256,
             'controller_static_transition': transition,
             'derived_age': 'retained prior generation; explicit forward must republish',
             'CPU_physics': False, 'generation_bridge_granted': False}

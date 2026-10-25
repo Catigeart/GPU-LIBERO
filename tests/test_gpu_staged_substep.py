@@ -47,7 +47,7 @@ class StagedProductTests(unittest.TestCase):
             with self.subTest(nv=nv, atomic=atomic):
                 physics = NativeBatchedPhysics.__new__(NativeBatchedPhysics)
                 physics.debug, physics._observer = False, None
-                runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv,nq=65,nm=212,nj=18))
+                runtime = SimpleNamespace(substeps=3, euler=SimpleNamespace(nv=nv,nq=65,nM=212,njnt=18))
                 physics.bundle = SimpleNamespace(runtime=runtime, stream=object())
                 fusion = SimpleNamespace(resources={}, enqueue_substep=MagicMock())
                 with patch('libero.gpu.host.runtime.step.aligned_substep.ControllerAlignedSubstep',
@@ -70,11 +70,13 @@ class StagedProductTests(unittest.TestCase):
     def test_euler_arena_admission_preserves_unsupported_shape_fallback(self):
         from types import SimpleNamespace
         from libero.gpu.host.runtime.step.aligned_substep import EulerAlignedSubstep
-        shape = dict(nv=57,nq=65,nm=212,nj=18)
-        self.assertTrue(EulerAlignedSubstep.supports(SimpleNamespace(**shape)))
-        for name, value in shape.items():
-            self.assertFalse(EulerAlignedSubstep.supports(
-                SimpleNamespace(**dict(shape, **{name:value+1}))))
+        for shape in (dict(nv=57,nq=65,nM=212,njnt=18),
+                      dict(nv=57,nq=65,nm=212,nj=18)):
+            with self.subTest(fields=tuple(shape)):
+                self.assertTrue(EulerAlignedSubstep.supports(SimpleNamespace(**shape)))
+                for name, value in shape.items():
+                    self.assertFalse(EulerAlignedSubstep.supports(
+                        SimpleNamespace(**dict(shape, **{name:value+1}))))
 
     def test_motion_product_keeps_the_native_schedule_and_independent_target(self):
         with tempfile.TemporaryDirectory() as directory:

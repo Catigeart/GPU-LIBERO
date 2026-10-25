@@ -36,7 +36,7 @@ class AlignedSubstep(PeeledForceSubstep):
         self.force_library = self.library
         prepared = substep_native.prepare_staged(GPU_ROOT/'cuda/step/fused_substep.cu',
             build_root, self.manifest['config']['sdk'], self.stream.device.arch,
-            nv=self.variant.nv, **{k: options[k] for k in
+            nv=self.variant.nv, for_build=options.get('allow_build', False), **{k: options[k] for k in
             ('fast_compile', 'device_lto', 'atomic_reductions') if k in options})
         self.manifest = substep_native.finish(prepared, allow_build=options.get('allow_build', False))
         self.library = lib = ct.CDLL(self.manifest['library'])
@@ -94,8 +94,14 @@ class EulerAlignedSubstep(AlignedSubstep):
     """Separate Euler for admitted shapes, with the original reset continuation."""
     @staticmethod
     def supports(euler):
+        # Admission runs both before argument packing (runtime Euler workspace)
+        # and after it (EulerData in the aligned CUDA argument bundle).
+        if hasattr(euler, 'nM'):
+            nm, nj = euler.nM, euler.njnt
+        else:
+            nm, nj = euler.nm, euler.nj
         return (0 < euler.nv <= 57 and 0 < euler.nq <= 65 and
-                0 < euler.nm <= 212 and 0 <= euler.nj <= 18)
+                0 < nm <= 212 and 0 <= nj <= 18)
 
     def __init__(self, runtime, build_root, **options):
         super().__init__(runtime, build_root, **options)

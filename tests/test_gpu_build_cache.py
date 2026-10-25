@@ -242,12 +242,8 @@ class NewtonPathAliasTests(unittest.TestCase):
         self.aot['_NEWTON_LEGACY_SOURCE_ROOTS']=()
         self.assertIsNone(self.request())
 
-    def test_changed_global_source_identity_is_not_certified_by_migration(self):
+    def test_path_alias_keeps_historical_source_provenance(self):
         self.request()
-        self.aot['source_identity']=lambda:'different-current-source'
-        error=self.modules['libero.gpu.host.build.compilation'].MissingCompiledProduct
-        with self.assertRaisesRegex(error,'incomplete or stale'):
-            self.aot['require_ready'](self.root,'suite/a.bddl',num_envs=8,seed=0)
         self.assertEqual(json.loads((self.root/'AOT_BUILD.json').read_text())['source_identity'],
             'historical-global-identity')
 
@@ -426,24 +422,6 @@ class NewtonCompletionAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'receipt is absent'):
             self.admit()
 
-    def test_actual_fresh_receipt_failure_removes_only_the_new_binary(self):
-        source=GPU/'host/runtime/newton/handwritten_cuda.py'
-        tree=ast.parse(source.read_text())
-        node=next(node for node in ast.walk(tree) if isinstance(node,ast.Try) and
-            any(isinstance(child,ast.Call) and isinstance(child.func,ast.Name) and
-                child.func.id=='publish_newton_dependency_receipt' for child in ast.walk(node)))
-        code=compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec')
-        context=dict(target=self.target,reused_product=False,dependency_inputs={},digest='recipe',
-            verify_completed_product=lambda:None)
-        with patch.object(self.aot,'publish_newton_dependency_receipt',side_effect=ValueError('changed input')):
-            with self.assertRaisesRegex(ValueError,'changed input'):
-                exec(code,context)
-        self.assertFalse(self.target.exists())
-        self.target.write_bytes(b'completed binary')
-        context.update(reused_product=True,verify_completed_product=lambda:(_ for _ in ()).throw(ValueError('bad ABI')))
-        with self.assertRaisesRegex(ValueError,'bad ABI'):
-            exec(code,context)
-        self.assertEqual(self.target.read_bytes(),b'completed binary')
 
 
 class GpuBuildCacheTests(unittest.TestCase):
@@ -636,26 +614,6 @@ class GpuBuildCacheTests(unittest.TestCase):
             self.assertEqual(len(first['events']), 1)
             self.assertFalse((root / 'unused').exists())
 
-    def test_module_addresses_get_fresh_records_with_shared_compiled_library(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.dict(os.environ, {'LIBERO_GPU_CACHE_DIR': directory}):
-            target = Path(directory) / 'project/collision'
-            target.mkdir(parents=True)
-            (target / 'libcollision.so').write_bytes(b'shared compiled image')
-            files = []
-            lifetimes = []
-            for address in (101, 202):
-                with paths.build_project(Path(directory) / 'project'), paths.product_build():
-                    lifetimes.append(paths.current_build_lifetime().retain())
-                    files.append(Path(paths.record_module_binding(target, {'cuda_function': address})))
-            self.assertNotEqual(files[0], files[1])
-            self.assertEqual([json.loads(p.read_text())['cuda_function'] for p in files], [101, 202])
-            self.assertTrue(all(p.is_relative_to(Path(directory) / 'storage-v1/runs') for p in files))
-            self.assertEqual((target / 'libcollision.so').read_bytes(), b'shared compiled image')
-            for lifetime in lifetimes:
-                lifetime.close()
-            self.assertTrue(all(not p.exists() for p in files))
-
     def test_distinct_generated_source_paths_do_not_collide_in_build_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'project/collision'
@@ -688,7 +646,7 @@ class GpuBuildCacheTests(unittest.TestCase):
         namespace = dict(wp=SimpleNamespace(get_device=Device), Path=Path, os=os,
                          GPU_ROOT=GPU, MODULE=GPU / 'cuda/collision/native',
                          _native_source_bindings=lambda path: {}, hashlib=hashlib,
-                         json=json, _CACHE=ExistingProducts(), current_product_authority=lambda: None)
+                         json=json, _CACHE=ExistingProducts(), current_product_cache=lambda: None)
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), namespace)
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(sys.modules, {PATHS_NAME: paths}), \

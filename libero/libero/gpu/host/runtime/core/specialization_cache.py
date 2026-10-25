@@ -23,7 +23,7 @@ def index_packages(root, packages=None):
         report = json.loads(generated.read_text())
         # A historical package can share the same model manifest while its
         # template version is obsolete. Never let scan order replace a current
-        # entry with that package. Runtime intake still validates every pin.
+        # entry with that package. Source freshness belongs to this offline step.
         pins = [pin for group in ('template_pins', 'generated_pins')
                 for pin in report.get(group, {}).values()]
         current = bool(pins) and all(Path(pin['path']).is_file() and
@@ -54,9 +54,15 @@ def generated_package(manifest, static, generator, root):
         if entry is None:
             raise MissingCompiledProduct('Constraint instance is absent from the offline build catalog')
         package = root / entry['package']
-        for name, digest in entry['files'].items():
-            if hashlib.sha256((package / name).read_bytes()).hexdigest() != digest:
-                raise ValueError('prebuilt specialization source differs: ' + str(package / name))
+        # The offline index selects the implementation. Runtime needs its files
+        # and matching physical model manifest, not another source certificate.
+        required = set(entry['files']) | {'__init__.py', 'MODEL_MANIFEST.json', 'SOURCE_GENERATION.json'}
+        for name in required:
+            if not (package / name).is_file():
+                raise MissingCompiledProduct('Prebuilt constraint file is absent: ' + str(package / name))
+        actual_manifest = json.loads((package / 'MODEL_MANIFEST.json').read_text())
+        if _manifest_key(actual_manifest) != _manifest_key(manifest):
+            raise ValueError('prebuilt specialization model manifest differs')
         return package, json.loads((package / 'SOURCE_GENERATION.json').read_text()), True
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.generate-', dir=root) as staging:

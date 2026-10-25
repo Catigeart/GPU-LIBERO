@@ -18,13 +18,13 @@ UPSTREAM_COMMIT='c384ac51df67eb92ab7657cc472ff7494dc036bf'
 @contextmanager
 def _scene_files(root, xml, options, task, scene_parameters, *, prepare):
     """Runtime reads fixed inputs; only offline preparation takes a writer lock."""
-    from ..mjwarp.scene_cache import locate
+    from ..mjwarp.scene_cache import locate, cache_directory
     kwargs = dict(prepare=prepare, scene_parameters=scene_parameters)
     if not prepare:
         yield locate(root, xml, options, task, **kwargs)
         return
     from libero.gpu.host.runtime.core.product_paths import build_unit_lock
-    folder = locate(root, xml, options, task, **kwargs)[0]
+    folder, _ = cache_directory(root, xml, options, task, scene_parameters)
     with build_unit_lock(folder):
         # A preceding writer may have completed while this process waited.
         yield locate(root, xml, options, task, **kwargs)
@@ -82,9 +82,10 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     from libero.gpu import precision
     task = scene_record(root, bddl, seed)
     directory = Path(task['directory'])
-    for name in ('scene.xml', 'initial_states.npy'):
-        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != task['files'][name]:
-            raise ValueError('offline scene input changed: ' + name)
+    if prepare:
+        for name in ('scene.xml', 'initial_states.npy'):
+            if hashlib.sha256((directory / name).read_bytes()).hexdigest() != task['files'][name]:
+                raise ValueError('offline scene input changed: ' + name)
     xml = relocate_assets((directory / 'scene.xml').read_text())
     tree = ET.fromstring(xml)
     opt = tree.find('option')
@@ -109,13 +110,13 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     xml = ET.tostring(tree, encoding='unicode')
     from ..mjwarp.scene_cache import finish
     from .scene_inputs import read as read_scene_inputs,apply as apply_scene_inputs
-    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task)
+    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task,verify=prepare)
     with _scene_files(project_paths(root).base, xml, options, task, scene_binding,
                       prepare=prepare) as scene:
         cache_folder,compiled,receipt,cache_binding = scene
         built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
             static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
-        finish(cache_folder,built,receipt,cache_binding)
+        finish(cache_folder,built,receipt,cache_binding,prepare=prepare,xml=xml)
     host = built.native_model
     for name in ('nq', 'nv', 'nu', 'nbody', 'njnt', 'ngeom', 'nsite'):
         if int(getattr(host, name)) != task['dimensions'][name]:

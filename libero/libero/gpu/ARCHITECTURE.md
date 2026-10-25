@@ -40,6 +40,20 @@ profiles and build caches also belong outside the source checkout.
 | Collision model intake | Extract live MuJoCo arrays without private test XML or CPU contact outputs. | `model/collision_static.py::static_from_model` |
 | Capsule extension | Cold source closure and route extension before binding/launch, with independent source identity. | `host/runtime/collision/capsule_extension.py::prepare_workspace_extension` |
 
+The outer FP64 assembly is ordinary Python construction:
+
+```text
+pipeline/compose.prepare_fused_physics
+  -> ShapeAssembly (explicit constructor choices)
+  -> recovery_event_factory.prepare_recovery_event_physics
+  -> shape_prepare.prepare_shape_physics
+  -> existing workspaces, adapters and recovery runtime
+```
+
+`host/runtime/step/shape_assembly.py` contains only those constructor arguments;
+it is not a registry or resource owner. Inner dynamics, Newton, collision and
+some compatibility factories still use source composition and remain active.
+
 ## Environment ownership and offline products
 
 See [Environment Lifecycle](ENVIRONMENT_LIFECYCLE.md) for runtime filesystem
@@ -50,11 +64,13 @@ behavior, cleanup guarantees and the differences from CPU LIBERO reset semantics
 | Read-only FP32 scene inputs | `host/backends/cuda_fp32/scene.py::_scene_files` |
 | FP32 Graph, renderer and stream release | `host/backends/cuda_fp32/environment.py::CudaFP32BatchEnv.close` |
 | Native compatibility preparation and load-only scope | `host/build/compatibility.py`; `host/adapters/environment/product_factory.py::compatibility_scope` |
-| Signed stateless native code and per-caller parameters | `host/build/native.py`; `host/build/product_cache.py` |
+| Shared stateless native code and per-caller parameters | `host/build/native.py`; `host/build/product_cache.py` |
 | Temporary native loader ownership and retry | `host/runtime/core/build_lifetime.py::BuildLifetime` |
 | In-memory native model intake and replacement | `host/runtime/core/model_bytes.py`; `host/runtime/core/native_model_update.py` |
 | Private library release after borrowed functions expire | `host/build/library_lifetime.py` |
-| Retired storage maintenance, outside environment execution | `host/build/legacy_storage.py` |
+| Generated Newton offline compilation and product selection | `host/build/newton.py` |
+| Newton pointer layout and launch schedule | `host/runtime/newton/handwritten_cuda.py::HandwrittenCudaCore` |
+| Loaded Newton ABI/resource query and retained result | `host/runtime/newton/native_product.py`; `host/bindings/capacity.py::inspect_resources` |
 
 ## Control-step execution
 
@@ -81,6 +97,21 @@ handwritten physics is in `cuda/{collision,dynamics,newton}/mjwarp*`; those file
 require neither Warp headers nor the Warp compiler. The conditional Newton loop
 runs on the device. See the [FP32 guide](host/backends/cuda_fp32/README.md) and
 [intentional numerical corrections](host/backends/mjwarp/NUMERICAL_DEVIATIONS.md).
+
+FP32 components sharing a stream reuse its `bridges.py` library binding. ABI checks run on its first use; mutable world buffers remain caller-owned.
+At the public step boundary, `GoalReadPlan` supplies field prefetch hints rather
+than authenticating predicate source or Python objects. `boundary_predicates`
+reads any additional supported goal fields from the same synchronized snapshot,
+without invoking a callback twice. Leaving the context disables further lazy
+reads, so a retained view cannot read a later simulation event.
+
+Observation graph eligibility uses closed/valid/host-callback state. Public
+sampling-rate, enabled and active updates preserve existing device storage;
+custom sensors, filters, corrupters, delayers and added observables select the
+existing uncaptured callback path. Native pointer bindings are checked when
+installed and captured, rather than rescanning every pointer before replay.
+Replacing the observer still discards its graph. Explicit lazy rendering on a
+no-camera observer does not invalidate its separate low-dimensional sampler.
 
 The following retained path and optimization details apply to native FP64 and
 the explicit legacy native FP32 comparison engine:
@@ -364,11 +395,12 @@ The checkout root and GPU package's `CMakeLists.txt` both include the maintained
 separate objects in a stable external build directory. Moving Python helpers
 does not require recompiling unchanged CUDA objects.
 
-AOT readiness also authenticates Python source identity. Import refactors can
-invalidate readiness despite unchanged CUDA bytes. Use the normal offline build
-and qualification entry to refresh admission; never rewrite an old receipt to
-claim that new sources were qualified. Source identity and compiler work are
-separate concerns.
+AOT readiness selects the task and observation profile from a completed build.
+CMake owns dependency freshness during explicit offline builds. Runtime does not
+rehash the whole source tree or require a signing key. Native product selection
+and actual ABI/capacity checks remain separate from optional offline numerical
+qualification. See [environment lifecycle](ENVIRONMENT_LIFECYCLE.md) for cache,
+legacy-product compatibility and remaining component-specific checks.
 
 Use the [stable validation tools](../../../tools/validation/README.md) for
 same-input endpoints and frozen-old budgets. Source, import and packaging changes
@@ -380,8 +412,7 @@ The independent backend retains the component graph. Readable CUDA translation
 units in `cuda/fp32/` fuse only world-owned producers and consumers. Their
 CMake recipes live in [cmake/fp32/](cmake/fp32/), included by
 [FP32Fusion.cmake](cmake/FP32Fusion.cmake). Each remains an independent target;
-its loader verifies source, ABI and GPU
-architecture before capture; normal execution never compiles them.
+its loader checks ABI and GPU architecture before capture; normal execution never compiles them.
 
 `Physics.integrate` uses `FusedAdvance` in `host/backends/cuda_fp32/fused_tail.py`
 to join velocity/position advancement, warmstart copying and publication in
@@ -550,3 +581,18 @@ buffers and final Data.ctrl retain their contracts. Original launch/scatter
 entries remain available. Local OSC-plus-publication timing is neutral under
 shared GPU load; an address-prefetch trial did not establish a useful gain and
 was removed. No complete-task result is implied.
+
+### Host construction versus numerical composition
+
+`host/assembly/components.py` selects FP64 components without scanning the source
+tree. `assembly/compose/factory.py` and `assembly/pipeline/factory.py` pass explicit
+constructor choices to `runtime/dynamics/wide_factory.py`,
+`runtime/newton/live_copy_api.py` and the collision adapter factory. Recovery
+factories pass callbacks and replacement factories directly; runtime source
+rewriting is no longer used for these constructor choices. AST-based numerical
+launch composition remains in the numerical composition modules.
+
+The shared modern scene loader (`host/backends/mjwarp/scene_cache.py`, also used
+by independent FP32) separates direct runtime loading from offline content
+validation and legacy scene migration. See `ENVIRONMENT_LIFECYCLE.md` for the
+one-time scene preparation requirement and the checks retained at runtime.

@@ -1,15 +1,18 @@
 """Independent cold N1 recovery assembly, with unchanged shape physics order."""
-import ast
+from dataclasses import replace
 import hashlib
 import inspect
 import numpy as np
 import warp as wp
 from . import shape_prepare
+from .shape_assembly import ShapeAssembly
 from .recovery_event_runtime import EventRecoveringRuntime as RecoveringShapeRuntime
 from libero.gpu.host.runtime.dynamics.recovery import ROOT_WIDTHS, ResetBinding, model_root_defaults, DataRecoveryWorkspace
 
 
-def _recovery_loop(*, model, **kwargs):
+def _recovery_loop(*, model, runtime_type=None, recovery_workspace_type=None, **kwargs):
+    runtime_type = RecoveringShapeRuntime if runtime_type is None else runtime_type
+    recovery_workspace_type = DataRecoveryWorkspace if recovery_workspace_type is None else recovery_workspace_type
     e, forward = kwargs['euler'], kwargs['forward']
     dimensions = {key: int(getattr(model, key)) for key in
                   ('nq', 'nv', 'nM', 'njnt', 'nu', 'na', 'nbody', 'nmocap',
@@ -33,10 +36,10 @@ def _recovery_loop(*, model, **kwargs):
         active = wp.zeros(W, dtype=wp.int32, device=stream.device)
         warnings = wp.zeros((W, 8), dtype=wp.int32, device=stream.device)
         lastinfo = wp.zeros((W, 8), dtype=wp.int32, device=stream.device)
-    recovery = DataRecoveryWorkspace(dimensions, defaults, bindings, nworld=W,
+    recovery = recovery_workspace_type(dimensions, defaults, bindings, nworld=W,
         active=active, warning_number=warnings, warning_lastinfo=lastinfo,
         stream=stream, current_bindings=lambda: bindings, mode='diagnostic')
-    loop = RecoveringShapeRuntime(recovery=recovery, **kwargs)
+    loop = runtime_type(recovery=recovery, **kwargs)
     loop.recovery_inventory_scope = 'native required roots only; derived arena rebuilt by physical forward'
     loop.recovery_scope_gaps = ('full native header/derived inventory qualification',
                                'numeric-origin failed N work vs canonical-held classification',
@@ -53,41 +56,21 @@ def _event_cold_factories():
     return collision,prepare_final_event_runtime,choice
 
 
-def prepare_recovery_event_physics(*args, **kwargs):
-    """Replace only the cold loop constructor; never mutate a sealed instance."""
-    source = inspect.getsource(shape_prepare)
-    tree = ast.parse(source)
-    changed = 0
-    wide_changed = 0
-    event_changed = 0
-    d_changed = 0
-    for node in ast.walk(tree):
-        if isinstance(node,ast.ImportFrom) and node.module=="libero.gpu.host.runtime.dynamics.runtime_factory":
-            names=[a for a in node.names if a.name=="prepare_from_built"]
-            if len(names)!=1:raise ValueError("actual cold D import required")
-            node.names=[a for a in node.names if a.name!="prepare_from_built"]
-            tree.body.append(ast.ImportFrom(module="libero.gpu.host.runtime.dynamics.wide_factory",names=names,level=0))
-            d_changed+=1
-        if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=="_cold_factories":
-            node.func.id="_event_cold_factories"
-            event_changed+=1
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "GenericEulerWorkspace":
-            node.func.id = "_wide_workspace"
-            wide_changed += 1
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ShapeCountedResidentStepRuntime':
-            node.func.id = '_recovery_loop'
-            node.keywords.append(ast.keyword(arg='model', value=ast.Name(id='model', ctx=ast.Load())))
-            changed += 1
-    if changed != 1 or wide_changed != 1 or event_changed != 1 or d_changed != 1:
-        raise ValueError('one exact cold runtime constructor required')
-    ast.fix_missing_locations(tree)
+def prepare_recovery_event_physics(*args, _assembly=None, **kwargs):
+    """Construct the recovery route with explicit, private constructor choices."""
+    from libero.gpu.host.runtime.dynamics.wide_factory import prepare_from_built
     from libero.gpu.reference.integration.euler_integrator.wide_angle import WideAngleEulerWorkspace
-    namespace = dict(_event_cold_factories=_event_cold_factories, _wide_workspace=WideAngleEulerWorkspace, __name__=__name__ + '.derived', __package__=__package__,
-                     __file__=shape_prepare.__file__, _recovery_loop=_recovery_loop)
-    exec(compile(tree, shape_prepare.__file__ + ':cold-recovery', 'exec'), namespace)
-    bundle = namespace['prepare_shape_physics'](*args, **kwargs)
+
+    assembly = ShapeAssembly(dynamics_factory=prepare_from_built,
+        euler_type=WideAngleEulerWorkspace, runtime_factory=_recovery_loop,
+        cold_factories=_event_cold_factories)
+    if _assembly is not None:
+        assembly = replace(assembly, **{name: value for name, value in vars(_assembly).items()
+                                       if value is not None})
+    bundle = shape_prepare.prepare_shape_physics(*args, _assembly=assembly, **kwargs)
     bundle.recovery_source_manifest = dict(original_shape_prepare_sha256=
-        hashlib.sha256(source.encode()).hexdigest(), cold_constructor_replacements=changed, wide_angle_constructor_replacements=wide_changed,
-        D_wide_cold_import_replacements=d_changed, physics_math_changed=False, controller_reset_invoked=False,
+        hashlib.sha256(inspect.getsource(shape_prepare).encode()).hexdigest(),
+        construction='explicit-constructor-arguments', physics_math_changed=False,
+        controller_reset_invoked=False,
         qualification='diagnostic roots/conditional-graph forward/Euler only')
     return bundle

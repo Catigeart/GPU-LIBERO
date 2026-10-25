@@ -135,7 +135,7 @@ class S07DeviceBridge:
                  force_rebuild: bool = False,
                  defer_compile: bool = False):
         self.kernel_source = Path(kernel_source) if kernel_source else default_kernel_path()
-        self.nvrtc_path = str(nvrtc_path) if nvrtc_path else default_nvrtc()
+        self.nvrtc_path = str(nvrtc_path) if nvrtc_path else None
         self.arch = arch
         build_root = default_build_root().resolve()
         if build_dir is None:
@@ -148,11 +148,10 @@ class S07DeviceBridge:
                 ('build_dir must resolve under the private build root',
                  str(build_dir), str(build_root)))
         self.build_dir = build_dir
-        raw, prefix, cut = device_prefix(self.kernel_source)
-        self.frozen_sha256 = sha256_bytes(raw)
-        self.device_prefix_sha256 = sha256_bytes(prefix)
-        self.device_prefix_bytes = len(prefix)
-        self.host_cut_offset = cut
+        self.frozen_sha256 = None
+        self.device_prefix_sha256 = None
+        self.device_prefix_bytes = None
+        self.host_cut_offset = None
         self.compile_record = {}
         self.ptx_sha256 = None
         self.ptx_bytes = None
@@ -160,10 +159,23 @@ class S07DeviceBridge:
         # Native persistent Newton consumes the frozen source directly. Its
         # workspace still needs S07Args, but never loads this standalone module.
         # Any actual legacy load retains the original full PTX/source gates.
-        self._ptx = None if defer_compile else self._compile(prefix, force_rebuild)
+        self._ptx = None
         self._module = None
         self._function = None
         self._cuda = None
+        if not defer_compile:
+            self._prepare_ptx()
+
+    def _prepare_ptx(self):
+        """Prepare the standalone reference only when it is actually needed."""
+        raw, prefix, cut = device_prefix(self.kernel_source)
+        self.frozen_sha256 = sha256_bytes(raw)
+        self.device_prefix_sha256 = sha256_bytes(prefix)
+        self.device_prefix_bytes = len(prefix)
+        self.host_cut_offset = cut
+        if self.nvrtc_path is None:
+            self.nvrtc_path = default_nvrtc()
+        self._ptx = self._compile(prefix, self._force_rebuild)
 
     # ---------------- pinned compile inputs --------------------------------
 
@@ -389,8 +401,7 @@ class S07DeviceBridge:
         if self._module is not None:
             return
         if self._ptx is None:
-            _, prefix, _ = device_prefix(self.kernel_source)
-            self._ptx = self._compile(prefix, self._force_rebuild)
+            self._prepare_ptx()
         cuda = self._driver()
         ctx = ct.c_void_p()
         rc = cuda.cuCtxGetCurrent(ct.byref(ctx))

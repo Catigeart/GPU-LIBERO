@@ -51,8 +51,7 @@ class FusedKinematicMass:
         self.path=Path(library);self.library=None
         if not self.eligible:return
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_kinematic_mass offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_kinematic_mass_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_kinematic_mass_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale kinematic/mass pipeline; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_kinematic_mass_arch()!=k.stream.device.arch:raise ValueError('Kinematic/mass architecture differs')
         for name,kind in (('kinematics',KinematicsInputs),('frames',CamLightInputs),('frame_ids',FrameAttachments),('centered',ComPosInputs),('mass',MassMatrixInputs)):
             size=getattr(lib,'flash_fp32_kinematic_mass_'+name+'_bytes');size.restype=ct.c_size_t

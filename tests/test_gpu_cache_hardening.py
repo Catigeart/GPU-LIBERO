@@ -2,6 +2,7 @@
 import ast
 from contextlib import contextmanager
 import errno
+import hashlib
 from functools import wraps
 import json
 import os
@@ -18,7 +19,7 @@ from libero.gpu.host.build.compilation import (
     compilation_allowed, compilation_scope, current_scope, load_only_entry,
     MissingCompiledProduct, require_compilation)
 from libero.gpu.host.build.product_cache import (
-    ProductBuildAuthority, product_cache_scope, current_product_authority,
+    ProductCache, product_cache_scope, current_product_cache,
     require_product_persistence)
 
 GPU = Path(__file__).resolve().parents[1] / 'libero/libero/gpu'
@@ -42,7 +43,7 @@ class CacheHardeningTests(unittest.TestCase):
         self.root = Path(temporary.name)
 
     def authority(self, **kwargs):
-        return ProductBuildAuthority(self.root / 'products', authority_root=self.root / 'authority', **kwargs)
+        return ProductCache(self.root / 'products', **kwargs)
 
     def request(self, authority, **kwargs):
         options = dict(build=lambda: b'completed binary', validate=lambda: None, exports=lambda raw: None)
@@ -151,30 +152,33 @@ class CacheHardeningTests(unittest.TestCase):
     def test_public_product_cache_bounds_are_configurable_without_overriding_explicit_bounds(self):
         with patch.dict(os.environ, {'LIBERO_GPU_PRODUCT_CACHE_MAX_BYTES': '1',
                                     'LIBERO_GPU_PRODUCT_CACHE_MAX_ENTRIES': '2'}):
-            with product_cache_scope(self.root / 'products', authority_root=self.root / 'authority') as authority:
+            with product_cache_scope(self.root / 'products') as authority:
                 self.assertEqual((authority.max_bytes, authority.max_entries), (1, 2))
                 with require_product_persistence(), self.assertRaises(OSError):
                     self.request(authority)
-            with product_cache_scope(self.root / 'products', authority_root=self.root / 'authority',
+            with product_cache_scope(self.root / 'products',
                                      max_bytes=1024**2, max_entries=3) as authority:
                 self.assertEqual((authority.max_bytes, authority.max_entries), (1024**2, 3))
                 self.assertTrue(self.request(authority)[2]['persisted'])
 
-    def test_nested_authority_persists_and_frozen_reuse_never_rebuilds(self):
+    def test_nested_cache_persists_and_frozen_reuse_never_rebuilds(self):
         with require_product_persistence(), product_cache_scope(
-                self.root / 'products', authority_root=self.root / 'authority'):
-            authority = current_product_authority()
+                self.root / 'products'):
+            authority = current_product_cache()
             self.assertTrue(self.request(authority)[2]['persisted'])
         def compile_():
             require_compilation('native', 'unit')
-            self.fail('signed hit must not rebuild')
+            self.fail('cache hit must not rebuild')
         with compilation_scope(False):
             self.assertTrue(self.request(authority, build=compile_)[2]['hit'])
             next(authority.root.glob('*/product.so')).write_bytes(b'corrupt')
-            with self.assertRaises(MissingCompiledProduct):
-                self.request(authority, build=compile_)
+            def load(raw):
+                if raw == b'corrupt':
+                    raise OSError('invalid shared library')
+            with self.assertRaisesRegex(OSError, 'invalid shared library'):
+                self.request(authority, build=compile_, exports=load)
 
-    def test_loading_keeps_signed_build_environment_but_checks_other_inputs(self):
+    def test_loading_ignores_build_toolchain_but_checks_code_and_architecture(self):
         authority = self.authority()
         identity = dict(source='actual source', architecture=80,
                         toolchain=dict(environment_sha256='offline shell', components=['actual compiler bytes']))
@@ -184,14 +188,65 @@ class CacheHardeningTests(unittest.TestCase):
         with compilation_scope(False):
             _, receipt, status = authority.obtain(current, ['entry'],
                 build=lambda: self.fail('runtime build'), validate=lambda: None, exports=lambda raw: None)
-            self.assertTrue(status['build_environment_changed'])
+            self.assertTrue(status['hit'])
             self.assertEqual(receipt['identity'], identity)
-            for changed in (dict(current, source='edited source'), dict(current, architecture=90),
-                            dict(current, toolchain=dict(current['toolchain'], components=['other compiler']))):
+            authority.obtain(dict(current, toolchain={'components':['compiler removed']}), ['entry'],
+                build=lambda: self.fail('runtime build'), validate=lambda: self.fail('runtime toolchain validation'),
+                exports=lambda raw: None)
+            for changed in (dict(current, source='edited source'), dict(current, architecture=90)):
                 with self.assertRaises(MissingCompiledProduct):
                     authority.obtain(changed, ['entry'], build=lambda: self.fail('runtime build'),
                                      validate=lambda: None, exports=lambda raw: None)
         self.assertTrue(all(p.read_bytes() == raw for p, raw in receipts.items()))
+
+    def test_ordinary_artifacts_and_legacy_cache_need_no_signing_key(self):
+        cache = self.authority()
+        identity = {'source': 'two artifacts', 'architecture': 80}
+        values = {'module.so': b'library', 'module.ptx': b'ptx'}
+        _, receipt, status = cache.obtain_artifacts(identity, ['entry'], names=values,
+            build=lambda: values, validate=lambda: None, exports=lambda files: None)
+        folder = Path(status['directory'])
+        self.assertEqual((folder/'module.so').read_bytes(), b'library')
+        self.assertEqual((folder/'module.ptx').read_bytes(), b'ptx')
+        self.assertFalse((folder/'product.so').exists())  # No base64 bundle.
+        self.assertNotIn('signature', json.loads((folder/'receipt.json').read_text()))
+        self.assertFalse((self.root/'authority').exists())
+        with compilation_scope(False):
+            cache.obtain_artifacts(identity, ['entry'], names=values,
+                build=lambda: self.fail('runtime compile'), validate=lambda: self.fail('runtime validation'),
+                exports=lambda files: self.assertEqual(files, values))
+            (folder/'module.ptx').unlink()
+            with self.assertRaises(MissingCompiledProduct):
+                cache.obtain_artifacts(identity, ['entry'], names=values,
+                    build=lambda: self.fail('runtime compile'), validate=lambda: None, exports=lambda files: None)
+
+        legacy = cache.legacy_root/'old-build'
+        legacy.mkdir(parents=True)
+        raw = b'legacy library'
+        old_identity = {'source': 'legacy code', 'architecture': 80}
+        old_receipt = dict(schema='authorized-native-product-v1', completed=True,
+            build_key=legacy.name, identity=old_identity, required_symbols=['entry'],
+            binary_sha256=hashlib.sha256(raw).hexdigest(), binary_bytes=len(raw))
+        (legacy/'product.so').write_bytes(raw)
+        (legacy/'receipt.json').write_text(json.dumps({'receipt':old_receipt, 'signature':'retired, unused'}))
+        with compilation_scope(False), patch('libero.gpu.host.build.product_cache._lock',
+                side_effect=AssertionError('runtime cache write')):
+            loaded = ProductCache(self.root/'products')
+            _, _, result = loaded.obtain(old_identity, ['entry'], build=lambda: self.fail('runtime compile'),
+                validate=lambda: self.fail('runtime toolchain scan'), exports=lambda content: self.assertEqual(content, raw))
+        self.assertEqual(Path(result['directory']), legacy)
+
+    def test_offline_dependency_change_rebuilds_same_product_selection(self):
+        cache = self.authority()
+        first = dict(source='same CUDA', dependencies=[{'sha256':'first header'}])
+        second = dict(source='same CUDA', dependencies=[{'sha256':'changed header'}])
+        _, _, a = cache.obtain(first, ['entry'], build=lambda: b'first binary',
+            validate=lambda: None, exports=lambda raw: None)
+        _, _, b = cache.obtain(second, ['entry'], build=lambda: b'new binary',
+            validate=lambda: None, exports=lambda raw: None)
+        self.assertEqual(a['key'], b['key'])
+        self.assertFalse(b['hit'])
+        self.assertEqual((Path(b['directory'])/'product.so').read_bytes(), b'new binary')
 
     def test_load_only_authority_opens_no_writer_lock_or_missing_cache_directory(self):
         authority = self.authority()
@@ -202,7 +257,7 @@ class CacheHardeningTests(unittest.TestCase):
             loaded = self.authority()
             self.assertTrue(self.request(loaded)[2]['hit'])
             with self.assertRaises(MissingCompiledProduct):
-                ProductBuildAuthority(self.root/'absent', authority_root=self.root/'authority')
+                ProductCache(self.root/'absent')
         self.assertEqual(before, {p: p.stat().st_mtime_ns for p in self.root.rglob('*')})
 
     def test_multi_artifact_budget_cannot_publish_partial_ready_bundle(self):
@@ -239,14 +294,14 @@ class CacheHardeningTests(unittest.TestCase):
         self.assertEqual(files, ['build.lock'])
 
     def test_offline_prepare_replaces_stale_complete_with_failed_on_full_cache(self):
-        # Real prepare() + real signed authority, with only the environment and
+        # Real prepare() + real product cache, with only the environment and
         # source index substituted. No dependency on optional simulation packages.
         project = self.root / 'project'
         compatibility._write_status(project / 'compatibility', {'status': 'complete', 'old': True})
         def construct(**kwargs):
             self.assertTrue(compilation_allowed())
-            with product_cache_scope(self.root / 'products', authority_root=self.root / 'authority', max_bytes=1):
-                self.request(current_product_authority())
+            with product_cache_scope(self.root / 'products', max_bytes=1):
+                self.request(current_product_cache())
             self.fail('unpersisted constructor must fail')
         modules = {
             'numpy': SimpleNamespace(),

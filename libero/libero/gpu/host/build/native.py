@@ -40,7 +40,7 @@ from libero.gpu.host.runtime.core.product_paths import selected_mathdx_root, nvc
 from .build_receipts import (compiler_dependencies,toolchain_record,file_record,
     build_identity,product_lock,publish_product,materialize_private,canonical,digest)
 
-from .product_cache import (product_cache_scope, current_product_authority,
+from .product_cache import (product_cache_scope, current_product_cache,
     compiler_environment_record)
 
 import numpy as np
@@ -126,34 +126,49 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
         dx = selected_mathdx_root(MATHDX_ROOT)
         roots += [str(dx/'include'), str(dx/'external/cutlass/include')]
         library = dx/'lib/libcusolverdx.a'
-        if not library.is_file() or not (dx/'include/cublasdx.hpp').is_file():
+        from .compilation import compilation_allowed
+        if compilation_allowed() and (not library.is_file() or not (dx/'include/cublasdx.hpp').is_file()):
             raise FileNotFoundError('MathDx installation is incomplete: '+str(dx))
     for inc in roots:
         flags += ['-I', inc]
     bridge_text = [Path(p).read_text() if isinstance(p, Path) or '\n' not in str(p)
                    else str(p) for p in bridges]
+    cache = current_product_cache()
+    from .compilation import compilation_allowed, MissingCompiledProduct
+    if cache is not None and not compilation_allowed():
+        found = cache.find_native(source, bridge_text, flags, dev.arch,
+                                  str(library) if library else None, required_symbols)
+        if found is None:
+            raise MissingCompiledProduct('Native library is absent; prepare offline: ' + name)
+        target, units, receipt = found
+        fixed = target
+        # Stateless plans share code. Other consumers still require an owned
+        # private DSO; preserve their separate globals and unloading lifetime.
+        if not shared or not all(unit.is_file() for unit in units):
+            root.mkdir(parents=True, exist_ok=True)
+            stem = re.sub(r'[^A-Za-z0-9_]', '_', name) + '_' + uuid.uuid4().hex
+            units = [root/(stem + '_unit%d.cu' % i) for i in range(1+len(bridge_text))]
+            for unit, text in zip(units, [source, *bridge_text]):
+                unit.write_text(text)
+            if not shared:
+                target = root/(stem + '.so')
+                shutil.copyfile(fixed, target)
+        loaded = load_cdll(target)
+        if not all(hasattr(loaded, symbol) for symbol in required_symbols):
+            raise RuntimeError('native launcher symbol ABI missing')
+        compiler = receipt['identity'].get('toolchain', {}).get('compiler', 'nvcc')
+        commands = [[compiler, *flags, '-shared', *map(str, units), '-o', str(target)]]
+        return loaded, dict(name=name, sha256=digest(canonical(receipt['identity'])),
+            source=str(units[0]), library=str(target), compile_commands=commands,
+            compile_commands_executed=[], fma=True, fast_math=False, architecture=dev.arch,
+            cache_source=str(fixed), build_receipt=receipt, private_product=not shared, shared_product=shared,
+            product_cache=dict(hit=True, persisted=True, key=fixed.parent.name, directory=str(fixed.parent)),
+            symbol_abi='generated Params; fixed code with caller-owned buffers')
     nvcc = nvcc_path()
-    authority=current_product_authority()
-    from .compilation import compilation_allowed
-    if shared and authority is not None and not compilation_allowed():
-        found = authority.find_native(source, bridge_text, flags, dev.arch,
-                                      file_record(library) if library else None, required_symbols)
-        if found is not None:
-            target, units, receipt = found
-            loaded = load_cdll(target)
-            if not all(hasattr(loaded, symbol) for symbol in required_symbols):
-                raise RuntimeError('fixed native launcher symbol ABI missing')
-            commands = [[nvcc, *flags, '-shared', *map(str, units), '-o', str(target)]]
-            return loaded, dict(name=name, sha256=digest(canonical(receipt['identity'])),
-                source=str(units[0]), library=str(target), compile_commands=commands,
-                compile_commands_executed=[], fma=True, fast_math=False, architecture=dev.arch,
-                cache_source=str(target), build_receipt=receipt, private_product=False, shared_product=True,
-                product_cache=dict(hit=True, persisted=True, key=target.parent.name),
-                symbol_abi='per-plan Params; fixed stateless code')
     root.mkdir(parents=True, exist_ok=True)
     def current_toolchain():
         result=toolchain_record(nvcc,flags)
-        if authority is not None:
+        if cache is not None:
             result=dict(result)
             result['environment_sha256']=compiler_environment_record()['sha256']
             result['environment_schema']='compiler-input-environment-v1'
@@ -167,13 +182,10 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     key,identity=build_identity(source=source,bridges=bridge_text,flags=flags,
         toolchain=toolchain,dependencies=dependencies,archive=file_record(library) if library else None,
         architecture=dev.arch)
-    fixed = authority.find_completed(identity, required_symbols) if shared and authority is not None and not compilation_allowed() else None
     # Each plan retains a distinct physical product. Neither repeated plan name
     # nor cache lookup can replace a path that an earlier CDLL still owns.
     stem = re.sub(r'[^A-Za-z0-9_]', '_', name)+'_'+key+'_'+uuid.uuid4().hex
     src = root/(stem+'.cu'); target = root/(stem+'.so')
-    if fixed is not None:
-        target = authority.root/fixed[2]['key']/'product.so'
     src.write_text(source)
     commands = []
     if mathdx or bridge_text:
@@ -191,9 +203,8 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     cache_root=Path(os.environ.get('LIBERO_CUDA_FUSION_CACHE',str(root/'products'))).resolve()
     cache_folder=cache_root/key
     product_status=None
-    if authority is not None:
-        # The signed authority is available only through an explicit product
-        # scope. Legacy diagnostic strict receipts still always compile below.
+    if cache is not None:
+        # Offline compilation publishes ordinary products for later loading.
         units=[src]
         for index,text in enumerate(bridge_text,1):
             unit=root/(stem+'_bridge%d.cu'%index)
@@ -216,28 +227,25 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                 if result.returncode: raise RuntimeError('CUDA compilation failed: '+str(log))
             return target.read_bytes()
         def verify_private_exports(raw):
-            if fixed is None:
-                with target.open('wb') as stream: stream.write(raw)
-            elif target.read_bytes() != raw:
-                raise RuntimeError('fixed native product changed during loading')
+            target.write_bytes(raw)
             completed=load_cdll(target)
             if not all(hasattr(completed,symbol) for symbol in required_symbols):
                 raise RuntimeError('native compiled launcher symbol ABI missing')
-        raw,receipt,product_status=authority.obtain(identity,required_symbols,
+        raw,receipt,product_status=cache.obtain(identity,required_symbols,
             build=build_completed_bytes,validate=validate_current_inputs,exports=verify_private_exports)
-        if shared and compilation_allowed() and product_status['persisted']:
-            inputs = authority.root/product_status['key']/'inputs'
+        if product_status['persisted']:
+            inputs = Path(product_status['directory'])/'inputs'
             inputs.mkdir(exist_ok=True)
             for index, text in enumerate([source, *bridge_text]):
                 path = inputs/('unit%d.cu' % index)
                 if path.exists():
                     if path.read_text() != text:
-                        raise RuntimeError('fixed native source differs from signed build inputs')
+                        raise RuntimeError('native source differs from offline build inputs')
                 else:
                     path.write_text(text)
         if product_status['hit']:
-            cache_source=str(authority.root/product_status['key']/'product.so')
-            log.write_text('Authorized completed product reused; no compiler build commands executed.\n')
+            cache_source=str(Path(product_status['directory'])/'product.so')
+            log.write_text('Completed offline product reused; no compiler build commands executed.\n')
     else:
         with product_lock(cache_folder):
             from libero.gpu.host.build.compilation import require_compilation
@@ -267,7 +275,7 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                 'library': str(target), 'compile_commands': commands,
                 'fma': True, 'fast_math': False, 'architecture': dev.arch,
                 'cache_source':cache_source,'build_receipt':receipt,
-                'private_product':fixed is None,'shared_product':fixed is not None,
+                'private_product':True,'shared_product':False,
                 'symbol_abi':'generated source declarations; NativePlan sets exact ctypes signature'}
     if product_status is not None:
         manifest['product_cache']=product_status
@@ -417,7 +425,7 @@ def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
     if enabled:options.update(required_symbols=required_symbols, shared=shared)
     from libero.gpu.host.runtime.core.product_paths import build_unit_lock
     from .compilation import compilation_allowed
-    scope = nullcontext() if enabled and current_product_authority() is not None and not compilation_allowed() else build_unit_lock(build_root)
+    scope = nullcontext() if enabled and current_product_cache() is not None and not compilation_allowed() else build_unit_lock(build_root)
     with scope:
         loaded,manifest=function(name,source,build_root,**options)
     if enabled and not all(hasattr(loaded,symbol) for symbol in required_symbols):

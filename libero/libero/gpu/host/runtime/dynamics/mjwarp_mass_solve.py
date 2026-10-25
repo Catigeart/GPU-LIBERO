@@ -45,10 +45,7 @@ class MassSolvePlan:
         self.library_path=Path(library).resolve()
         if not self.library_path.is_file():raise MissingCompiledProduct('Build flash_mjwarp_mass_solve_fp32 offline')
         self.library=ct.CDLL(str(self.library_path))
-        self.library.flash_mjwarp_mass_solve_source_id.restype=ct.c_char_p
         self.library.flash_mjwarp_mass_solve_arguments_bytes.restype=ct.c_size_t
-        if self.library.flash_mjwarp_mass_solve_source_id().decode()!=source_id():
-            raise MissingCompiledProduct('Mass solve binary is stale; rebuild its CMake target offline')
         if self.library.flash_mjwarp_mass_solve_arguments_bytes()!=ct.sizeof(MassSolveInputs):
             raise ValueError('Mass solve C/Python ABI differs')
         if not stream.device.is_cuda or self.library.flash_mjwarp_mass_solve_arch()!=stream.device.arch:

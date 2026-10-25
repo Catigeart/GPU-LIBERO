@@ -134,7 +134,6 @@ class Mutations(unittest.TestCase):
             ob.scene_cache=scene;ob.scene_packer=SimpleNamespace(buffer=Array([0.]))
         ob._host_sampling_required=False;ob._host_sampling_reasons=[]
         ob._sample_event_token=0;ob._sample_event_hook=None;ob._graph_guard=None
-        ob._graph_configuration=ob._sampling_graph_signature()
         return ob
 
     def test_enabled_and_rate_keep_captured_metadata_and_cpu_reset_quirk(self):
@@ -152,6 +151,8 @@ class Mutations(unittest.TestCase):
         np.testing.assert_array_equal(ob.lowdim.cache.numpy(),old[3])
         ob.modify_observable('camera_image','sampling_rate',5,stream=self.stream)
         ob.modify_observable('camera_image','enabled',False,stream=self.stream)
+        ob.modify_observable('second','active',False,stream=self.stream)
+        self.assertNotIn('second',ob.active_observables)
         self.assertTrue(all(a is b for a,b in zip(roots,
             (ob.lowdim.meta[9],ob.lowdim.meta[10],ob.scene_cache.enabled,ob.scene_cache.periods))))
         np.testing.assert_array_equal(ob.scene_cache.sampled.numpy(),[1,1])
@@ -185,16 +186,36 @@ class Mutations(unittest.TestCase):
         self.assertEqual(ob.sample_event_token,25)
         self.assertEqual(events,[25]);self.assertEqual(ob._last_sample,(.002,False))
 
-    def test_replay_eligibility_rejects_owner_dt_and_external_guard_drift(self):
-        ob=self.adapter();self.assertTrue(ob.graph_eligible)
-        root=ob.lowdim.meta[9];ob.lowdim.meta[9]=Array([1,1],np.int32)
-        self.assertFalse(ob.graph_eligible)
-        ob.lowdim.meta[9]=root;ob.metadata['model_timestep']=.004
-        self.assertFalse(ob.graph_eligible)
-        ob.metadata['model_timestep']=.002
-        ob.bind_graph_guard(lambda:False);self.assertFalse(ob.graph_eligible)
-        with self.assertRaisesRegex(RuntimeError,'no longer eligible'):
+    def test_native_binding_checked_at_install_and_capture_not_replay(self):
+        ob=self.adapter();checks=[];current=[True]
+        def guard():
+            checks.append('binding')
+            return current[0]
+        ob.bind_graph_guard(guard)
+        self.assertEqual(checks,['binding'])
+        for _ in range(3):
+            self.assertTrue(ob.graph_eligible)
             ob.notify_control_graph_replay(stream=self.stream)
+        self.assertEqual(checks,['binding'])
+        capture=SimpleNamespace(is_capturing=True)
+        ob.assert_sampling_allowed(capture)
+        self.assertEqual(checks,['binding','binding'])
+        current[0]=False
+        with self.assertRaisesRegex(RuntimeError,'binding changed before capture'):
+            ob.assert_sampling_allowed(capture)
+
+    def test_invalid_native_binding_rejected_at_cold_install(self):
+        ob=self.adapter()
+        with self.assertRaisesRegex(ValueError,'binding differs at installation'):
+            ob.bind_graph_guard(lambda:False)
+        self.assertIsNone(ob._graph_guard)
+
+    def test_closed_or_failed_observer_cannot_replay(self):
+        ob=self.adapter()
+        ob.valid=False;self.assertFalse(ob.graph_eligible)
+        with self.assertRaisesRegex(RuntimeError,'quarantined'):
+            ob.notify_control_graph_replay(stream=self.stream)
+        ob.valid=True;ob.closed=True;self.assertFalse(ob.graph_eligible)
 
     def test_metadata_without_explicit_stream_uses_retained_sampling_stream(self):
         ob=self.adapter();ob.lowdim.last_stream=self.stream

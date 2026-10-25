@@ -10,7 +10,8 @@
 
 **Default batch backend: independent CUDA FP32, with no Warp dependency.**
 Native CUDA FP64 and the original MJWarp FP32 reference remain available.
-See [recorded throughput](#performance) for four-backend results and timing scopes.
+See [recorded throughput](#performance) for current FP64 and historical
+four-backend results with their timing scopes.
 
 **GPU-LIBERO** adds GPU physics to [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), a benchmark for knowledge transfer in multitask and lifelong robot learning. Install this distribution and keep your existing LIBERO environment code: simulation uses the GPU by default.
 
@@ -28,14 +29,15 @@ environment uses CPU MuJoCo 3.16.0 for model compilation and OpenGL rendering;
 native FP64 uses MuJoCo 2.3.7. The explicit
 [MJWarp reference backend](libero/libero/gpu/host/backends/mjwarp/README.md)
 remains available. **FP32 is the default precision.** Select `precision="fp64"`
-explicitly for native FP64. The performance table below describes the recorded
-CPU FP64, native GPU FP64, original MJWarp and independent GPU FP32 paths.
+explicitly for native FP64. The performance section separates the current
+native GPU FP64 result from historical CPU FP64, GPU FP64, original MJWarp and
+independent GPU FP32 data.
 For `GpuBatchEnv`, automatic routing selects independent CUDA for FP32 and
 native CUDA for FP64. Use `physics_engine="mjwarp"` for the optional reference.
 The [FP32 qualification report](libero/libero/gpu/host/backends/cuda_fp32/QUALIFICATION.md)
 records 130-task execution, 127/130 upstream trajectory checks, retained
 exceptions and recorded device throughput on a shared GPU. Its measurement
-scope differs from the FP64/CPU public-step measurements.
+scope differs from the historical FP64/CPU public-step measurements.
 Those full-suite numbers precede the subsequent ND-05 GJK correction; the report
 separately records its targeted geometry and three-task correctness follow-up.
 
@@ -55,6 +57,63 @@ separately records its targeted geometry and three-task correctness follow-up.
 - [License](#license)
 
 ## Performance
+
+### Native GPU FP64: current and paired results
+
+The latest complete native GPU FP64 measurement is the **standalone current**
+run on October 23–25, 2026. A separate paired run in October compared the
+frozen and current implementations within each task. Both used an NVIDIA A100
+SXM4 40GB, **N=2**, no cameras, five warmup controls and 20 continuing timed
+controls per task, with 25 physical substeps per control. CUDA events measured
+the captured control Graph. Values are **environment control steps per second
+summed over both worlds**; higher is faster.
+
+| Task suite | Tasks | Current standalone | Current paired | Frozen paired | Paired current / frozen | Paired strict endpoints |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LIBERO-Spatial | 10 | 21.58 | 19.48 | 18.56 | 1.050× | 10/10 |
+| LIBERO-Object | 10 | 37.12 | 36.85 | 34.64 | 1.064× | 10/10 |
+| LIBERO-Goal | 10 | 34.61 | 34.41 | 32.20 | 1.069× | 10/10 |
+| LIBERO-90 | 90 | 40.35 | 40.03 | 37.51 | 1.067× | 87/90 |
+| LIBERO-10 | 10 | 40.18 | 39.86 | 37.38 | 1.067× | 10/10 |
+| **All distinct tasks** | **130** | **37.13** | **36.37** | **34.17** | **1.064×** | **127/130** |
+
+Suite throughput divides the total environment control steps by the sum of
+CUDA-event elapsed seconds; it is not an average of per-task rates. The speedup
+column uses only the **paired** run. Its versions kept independent continuing
+states and alternated timed order. The standalone current result is a separate
+run and has no paired ratio. LIBERO-100 is the union of LIBERO-90 and LIBERO-10,
+not another set of measurements.
+
+The timed Graph includes physics, controller and device-side low-dimensional
+observation sampling. It excludes construction, reset, Graph capture, action
+staging, host observation packaging, host task predicates and camera rendering.
+In the standalone run, all 130 retained tasks completed 500 timed physical
+integrations per world without runtime compilation, simulation errors or resets.
+GPU process samples immediately before and after each interval showed only the
+benchmark process; contended attempts were discarded and rerun. Median
+construction, reset and Graph capture times were 52.70 s, 0.39 s and 9.98 s,
+respectively, outside the timed interval.
+
+One Spatial task in the paired run sampled other GPU work; the other 129 did
+not. All 130 paired task ratios exceeded 1 in that run. Three LIBERO-90 tasks
+(84, 87 and 88) exceeded the strict terminal threshold after 625 physical
+substeps, then passed a separate CPU MuJoCo 2.3.7 audit against a model-based
+physical budget. The paired strict screen therefore passed **127/130**, with
+three separately qualified. This endpoint column applies to the paired run,
+not to the standalone timing check.
+
+The first 76 standalone tasks used an earlier source identity before an NV39
+admission-field correction. All 76 are non-NV39, selected `PeeledForceSubstep`,
+and reused the same compiled kernels. Source identities are retained per task.
+[Suite summary](media/benchmarks/fp64-native-summary-20261025.csv) ·
+[standalone per-task data](media/benchmarks/fp64-current-standalone-20261025.csv) ·
+[paired per-task data](media/benchmarks/fp64-paired-20261022.csv) ·
+[measurement provenance](media/benchmarks/fp64-native-provenance-20261025.json).
+This CUDA-event interval differs from the historical public-`step()` wall-clock
+GPU FP64 interval below, so the new values do not replace that historical
+column or establish a new CPU/GPU speedup measurement.
+
+### Historical four-backend measurements
 
 Saved measurements on an **NVIDIA A100 SXM4 40GB**, **N=2**, **no cameras**:
 each task uses five warmup control steps followed by 20 continuously timed

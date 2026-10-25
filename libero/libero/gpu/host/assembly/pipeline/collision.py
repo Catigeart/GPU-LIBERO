@@ -2,9 +2,7 @@
 import libero.gpu.precision as scalar
 import ast
 import copy
-import hashlib
 import inspect
-from pathlib import Path
 import textwrap
 import warp as wp
 from libero.gpu.host.runtime.collision import chain
@@ -164,7 +162,7 @@ class FusedCollisionChainWorkspace(chain.CollisionChainWorkspace):
         self._fusion_backup=_OutputCopies(self)
         self._fusion_restore=_OutputCopies(self,restore=True)
     launch=_LAUNCH
-    candidate_source_manifest={'schema':'collision-compose-r03','groups':_GROUPS,'parallel_rows_retained':True,'native_launch_retained':True,'generated_source':_SOURCE, 'source_files': {str(Path(m.__file__).resolve()): hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest() for m in (chain, pc, detectors, tree_module, dispatch_module, finalize_module)}, 'candidate_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    candidate_source_manifest={'schema':'collision-compose-r03','groups':_GROUPS,'parallel_rows_retained':True,'native_launch_retained':True,'generated_source':_SOURCE}
 
 
 def source_derived_workspace_class():
@@ -177,6 +175,7 @@ def source_derived_workspace_class():
 # Preserve the existing capacity planner, native extension and retained binding
 # constructor, replacing only its cold workspace-class resolver.
 from libero.gpu.host.runtime.collision.parallel_copy_runtime_factory import make_parallel_copy_adapter as _original_adapter
-from libero.gpu.host.assembly.compose.factory import _derive
-make_fused_adapter = _derive(_original_adapter, {'source_derived_workspace_class': source_derived_workspace_class})
 
+
+def make_fused_adapter(*args, **kwargs):
+    return _original_adapter(*args, workspace_type=FusedCollisionChainWorkspace, **kwargs)

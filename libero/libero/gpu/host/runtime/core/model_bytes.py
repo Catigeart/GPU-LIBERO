@@ -30,12 +30,6 @@ def model_bytes(model, expected_sha256=None):
     return raw
 
 
-def memory_record(raw):
-    if type(raw) is not bytes:
-        raise TypeError('immutable bytes required for an in-memory source')
-    return dict(data=raw, sha256=hashlib.sha256(raw).hexdigest())
-
-
 def source_ref(record):
     if 'model' in record:
         import mujoco
@@ -49,20 +43,6 @@ def source_ref(record):
     return str(Path(record['path']).resolve())
 
 
-def source_bytes(reference):
-    if type(reference) is bytes:return reference
-    if type(reference) is str:return Path(reference).read_bytes()
-    return model_bytes(reference)
-
-
-def checked_records(records):
-    result = tuple((source_ref(record), record['sha256']) for record in records)
-    for reference, digest in result:
-        if hashlib.sha256(source_bytes(reference)).hexdigest() != digest:
-            raise ValueError('native/source bytes drift: ' + (reference if type(reference) is str else 'in-memory source'))
-    return result
-
-
 def source_catalog(records):
     """JSON-safe diagnostics; never export live model owners or payloads implicitly."""
     return [dict(path=record['path'], sha256=record['sha256']) if 'path' in record else
@@ -71,7 +51,11 @@ def source_catalog(records):
 
 
 def load_native_model(*, expected_sha256, model=None, model_path=None):
-    """Accept an actual owner or a legacy explicit MJB, with the same identity gate."""
+    """Retain a live model or load an explicitly identified external MJB.
+
+    An existing MjModel needs no serialization round trip. Callers validate its
+    dimensions, solver options and topology before preparing device workspaces.
+    """
     import mujoco
     if (model is None) == (model_path is None):
         raise ValueError('provide exactly one native model owner or MJB path')
@@ -83,5 +67,16 @@ def load_native_model(*, expected_sha256, model=None, model_path=None):
         model = mujoco.MjModel.from_binary_path(path)
     if not isinstance(model, mujoco.MjModel):
         raise TypeError('actual native MjModel required')
-    model_bytes(model, expected_sha256)
     return model, path
+
+
+def actual_decoder_record(built):
+    """Describe the existing decoder for diagnostics; do not authenticate its code.
+
+    The model factory already records its source digest. Model dimensions and
+    static arrays are checked by intake, independently of this description.
+    """
+    import inspect
+    pin = built.metadata['decoder_pin']
+    return {'path': str(Path(inspect.getfile(type(built))).resolve()),
+            'sha256': pin['source_sha256']}

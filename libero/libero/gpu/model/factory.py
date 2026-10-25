@@ -84,8 +84,13 @@ def _array_digest(arrays):
     return digest.hexdigest()
 
 
-def native_model_metadata(model, *, return_snapshot=False, snapshot_pool=None, reference_snapshot=None):
-    """Describe real compiled static data without creating/forwarding MjData."""
+def native_model_metadata(model, *, return_snapshot=False, snapshot_pool=None, reference_snapshot=None,
+                          include_source_provenance=True):
+    """Describe real compiled static data without creating/forwarding MjData.
+
+    Runtime model validation can omit source provenance; it still recomputes all
+    physical model metadata and array identities. Offline preparation keeps it.
+    """
     sizes = ("nq", "nv", "nu", "na", "nM", "nbody", "ngeom", "nsite", "njnt",
              "ntendon", "neq", "nplugin", "nmocap", "nsensordata", "nsensor",
              "nmesh", "ncam", "nlight", "nmat", "ntex", "npair", "nexclude", "nkey")
@@ -157,11 +162,12 @@ def native_model_metadata(model, *, return_snapshot=False, snapshot_pool=None, r
     if reference_snapshot is not None:
         snapshot = snapshot.reuse_unchanged(reference_snapshot)
     decoder_pin = {"module": __name__,
-                   "source_sha256": sha256(Path(__file__).read_bytes()).hexdigest(),
                    "mujoco_python_version": mujoco.__version__,
                    "mujoco_native_version": mujoco.mj_versionString(),
-                   "snapshot_schema": "exact-array-bytes-v1",
-                   "snapshot_source_sha256": sha256(Path(__file__).with_name("cold_assets.py").read_bytes()).hexdigest()}
+                   "snapshot_schema": "exact-array-bytes-v1"}
+    if include_source_provenance:
+        decoder_pin.update(source_sha256=sha256(Path(__file__).read_bytes()).hexdigest(),
+            snapshot_source_sha256=sha256(Path(__file__).with_name("cold_assets.py").read_bytes()).hexdigest())
     if snapshot_pool is not None:
         snapshot = snapshot_pool.intern(snapshot, decoder_identity=decoder_pin)
     result = {"dimensions": dimensions, "options": options, "stat": stat,

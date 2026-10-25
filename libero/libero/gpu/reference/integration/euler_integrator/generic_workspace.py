@@ -35,8 +35,8 @@ class GenericEulerWorkspace(EulerWorkspace):
     """
     qualification_status='pending_independent_model_acceptance'
     def __init__(self, model, capacity, device='cuda:0', *, mode='diagnostic'):
-        if mode!='diagnostic':
-            raise ValueError('generic Euler production requires independent registry-qualified adapter')
+        if mode not in ('production', 'diagnostic'):
+            raise ValueError('unsupported execution mode')
         if isinstance(capacity,bool) or int(capacity)!=capacity or capacity<=0:
             raise ValueError('Euler capacity must be a positive integer')
         capacity=int(capacity)

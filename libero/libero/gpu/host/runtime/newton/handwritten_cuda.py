@@ -1,29 +1,20 @@
-"""Direct-pointer handwritten Newton core; Python only binds and compiles.
+"""Direct-pointer handwritten Newton binding; offline builds live in host/build.
 
 Retained stage metadata supplies the call order and actual buffer bindings.
 No Warp ModuleBuilder, generated arithmetic, array descriptors or Warp C++
 headers are used. The old lowered core remains an independent reference.
+Runtime prepares the pointer layout and schedule, then loads an offline product.
 """
 import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
-from libero.gpu.host.runtime.core.product_paths import nvcc_path, serialized_build
 import ctypes as ct
-from libero.gpu.host.build.library_lifetime import load_cdll
-import hashlib
 import inspect
-import json
-import os
-import re
-import subprocess
 import threading
 from pathlib import Path
 
 import numpy as np
 import warp as wp
 from .persistent_cuda import PersistentCudaCore, Slot, _record
-from libero.gpu.host.build.product_cache import current_product_authority
-from libero.gpu.host.build.build_artifacts import receipted_artifact_build
-import uuid
 from libero.gpu.host.bindings.capacity import align_bytes, array_layout, LAYOUT_VERSION
 from libero.gpu.host.runtime.core.resource_budget import newton_shared_budget
 from libero.gpu.host.runtime.core.execution_config import newton_execution_config
@@ -46,52 +37,6 @@ _GLUE = ('jacvec_sub mulM gauss_compute count_active_cone save_old gate_ls gate_
          'zero_rows solver_iter_reset finalize_exit seed_eval tape_commit tape_ls_input '
          'validate_entry_counts validate_contact_rows').split()
 _FUNCTIONS.update({'_'+k:k for k in _GLUE})
-
-
-def _project_header_source(paths, project_root):
-    """Inline quoted project headers and return their complete source closure.
-
-    A synthetic guard replaces each file's pragma once. Keeping the guard at
-    every inclusion site preserves conditional inclusion: an inactive first
-    include must not suppress a later active one. Angle-bracket SDK includes
-    remain compiler inputs. Resolved quoted paths must stay inside the project.
-    """
-    project_root=Path(project_root).resolve()
-    quoted=re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\r\n]+)"[^\r\n]*$',re.MULTILINE)
-    once=re.compile(r'^[ \t]*#[ \t]*pragma[ \t]+once[ \t]*(?://[^\r\n]*)?\r?$',re.MULTILINE)
-    contents={};active=[]
-
-    def expand(path):
-        path=Path(path).resolve()
-        if not path.is_relative_to(project_root):
-            raise ValueError(('quoted CUDA header outside project',str(path),str(project_root)))
-        if path not in contents:contents[path]=path.read_bytes()
-        text=contents[path].decode('utf-8')
-        single=bool(once.search(text))
-        if path in active:
-            # A pragma-once parent has already defined its guard before this
-            # recursive inclusion. An unguarded cycle is not a valid bundle.
-            if single:return '// recursive pragma-once include: '+str(path.relative_to(project_root))+'\n'
-            raise ValueError(('unguarded CUDA include cycle',tuple(map(str,active+[path]))))
-        active.append(path)
-        try:
-            def include(match):
-                child=path.parent/match.group(1)
-                if match.group(1) == 'precision.cuh':
-                    child=GPU_ROOT/'cuda/common/precision.cuh'
-                return expand(child)
-            body=quoted.sub(include,once.sub('',text))
-        finally:
-            active.pop()
-        relative=path.relative_to(project_root).as_posix()
-        if single:
-            guard='LIBERO_INLINE_HEADER_'+hashlib.sha256(relative.encode()).hexdigest().upper()
-            body=f'\n#ifndef {guard}\n#define {guard}\n// project source: {relative}\n'+body+f'\n#endif // {guard}\n'
-        return body
-
-    source='\n'.join(expand(path) for path in paths)
-    hashes={str(path):hashlib.sha256(data).hexdigest() for path,data in contents.items()}
-    return source,hashes
 
 
 def _expand(kernel, values):
@@ -171,7 +116,6 @@ def _head_metadata_source(metadata, bind, ws, heads, mutable_arrays, *,
 
 
 class HandwrittenCudaCore(PersistentCudaCore):
-    @serialized_build
     def __init__(self, solver, build_root, *, block_size=None, shared_state=True,
                  cholesky_backend='source', mathdx_root=None, blas_backend=None,
                  diagnostic_profile='compatible',adapter=None,external_prefix=None,external_tail=None,
@@ -247,7 +191,10 @@ class HandwrittenCudaCore(PersistentCudaCore):
         if tail_elements>dx_bytes//scalar.itemsize:
             raise ValueError(('external tail workspace exceeds lifetime-reused Dx storage',tail_elements,dx_bytes//scalar.itemsize))
         from libero.gpu.host.runtime.core.product_paths import private_product_root
-        self.root=private_product_root(build_root);self.root.mkdir(parents=True,exist_ok=True)
+        from libero.gpu.host.runtime.core.product_paths import current_build_lifetime
+        lifetime = current_build_lifetime()
+        self.root = lifetime.path/'newton' if lifetime is not None else private_product_root(build_root)
+        self.root.mkdir(parents=True,exist_ok=True)
         fields=[];values=[];arrays={};names=set();owners=[]
         # Row topology is regenerated whenever invariant_valid is reset at entry.
         self.constraint_group_heads=wp.zeros((ws.nworld,ws.rows),dtype=wp.int32,device=ws.device)
@@ -596,18 +543,12 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                 stores.append(f'libero_newton_io::copy_block({name},({globalptr}),{stride});')
         header_dir=(GPU_ROOT / 'cuda/newton')
         paths=[GPU_ROOT/'cuda/common/vector.cuh',GPU_ROOT/'cuda/common/warp.cuh',GPU_ROOT/'cuda/common/packed_mass_gather.cuh']+[header_dir/(name+'.cuh') for name in ('math','constraint','hessian','state','glue')]+external_headers
-        dependency=None
         if use_dx:
             if use_blas: paths.extend([(GPU_ROOT / 'cuda/newton/hessian_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/direction_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/line_search_warp.cuh'),(GPU_ROOT / 'cuda/newton/s07_blas_dx.cuh')])
             paths.append((GPU_ROOT / 'cuda/newton/potrf_dx.cuh'))
             if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands.cuh')
-            default='/srv/libero-split-receive-20261004-r01/dependencies/mathdx-cuda12/nvidia-mathdx-25.12.1-cuda12/nvidia/mathdx/25.12'
-            dependency=Path(mathdx_root or os.environ.get('LIBERO_MATHDX_ROOT',default)).resolve()
-            for name in ('include/cusolverdx.hpp','lib/libcusolverdx.a','external/cutlass/include/cutlass/cutlass.h'):
-                if not (dependency/name).is_file():raise FileNotFoundError(dependency/name)
-            if use_blas and not (dependency/'include/cublasdx.hpp').is_file():raise FileNotFoundError(dependency/'include/cublasdx.hpp')
-        native_path=(GPU_ROOT / 'cuda/newton/linesearch_scalar.cuh')
-        native=native_path.read_text()
+        from libero.gpu.host.build.newton import LINESEARCH, HEADERS, obtain_product
+        native=LINESEARCH
         factor_shared=[arrays.get((a.ptr,a.dtype),{}).get('shared',False) for a in (ws.H,ws.Hcone)]
         source=f'#define LIBERO_NEWTON_SCALAR_IO {int(self.scalar_io)}\n#define NEWTON_BLOCK_THREADS {block_size}\n#define NV {nv}\n#define NM {nm}\n#define ROWS {ws.rows}\n#define DATAFLOW_FAST_PROFILE {int(diagnostic_profile=="fast")}\n#define DIRECTION_BASE_SHARED {int(factor_shared[0])}\n#define DIRECTION_CONE_SHARED {int(factor_shared[1])}\n'+native
         if use_dx:
@@ -617,9 +558,7 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                 '#define LIBERO_RANK_REBUILD_THRESHOLD '+str(rebuild_threshold)+'\n'
                 '#define LIBERO_NEWTON_ISLANDS '+str(int(newton_islands=='exact'))+'\n'+source)
         source+='#define CF_S_KBIP_PLANES '+str(int(diagnostic_profile=='fast'))+'\n'
-        header_source,stage_sources=_project_header_source(paths,GPU_ROOT)
-        source+=header_source
-        if self.phase_profiling:source=phase_profile.instrument_headers(source,use_dx=use_dx,use_blas=use_blas)
+        source+=HEADERS
         source+='\nstruct Parameters {\n'+declarations+'\n};\n'
         source+=f'static_assert(sizeof(Parameters)=={ct.sizeof(Param)},"pointer ABI");\n'
         entry_decl=',const int* entry_upstream,const int* entry_enabled,const int* entry_publication,const int64_t* entry_plan,int entry_supplied' if adapter is not None else ''
@@ -659,136 +598,20 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
         else:
             source+='extern "C" int launch_persistent(const void*,int,void*){return (int)cudaErrorInvalidValue;}\n'
             source+=f'extern "C" int launch_entry(const void* p,int worlds,const int* upstream,const int* enabled,const int* publication,const int64_t* plan,int supplied,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p,upstream,enabled,publication,plan,supplied);return (int)cudaGetLastError();}}\n'
-        dependency_sha=None if dependency is None else hashlib.sha256((dependency/'lib/libcusolverdx.a').read_bytes()).hexdigest()
-        bridge_path=(GPU_ROOT / 'cuda/newton/potrf_dx_bridge.cu')
-        bridge_source=''
-        if use_dx:
-            bridge_source=f'#define NV {nv}\n#define DX_SM {wp.get_device(ws.device).arch*10}\n#define DX_THREADS {block_size}\n#define DX_MATRIX_BYTES {dx_bytes}\n'+bridge_path.read_text()
-        blas_bridge_path=(GPU_ROOT / 'cuda/newton/hessian_blas_dx_bridge.cu')
-        if use_blas:
-            bridge_source+=f'\n#define DX_HESSIAN_K {hessian_k}\n'+blas_bridge_path.read_text()
-            bridge_source+='\n'+((GPU_ROOT / 'cuda/newton/direction_blas_dx_bridge.cu')).read_text()
-        if newton_islands=='exact':
-            bridge_source+='\n'+(GPU_ROOT/'cuda/newton/islands_dx_bridge.cu').read_text()
-        bridge_paths=([bridge_path] if use_dx else [])+([blas_bridge_path,GPU_ROOT/'cuda/newton/direction_blas_dx_bridge.cu'] if use_blas else [])+([GPU_ROOT/'cuda/newton/islands_dx_bridge.cu'] if newton_islands=='exact' else [])
-        stage_sources.update({str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in [native_path]+bridge_paths})
-        # Bind the byte hashes as well as expanded text: editing a dependency's
-        # pragma/comment/line endings must never silently reuse an old build.
-        source_closure=json.dumps(stage_sources,sort_keys=True,separators=(',',':'))
-        digest=hashlib.sha256((source+bridge_source+source_closure+(dependency_sha or '')+'|fma=true|prec-div=true|prec-sqrt=true|real='+str(scalar.bits)).encode()).hexdigest();source_path=self.root/(digest+'.cu');target=self.root/(digest+'.so')
-        source_path.write_text(source)
-        product_authority=current_product_authority()
-        if product_authority is not None:
-            target=self.root/(digest+'_'+uuid.uuid4().hex+'.so')
-        compiler=nvcc_path()
-        command=[compiler,*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-shared','-Xcompiler','-fPIC','-O3','--fmad=true','--prec-div=true','--prec-sqrt=true',
-                 '-arch=sm_%d'%wp.get_device(ws.device).arch,str(source_path),'-o',str(target)]
-        commands=[command]
-        if use_dx:
-            bridge=self.root/(digest+'_bridge.cu');bridge.write_text(bridge_source)
-            paths.append(bridge_path)
-            if use_blas: paths.append(blas_bridge_path)
-            if use_blas: paths.append((GPU_ROOT / 'cuda/newton/direction_blas_dx_bridge.cu'))
-            if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands_dx_bridge.cu')
-            architecture='-arch=sm_%d'%wp.get_device(ws.device).arch
-            common=[compiler,*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-Xcompiler','-fPIC','-O3','-std=c++17','--expt-relaxed-constexpr',architecture]
-            if product_authority is not None:
-                # Private signed products must be unloadable after their last
-                # borrower; GNU UNIQUE CCCL variables pin the DSO in glibc.
-                common += ['-Xcompiler=-fno-gnu-unique',
-                           '-Xlinker=--exclude-libs=libcusolverdx.a']
-            main_object=self.root/(digest+'_main.o');bridge_object=self.root/(digest+'_bridge.o')
-            commands=[common+['-dc','--fmad=true','--prec-div=true','--prec-sqrt=true',str(source_path),'-o',str(main_object)],
-                      common+['-dc','-dlto','--fmad=true','-I'+str(dependency/'include'),
-                              '-I'+str(dependency/'external/cutlass/include'),str(bridge),'-o',str(bridge_object)],
-                      common+['-shared','-dlto','--fmad=true',str(main_object),str(bridge_object),
-                              str(dependency/'lib/libcusolverdx.a'),'-o',str(target)]]
-        resource_usage=None
-        product_result=None
-        dependency_inputs=None
-        dependency_receipt_file=None
-        from libero.gpu.host.runtime.core.product_paths import reuse_newton_binary, record_build, current_build_project
-        if product_authority is None:
-            project = current_build_project()
-            if project is not None and not target.exists() and dependency is not None:
-                from libero.gpu.host.build.aot import migrate_newton_path_alias, collect_newton_dependency_inputs
-                from libero.gpu.host.build.compilation import compilation_allowed
-                if compilation_allowed():
-                    dependency_inputs=collect_newton_dependency_inputs(commands,
-                        architecture=wp.get_device(ws.device).arch,
-                        mathdx_archive=dependency/'lib/libcusolverdx.a')
-                migrate_newton_path_alias(project['root'], target=target, identity=digest,
-                    source=source, bridge_source=bridge_source, stage_sources=stage_sources,
-                    mathdx_archive=dependency/'lib/libcusolverdx.a',
-                    architecture=wp.get_device(ws.device).arch, commands=commands,
-                    launch_command=command, nv=nv, nM=nm, dependency_inputs=dependency_inputs)
-            reuse_newton_binary(target, digest, hashlib.sha256(source.encode()).hexdigest(),
-                                wp.get_device(ws.device).arch)
-            from libero.gpu.host.build.aot import admit_newton_cached_product
-            admit_newton_cached_product(target, identity=digest,
-                source_sha256=hashlib.sha256(source.encode()).hexdigest(),
-                architecture=wp.get_device(ws.device).arch,
-                preserve_root=project['root'] if project is not None else self.root)
-        reused_product = target.exists()
-        def verify_completed_product():
-            nonlocal resource_usage
-            if use_dx:
-                resources=subprocess.run([str(Path(compiler).parent/'cuobjdump'),'--dump-resource-usage',str(target)],capture_output=True,text=True)
-                if resources.returncode:raise RuntimeError('CUDA resource inspection failed: '+resources.stderr)
-                (self.root/'RESOURCE_USAGE.txt').write_text(resources.stdout)
-                import re
-                section=next((part for part in resources.stdout.split('Function ')
-                              if part.splitlines() and 'handwritten_newton' in part.splitlines()[0]),None)
-                if not section:raise RuntimeError('compiled Newton kernel missing from CUDA resource report')
-                resource_usage={key.lower():int(value) for key,value in re.findall(r'(REG|STACK|SHARED|LOCAL|CONSTANT\[0\]):(\d+)',section)}
-                if 'shared' not in resource_usage:raise RuntimeError('compiled shared-memory usage unavailable')
-                if shared_bytes+resource_usage['shared']>48*1024:
-                    raise ValueError(('Newton static+dynamic shared exceeds 48 KiB',shared_bytes,resource_usage))
-            completed=load_cdll(target)
-            if not hasattr(completed,'launch_persistent') or (adapter is not None and not hasattr(completed,'launch_entry')):
-                raise RuntimeError('handwritten CUDA launcher symbol ABI missing')
-        if product_authority is not None:
-            def compile_log(index,result):
-                mode='w' if index==0 else 'a'
-                with (self.root/'compile.log').open(mode) as stream:
-                    stream.write(result.stdout+result.stderr+'\n')
-            product_result=receipted_artifact_build(commands=commands,
-                units=[source_path]+([bridge] if use_dx else []),
-                outputs={'newton.so':target},architecture=wp.get_device(ws.device).arch,
-                source_closure=stage_sources,verify=verify_completed_product,
-                logs=compile_log,required_symbols=('launch_persistent','launch_entry') if adapter is not None else ('launch_persistent',))
-            record_build('newton-cuda', digest, product_result['compile_commands_executed'])
-        else:
-            try:
-                if not target.exists():
-                    from libero.gpu.host.build.compilation import require_compilation
-                    require_compilation('Newton CUDA library', target)
-                    if dependency is not None and dependency_inputs is None:
-                        from libero.gpu.host.build.aot import collect_newton_dependency_inputs
-                        dependency_inputs=collect_newton_dependency_inputs(commands,
-                            architecture=wp.get_device(ws.device).arch,
-                            mathdx_archive=dependency/'lib/libcusolverdx.a')
-                    logs=[]
-                    for invocation in commands:
-                        result=subprocess.run(invocation,capture_output=True,text=True)
-                        logs.append(result.stdout+result.stderr)
-                        (self.root/'compile.log').write_text('\n'.join(logs))
-                        if result.returncode:raise RuntimeError('handwritten CUDA compilation failed: '+str(self.root/'compile.log'))
-                verify_completed_product()
-                if not reused_product and dependency_inputs is not None:
-                    from libero.gpu.host.build.aot import publish_newton_dependency_receipt
-                    dependency_receipt_file=publish_newton_dependency_receipt(target,
-                        identity=digest, inputs=dependency_inputs)
-            except BaseException:
-                # A failed fresh build/receipt may not become a later exact-key
-                # cache hit. Existing verified binaries are never removed.
-                if not reused_product:target.unlink(missing_ok=True)
-                raise
-            record_build('newton-cuda', digest, () if reused_product else commands)
-        self.library=load_cdll(target);self.library.launch_persistent.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p];self.library.launch_persistent.restype=ct.c_int
-        if adapter is not None:
-            self.library.launch_entry.argtypes=[ct.c_void_p,ct.c_int,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_void_p,ct.c_int,ct.c_void_p]
-            self.library.launch_entry.restype=ct.c_int
+        product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
+            nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
+            maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
+            block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
+            combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,
+            dx_bytes=dx_bytes, hessian_k=hessian_k, newton_islands=newton_islands,
+            phase_profiling=self.phase_profiling)
+        with wp.ScopedDevice(ws.device):
+            product = obtain_product(template=source, headers=paths, config=product_config,
+                build_root=build_root, runtime_root=self.root, mathdx_root=mathdx_root)
+        self.library = self._resource_library = product['library']
+        self._resource_info = product['resources']
+        resource_usage = dict(reg=self._resource_info['registers_per_thread'],
+            local=self._resource_info['local_bytes'], shared=self._resource_info['static_shared_bytes'])
         with wp.ScopedStream(ws.stream):self.device_params=wp.array(np.frombuffer(bytes(self.params),dtype=np.uint8).copy(),dtype=wp.uint8,device=ws.device)
         self.owners=tuple(owners);self.tokens=tuple((a.ptr,a.shape,a.dtype) for a in self.owners)
         self.layout_tokens=tuple((a.ptr,tuple(a.shape),tuple(a.strides),a.dtype) for a in self.owners)
@@ -796,8 +619,7 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
             shared_offset_bytes=e['offset']*scalar.itemsize if e['shared'] else None) for e in arrays.values())
         self.bindings=tuple((owner,key,value) for owner in (solver,ws,self) for key,value in vars(owner).items() if isinstance(value,wp.array))
         self.capacity=(ws.nworld,ws.rows,ws.contacts,ws.maxiter,ws.warmstart_enabled)
-        self.manifest=dict(floating_policy={'fma':True,'fast_math':False,'prec_div':True,'prec_sqrt':True},source=str(source_path),sha256=digest,command=command,nv=nv,nM=nm,rows=ws.rows,contacts=ws.contacts,
-            compile_commands=commands,device_bridge=None if not use_dx else str(bridge),
+        self.manifest=dict(product['metadata'], floating_policy={'fma':True,'fast_math':False,'prec_div':True,'prec_sqrt':True},nv=nv,nM=nm,rows=ws.rows,contacts=ws.contacts,
             nworld=ws.nworld,maxiter=ws.maxiter,block_size=block_size,
             execution_config={"strategy":self.execution_config.strategy,"block_threads":block_size,"tuning_status":self.execution_config.tuning_status,"selection_scope":"user-selected Newton default or explicit caller configuration; no automatic winner selection"},
             entry_specialization={'block_threads':block_size,'world_mapping':'blockIdx.y',
@@ -816,7 +638,7 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
                 'trace_fields':getattr(self,'phase_trace_fields',[]),
                 'clock':'globaltimer nanoseconds','scope':'world-private single CTA invocation; parent/child times overlap',
                 'perturbation':'extra shared/synchronization/register state; never substitute for uninstrumented step timing'},
-            cholesky_backend=cholesky_backend,mathdx_root=None if dependency is None else str(dependency),
+            cholesky_backend=cholesky_backend,
             blas_backend=blas_backend,hessian_tile_k=hessian_k,
             hessian_algorithm=self.hessian_algorithm_configuration,
             hessian_algorithm_diagnostic_fields=['cone_batch_calls','cone_rank_calls','cone_gram_tiles',
@@ -825,9 +647,8 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
                 'padded_cells_total','max_components','max_component_size','direction_calls'] if newton_islands=='exact' else [],
             blas_workspace_bytes=dx_bytes if use_blas else 0,
             blas_diagnostic_fields=['assembly_calls','gemm_tiles','direction_calls','jv_calls','transpose_calls','cone_gemm_calls','S07_jv_calls'],
-            mathdx_library_sha256=dependency_sha,source_sha256=hashlib.sha256(source.encode()).hexdigest(),
             potrf_diagnostic_fields=['main_calls','contact_calls','source_fallbacks','nonpositive_info'],
-            source_bytes=len(source.encode()),diagnostic_tail_preserved=diagnostic_profile=='compatible',diagnostic_profile=diagnostic_profile,
+            diagnostic_tail_preserved=diagnostic_profile=='compatible',diagnostic_profile=diagnostic_profile,
             adapter_prefix_tail=adapter is not None,external_prefix_stages=len(external_code)//2,
             external_tail_stages=len(external_tail_code)//2,witness_slots=solver.tape_slots,
             ordinal_head_metadata=dict(requested=head_metadata is not None,enabled=head_source['enabled'],
@@ -843,18 +664,8 @@ if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
             dataflow_features=['invocation-static-validation-cache','state-produced-counts','state-produced-change-count','validated-compact-row-topology','completion-tile-head-offsets',
                 'selected-warm-init-reuse','stats-produced-gradient-norm-reuse','resident-factor-trsm','uniform-math-stop','compatible-inactive-history-fanout' if diagnostic_profile=='compatible' else 'explicit-witness-disabled',
                 'Jv-tile-to-quad' if diagnostic_profile=='fast' and use_blas else 'compatible-quad-materialization'],
-            project_header_binding='recursive quoted project headers; conditional pragma-once guards',
-            stage_sources=stage_sources)
-        self.manifest['library_file']=str(target.resolve())
-        self.manifest['library_sha256']=hashlib.sha256(target.read_bytes()).hexdigest()
-        retained_dependency_receipt=target.with_suffix('.dependencies.json')
-        if dependency_receipt_file is not None or retained_dependency_receipt.is_file():
-            self.manifest['dependency_receipt_file']=str(retained_dependency_receipt)
-        self.manifest['compile_commands_executed'] = (product_result['compile_commands_executed']
-            if product_result is not None else ([] if reused_product else commands))
-        if product_result is not None:self.manifest['product_build']=product_result
-        target.with_suffix('.json').write_text(json.dumps(self.manifest, indent=2)+'\n')
-        (self.root/'MANIFEST.json').write_text(json.dumps(self.manifest,indent=2)+'\n')
+            project_header_binding='offline recursive quoted project headers; conditional pragma-once guards')
+        self.manifest['library_file'] = self._resource_info['library_file']
 
     def profile_snapshot(self, *, stream=None):
         """Download completed diagnostics outside measured intervals."""

@@ -86,37 +86,6 @@ class GpuObservationAdapter:
         self._sample_event_token=0
         self._sample_event_hook=None
         self._graph_guard=None
-        self._graph_configuration=self._sampling_graph_signature()
-
-    @staticmethod
-    def _array_signature(array):
-        return (id(array),int(array.ptr),array.dtype,tuple(array.shape),
-                tuple(array.strides),str(array.device),bool(array.is_contiguous),
-                getattr(array,'capacity',None))
-
-    def _sampling_graph_signature(self):
-        """Host-only capture contract; enabled/rate values live behind stable roots."""
-        low=self.lowdim
-        arrays=list(low.meta)+[getattr(low,name) for name in
-            ('cache','observed','sidequat','elapsed','sampled','present','events','all_worlds')]
-        arrays.append(self.raw_packer.buffer)
-        if self.scene_cache is not None:
-            arrays.extend(getattr(self.scene_cache,name) for name in
-                ('periods','enabled','elapsed','sampled','generation','parents',
-                 'parent_generation','captured','scenes','mask'))
-            arrays.append(self.scene_packer.buffer)
-        arrays.extend(self.visual_sources[name] for name in sorted(self.visual_sources))
-        structure=tuple((s.name,s.modality,s.operation,s.width,tuple(s.indices),
-                         tuple(s.dependencies),tuple(s.shape)) for s in self.plan.specs)
-        images=tuple(tuple(sorted((key,repr(value)) for key,value in spec.items()
-                                  if key not in ('enabled','active','period')))
-                     for spec in self.plan.image_specs)
-        layout=(id(low),id(self.raw_packer),repr(getattr(self.raw_packer,'layout',None)),
-                getattr(low,'source_stride',None),id(self.scene_cache),id(self.scene_packer),
-                getattr(self.scene_cache,'ncamera',None),getattr(self.scene_cache,'stride',None),
-                repr(getattr(self.scene_packer,'layout',None)))
-        return (self.nworld,float(self.metadata['model_timestep']),tuple(self.plan.order),layout,
-                structure,images,tuple(self._array_signature(a) for a in arrays))
 
     @property
     def requires_host_sampling(self):
@@ -124,20 +93,20 @@ class GpuObservationAdapter:
 
     @property
     def graph_eligible(self):
-        """Read-only guard checked before capture and replay; never reads GPU data."""
-        if self.closed or not self.valid or self.requires_host_sampling:
-            return False
-        try:
-            if self._sampling_graph_signature()!=self._graph_configuration:
-                return False
-            guard=self._graph_guard
-            return guard is None or bool(guard())
-        except (AttributeError,KeyError,TypeError,ValueError,RuntimeError):
-            return False
+        """Replay policy; public callback edits select the uncaptured route.
+
+        Sampling-rate/enabled edits write existing device buffers, and active
+        edits affect host packaging. Neither changes captured pointers. Model
+        replacement creates a fresh observer and drops the old control graph.
+        """
+        return bool(not self.closed and self.valid and not self.requires_host_sampling)
 
     def bind_graph_guard(self,callback):
+        """Validate native pointer bindings at installation and before capture."""
         if callback is not None and not callable(callback):
             raise TypeError('observation graph guard must be callable')
+        if callback is not None and not callback():
+            raise ValueError('observation graph binding differs at installation')
         self._graph_guard=callback
 
     def bind_sample_event_hook(self,callback):
@@ -157,8 +126,11 @@ class GpuObservationAdapter:
     def assert_sampling_allowed(self,stream=None):
         if self.closed or not self.valid:
             raise RuntimeError('observation adapter is closed or quarantined')
-        if stream is not None and getattr(stream,'is_capturing',False) and not self.graph_eligible:
-            raise RuntimeError('observation sampling requires uncaptured host callbacks or current bindings')
+        if stream is not None and getattr(stream,'is_capturing',False):
+            if not self.graph_eligible:
+                raise RuntimeError('observation sampling requires uncaptured host callbacks')
+            if self._graph_guard is not None and not self._graph_guard():
+                raise RuntimeError('observation graph binding changed before capture')
 
     def _record_sample_event(self,timestep,force=False,events=1):
         self._last_sample=(float(timestep),bool(force))

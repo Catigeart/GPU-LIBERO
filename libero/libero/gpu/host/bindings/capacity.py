@@ -5,13 +5,9 @@ Resources depending on the compiled descriptor must still pass compilation
 and cudaFuncGetAttributes at installation, rather than a fixed NV whitelist.
 """
 import libero.gpu.precision as scalar
-import hashlib
 import json
 import os
-import re
-import subprocess
 from pathlib import Path
-from libero.gpu.host.runtime.core.product_paths import nvcc_path
 
 from libero.gpu.host.runtime.core.resource_budget import (
     PORTABLE_SHARED_LIMIT_BYTES, newton_shared_budget)
@@ -204,36 +200,6 @@ def install(bundle, root, *, mathdx_root=None,dataflow_profile="compatible",comb
 
 
 def inspect_resources(core, *, shared_limit_bytes=SHARED_LIMIT):
-    """Inspect linked CUDA metadata before admission, including vendor static SMEM."""
-    declared=core.manifest.get('library_file')
-    path=(Path(declared) if declared is not None else
-          Path(core.root)/(core.manifest['sha256']+'.so')).resolve()
-    loaded_name=getattr(getattr(core,'library',None),'_name',None)
-    if declared is not None and not loaded_name:
-        raise ValueError('actual Newton private library owner missing')
-    if loaded_name is not None and Path(loaded_name).resolve()!=path:
-        raise ValueError('Newton resource image differs from loaded private owner')
-    binary_sha=hashlib.sha256(path.read_bytes()).hexdigest()
-    expected_sha=core.manifest.get('library_sha256')
-    if declared is not None and expected_sha is None:
-        raise ValueError('actual Newton private library SHA missing')
-    if expected_sha is not None and binary_sha!=expected_sha:
-        raise ValueError('Newton private library hash mismatch before resource inspection')
-    inspector=Path(nvcc_path()).parent/'cuobjdump'
-    text=subprocess.check_output([str(inspector),'--dump-resource-usage',str(path)],text=True)
-    if hashlib.sha256(path.read_bytes()).hexdigest()!=binary_sha:
-        raise ValueError('Newton private library changed during resource inspection')
-    match=re.search(r'Function [^\n]*handwritten_newton[^\n]*:\s*REG:(\d+) STACK:(\d+) SHARED:(\d+)',text)
-    if not match:raise ValueError('complete Newton CUDA resource record missing')
-    registers,stack,static=(int(match[i]) for i in (1,2,3))
-    dynamic=int(core.manifest['shared_bytes'])
-    shared_limit_bytes=int(shared_limit_bytes)
-    if shared_limit_bytes < 1:raise ValueError("positive shared launch limit required")
-    if static+dynamic>shared_limit_bytes:
-        raise ValueError(('static + dynamic shared memory exceeds launch limit',static,dynamic,shared_limit_bytes))
-    return dict(registers_per_thread=registers,stack_bytes=stack,static_shared_bytes=static,
-                dynamic_shared_bytes=dynamic,total_shared_bytes=static+dynamic,
-                shared_limit_bytes=shared_limit_bytes,
-                library_file=str(path),library_sha256=binary_sha,
-                private_owner_matched=loaded_name is not None,
-                passed=True,scope='linked complete Newton kernel resources, no performance claim')
+    """Reuse the query already bound to the actual loaded CUDA kernel."""
+    from libero.gpu.host.runtime.newton.native_product import retained_resources
+    return retained_resources(core, shared_limit_bytes=shared_limit_bytes)

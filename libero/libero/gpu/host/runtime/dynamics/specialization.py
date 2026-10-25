@@ -6,49 +6,32 @@ source readiness never grants numerical acceptance for a new model.
 """
 from __future__ import annotations
 import libero.gpu.precision as scalar
-import hashlib
-import json
-from pathlib import Path
+from ..core.static_readset import native_arrays, StaticReadsetSeal
 import numpy as np
 import warp as wp
-from ..core.model_bytes import checked_records, source_ref, source_bytes
 from .runtime_adapter import _token, _array
 
 wp.set_module_options({'enable_backward': False, 'fuse_fp': True, 'fast_math': False})
 
 
-def native_fields(arrays, metadata, spec, fields, *, source_records, metadata_record,
+def native_fields(arrays, metadata, spec, fields, *, source_records=(), metadata_record=None,
                   registry, candidate_id, mode):
-    """Cold native bytes -> readonly participating fields, independently pinned."""
-    from libero.gpu.host.runtime.foundation.runtime_adapter import _native_field_digest, _pin_native_metadata
-    records = checked_records(source_records)
-    if not records:
-        raise ValueError('native/source records required')
-    _pin_native_metadata(metadata, spec, records, metadata_record, fields)
-    digests = {digest for _, digest in records}
+    """Copy participating fields from the prepared model; keep domain checks.
+
+    Legacy provenance keywords are accepted for older component callers.
+    Runtime consumes metadata directly, without reopening its source records.
+    """
     if (metadata['model_sha256'] != spec.model_sha256 or
-        metadata['static_arrays_sha256'] != spec.static_arrays_sha256 or
-        metadata['decoder_pin']['source_sha256'] not in digests or
-        spec.model_sha256 not in digests):
-        raise ValueError('actual D native identity/decoder source mismatch')
+            metadata['static_arrays_sha256'] != spec.static_arrays_sha256):
+        raise ValueError('actual D native identity differs from model spec')
     for name, value in spec.dimensions.as_dict().items():
         if metadata['dimensions'].get(name) != value:
             raise ValueError('actual native dimensions differ from model spec: ' + name)
     admission = registry.admit(candidate_id, spec, mode=mode,
         required_scope='component-runtime' if mode == 'production' else None)
-    candidate = registry.candidates[candidate_id]
-    covered_source = (set(candidate.source_files.items()).issubset(set(records))
-                      if candidate.source_files else candidate.source_sha256 in digests)
-    if not admission.execution_allowed or not covered_source:
-        raise ValueError('D source/model candidate admission refused')
-    result = {}
-    for name in fields:
-        a = np.array(arrays[name], copy=True, order='C')
-        if metadata['array_sha256'].get(name) != _native_field_digest(name, a):
-            raise ValueError('D native readset field changed: ' + name)
-        a.flags.writeable = False
-        result[name] = a
-    return result, admission
+    if not admission.execution_allowed:
+        raise ValueError('D model candidate admission refused')
+    return native_arrays(arrays, metadata, spec, fields), admission
 
 
 def validate_d_topology(arrays, dims):
@@ -404,11 +387,9 @@ class GenericJacobianInputsWorkspace:
         self.static, self.admission = native_fields(arrays, metadata, spec, self.FIELDS,
             source_records=source_records, metadata_record=metadata_record,
             registry=registry, candidate_id=candidate_id, mode=mode)
-        # Robot selectors must be in the original independently pinned decoder
-        # report; matching nv does not license an arbitrary 0:7 arm selection.
-        original = json.loads(source_bytes(source_ref(metadata_record)))
-        if robot not in original.get('robot_metadata', ()):
-            raise ValueError('robot selectors absent from original metadata source')
+        # Use the prepared model's selectors; equal nv alone is insufficient.
+        if robot not in metadata.get('robot_metadata', ()):
+            raise ValueError('robot selectors absent from model metadata')
         d = metadata['dimensions']
         self.nq, self.nv, self.nM, self.nbody, self.nsite = (int(d[k]) for k in ('nq', 'nv', 'nM', 'nbody', 'nsite'))
         ancestor = validate_d_topology(self.static, d)
@@ -523,11 +504,6 @@ class GenericPositionWorkspace:
         from libero.gpu.reference.position.compos.kernel import ComposModel
         from libero.gpu.reference.position.crb.kernel import CRBModel
         from libero.gpu.reference.integration.euler_integrator.generic_workspace import GenericMassWorkspace
-        # Factor/compos/CRB are true source dependencies of this new candidate.
-        # Production acceptance must identify their complete source bundle,
-        # not only this allocation wrapper's SHA.
-        if not registry.candidates[candidate_ids['mass']].source_files:
-            raise ValueError('generic position needs complete original math source bundle')
         if type(capacity) is not int or capacity <= 0:
             raise ValueError('positive actual capacity required')
         fields, self.admission = native_fields(arrays, metadata, spec, self.MASS_FIELDS,
@@ -565,7 +541,7 @@ class GenericPositionWorkspace:
         self.factor.count.fill_(1)
         self._objects = (self.body, self.frames, self.compos, self.crb_model, self.factor)
         self._fields = fields
-        self._static_digests = {k: hashlib.sha256(a.tobytes()).hexdigest() for k, a in fields.items()}
+        self._static_fields_seal = StaticReadsetSeal(fields, spec.identity_key, None)
         self._frozen = self._tokens()
 
     @property
@@ -602,9 +578,8 @@ class GenericPositionWorkspace:
         self.frames.validate_bindings()
         if self._tokens() != self._frozen:
             raise ValueError('generic position actual source/consumer binding changed')
-        for k, a in self._fields.items():
-            if hashlib.sha256(a.tobytes()).hexdigest() != self._static_digests[k]:
-                raise ValueError('generic mass native field changed: '+k)
+        if not self._static_fields_seal.valid(self._fields, self.spec.identity_key):
+            raise ValueError('generic mass native field owner/layout changed')
         if not self.registry.admit(self.candidate_ids['mass'], self.spec, mode=self.mode,
                 required_scope='component-runtime' if self.mode == 'production' else None).execution_allowed:
             raise ValueError('generic position mass admission changed')

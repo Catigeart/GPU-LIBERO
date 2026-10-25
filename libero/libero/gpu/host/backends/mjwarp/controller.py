@@ -1,7 +1,6 @@
 """Bind MJWarp device arrays to the existing separately compiled FP32 OSC."""
 import ctypes as ct
 from pathlib import Path
-import subprocess
 
 import numpy as np
 import warp as wp
@@ -14,12 +13,11 @@ from . import kernels
 
 
 def controller_product(root, *, fast_compile=False):
+    """Select the offline product; the controller validates its C ABI below."""
     folder = project_paths(root).cmake / ('sm80-dev' if fast_compile else 'sm80-release')
-    target = 'flash_mjwarp_controller_fp32'
     library = folder / 'mjwarp_controller_fp32.so'
-    check = subprocess.run(['ninja', '-C', str(folder), '-n', target], capture_output=True, text=True)
-    if not library.is_file() or check.returncode or 'ninja: no work to do.' not in check.stdout:
-        raise MissingCompiledProduct('Build ' + target + ' offline in ' + str(folder))
+    if not library.is_file():
+        raise MissingCompiledProduct('Build flash_mjwarp_controller_fp32 offline in ' + str(folder))
     return library
 
 

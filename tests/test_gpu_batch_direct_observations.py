@@ -6,6 +6,7 @@ import sys
 from types import MethodType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import numpy as np
 
 
 SOURCE = Path(__file__).resolve().parents[1]/'libero/libero/gpu/host/bindings/observations.py'
@@ -219,6 +220,45 @@ class BatchDirectObservationTests(unittest.TestCase):
         self.install(observer, self.binding_for(observer))
         observer.scene_transforms.cam_xpos = Array(self.device)
         self.assertFalse(observer.graph_guard())
+
+    def test_public_render_without_camera_observations_keeps_lowdim_binding(self):
+        self.install()
+        ob=self.observer
+        adapter_source=SOURCE.parents[1]/'adapters/observations/adapter.py'
+        cls=next(node for node in ast.parse(adapter_source.read_text()).body
+                 if isinstance(node,ast.ClassDef) and node.name=='GpuObservationAdapter')
+        methods=[node for node in cls.body if isinstance(node,ast.FunctionDef)
+                 and node.name in ('_flat','render_gpu')]
+        wrapper=ast.ClassDef(name='RenderAdapter',bases=[],keywords=[],body=methods,decorator_list=[])
+        module=ast.fix_missing_locations(ast.Module(body=[wrapper],type_ignores=[]))
+        namespace={'np':np}
+        exec(compile(module,str(adapter_source),'exec'),namespace)
+        render_adapter=namespace['RenderAdapter']
+        ob._flat=render_adapter._flat
+        ob.closed=False;ob.valid=True;ob.nworld=1;ob.device=self.device
+        ob._scalar=np.float64;ob.wp=SimpleNamespace(synchronize_stream=Mock())
+        ob.raw_packer=SimpleNamespace(buffer=Array(self.device))
+        ob.model=SimpleNamespace(nbody=1,ngeom=1,nsite=1,ncam=1,nlight=0,
+                                site_rgba=np.zeros((2,4)),geom_rgba=np.zeros((2,4)))
+        def field(width):
+            value=Array(self.device);value.dtype=np.float64
+            value.shape=(width,);value.size=width
+            value.numpy=lambda:np.zeros(width)
+            return value
+        ob.visual_sources={name:field(8) for name in ('site_rgba','geom_rgba')}
+        source={name:field(width) for name,width in (
+            ('body_xpos',3),('body_xmat',9),('geom_xpos',3),('geom_xmat',9),
+            ('site_xpos',3),('site_xmat',9),('subtree_com',3))}
+        transforms={name:field(width) for name,width in
+                    (('cam_xpos',3),('cam_xmat',9),('light_xpos',0),('light_xdir',0))}
+        ob._scene_transform_type=lambda *args:SimpleNamespace(update=lambda *args,**kwargs:transforms)
+        ob.render=Mock(return_value='rendered')
+        self.assertTrue(ob.graph_guard())
+        result=render_adapter.render_gpu(ob,source,width=8,height=8,stream=self.stream)
+        self.assertEqual(result,'rendered')
+        self.assertIsNotNone(ob.scene_transforms)
+        self.assertTrue(ob.graph_guard())
+        self.assertEqual(ob.render.call_args.args[0]['cam_xpos'].shape,(1,3))
 
     def test_graph_guard_rejects_sampler_callback_and_scene_count_changes(self):
         observer = self.observer_for(images=[{'name':'agentview_image','shape':(128,128,3)}])

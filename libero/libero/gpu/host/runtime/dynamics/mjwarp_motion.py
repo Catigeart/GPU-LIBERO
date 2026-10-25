@@ -27,10 +27,7 @@ def load_leaf(component, arguments, library, stream, *, entry=None):
     if not path.is_file():
         raise MissingCompiledProduct(f'Build flash_mjwarp_{component}_fp32 offline')
     lib = ct.CDLL(str(path)); prefix = f'flash_mjwarp_{component}_'
-    identity, arch = (getattr(lib, prefix+n) for n in ('source_id', 'arch'))
-    identity.restype = ct.c_char_p
-    if identity().decode() != source_id(component):
-        raise MissingCompiledProduct(f'{component} binary is stale; rebuild offline')
+    arch = getattr(lib, prefix+'arch')
     symbol = 'arguments_bytes' if entry is None else entry+'_arguments_bytes'
     try:
         size = getattr(lib, prefix+symbol)

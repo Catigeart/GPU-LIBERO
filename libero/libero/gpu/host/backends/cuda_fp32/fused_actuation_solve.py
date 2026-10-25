@@ -41,8 +41,7 @@ class FusedActuationSolve:
         self.path=Path(library);self.library=None
         if not self.eligible:return
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_actuation_solve offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_actuation_solve_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_actuation_solve_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale actuation/mass solve; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_actuation_solve_arch()!=self.stream.device.arch:raise ValueError('Actuation/mass architecture differs')
         for name,kind in (('actuation',ActuationInputs),('smooth',SmoothForceInputs),('mass',MassSolveInputs)):
             size=getattr(lib,'flash_fp32_actuation_solve_'+name+'_bytes');size.restype=ct.c_size_t

@@ -8,7 +8,6 @@ reset/forward. A new owner/source identity never inherits an acceptance bridge.
 from dataclasses import dataclass
 import copy
 import hashlib
-from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -35,7 +34,6 @@ sensor_cutoff sensor_noise sensor_user
 '''.split())
 _NONNEGATIVE = frozenset('''body_mass body_inertia dof_armature dof_damping dof_frictionloss jnt_stiffness geom_size site_size geom_friction tendon_stiffness tendon_damping tendon_frictionloss tendon_width sensor_cutoff sensor_noise'''.split())
 _QUATERNIONS = frozenset(('body_quat', 'body_iquat', 'geom_quat', 'site_quat', 'cam_quat'))
-_PRODUCER_SHA_AT_IMPORT = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def native_model_write_schema(built):
@@ -43,8 +41,6 @@ def native_model_write_schema(built):
     from libero.gpu.model.factory import BuiltTaskModel
     if type(built) is not BuiltTaskModel or not isinstance(built.native_model, mujoco.MjModel):
         raise ContractError('actual installed native model owner required')
-    if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != _PRODUCER_SHA_AT_IMPORT:
-        raise ContractError('native write schema producer changed since module load')
     model = built.native_model
     arrays = {}
     readonly = []
@@ -66,8 +62,7 @@ def native_model_write_schema(built):
                          'scalar': not isinstance(value, np.ndarray)}
     return {'schema': 'native-model-public-write-v1', 'arrays': arrays,
             'options': options, 'readonly_arrays': sorted(readonly),
-            'rebuild_required': True, 'topology_writable': False,
-            'producer': {'path': str(Path(__file__).resolve()), 'sha256': _PRODUCER_SHA_AT_IMPORT}}
+            'rebuild_required': True, 'topology_writable': False}
 
 
 def publish_native_model_write_schema(built):
@@ -155,7 +150,6 @@ class NativeModelUpdatePlan:
     option_fields: tuple
     source_generation: int
     directory: object
-    producer_sha256: str
     state: str = 'prepared'
 
     @property
@@ -166,8 +160,6 @@ class NativeModelUpdatePlan:
     def mjb_path(self): return None
 
     def validate_base(self):
-        if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != self.producer_sha256:
-            raise ContractError('native model update producer source changed')
         if self.state != 'prepared':
             raise ContractError('native update plan is no longer prepared')
         if self.source_built.native_model is not self.source_native_model:
@@ -215,8 +207,6 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
         raise ContractError('native model update field names must be nonempty strings')
     if not array_changes and not option_changes:
         raise ContractError('native replacement requires a nonempty update')
-    if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != _PRODUCER_SHA_AT_IMPORT:
-        raise ContractError('native model update producer changed since module load')
     schema = native_model_write_schema(built)
     if set(array_changes) - set(schema['arrays']):
         raise ContractError('native model field is readonly/structural: ' + repr(sorted(set(array_changes) - set(schema['arrays']))))
@@ -275,7 +265,7 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
         'source_owner_version': base_descriptor['owner_version_sha256'],
         'new_owner_version': intake.descriptor['owner_version_sha256'],
         'array_fields': sorted(payload), 'option_fields': sorted(option_payload),
-        'source_generation': source_generation, 'producer_sha256': _PRODUCER_SHA_AT_IMPORT,
+        'source_generation': source_generation,
         'source_array_payload_sha256': {name: hashlib.sha256(a.tobytes()).hexdigest()
                                         for name, a in payload.items()},
         'option_payload_sha256': _hash({name: value.tolist() if isinstance(value, np.ndarray) else value
@@ -287,7 +277,7 @@ def prepare_native_model_update(built, array_changes, option_changes=None, *, ca
     }
     plan = NativeModelUpdatePlan(built, model, base_spec, base_descriptor, fresh, intake,
                                 tuple(sorted(payload)), tuple(sorted(option_payload)),
-                                source_generation, None, _PRODUCER_SHA_AT_IMPORT)
+                                source_generation, None)
     plan.preflight = preflight
     plan.validate_base()
     return plan

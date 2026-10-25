@@ -55,9 +55,7 @@ def prepare_parameter_model(bundle, built, changes, token, model_generation):
     plan=prepare_parameter_descriptor(model_generation,token,derived,metadata_preparation=preflight)
     from libero.gpu.host.runtime.core.product_paths import build_directory, current_build_lifetime
     directory=None
-    from ..core.model_bytes import model_bytes
-    digest=hashlib.sha256(model_bytes(native)).hexdigest()
-    if digest != derived.model_sha256:raise ValueError('actual parameter model digest differs')
+    digest=metadata['model_sha256']
     static={name:np.ascontiguousarray(getattr(native,name)).copy() for name in STATIC_SCHEMA}
     facts={name:int(getattr(native,name)) for name in ('neq','ntendon','nplugin','nmocap','na','nq','nv','nu','nM','nbody','ngeom','nsite','njnt')}
     facts.update({name:int(getattr(native.opt,name)) for name in ('solver','cone','jacobian','disableflags','enableflags','noslip_iterations')})

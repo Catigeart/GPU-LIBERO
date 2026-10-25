@@ -55,6 +55,12 @@ def observation_fixture(aot, root):
 
 
 class AotBuildTests(unittest.TestCase):
+    def setUp(self):
+        from libero.gpu.host.build import aot
+        root = patch.object(aot, 'project_root', side_effect=lambda path: Path(path).resolve())
+        root.start()
+        self.addCleanup(root.stop)
+
     def test_task_aliases_require_identical_model_bytes_not_just_dimensions(self):
         from libero.gpu.host.build import aot
         with tempfile.TemporaryDirectory() as directory:
@@ -125,7 +131,7 @@ class AotBuildTests(unittest.TestCase):
             self.assertEqual(len(scope['events']), 1)
             self.assertEqual(scope['events'][0]['kind'], 'warp')
 
-    def test_preinstantiated_source_load_skips_generator_and_checks_bytes(self):
+    def test_preinstantiated_source_load_checks_model_and_presence_without_hashes(self):
         manifest = {'nv': 21}
         def generator(model, static, root):
             root.mkdir()
@@ -147,8 +153,19 @@ class AotBuildTests(unittest.TestCase):
                 self.assertEqual(loaded, package)
                 with self.assertRaises(MissingCompiledProduct):
                     source_cache['generated_package']({'nv': 43}, {}, forbidden, root)
-                (package/'identity.py').write_text('corrupt')
-                with self.assertRaisesRegex(ValueError, 'prebuilt specialization source differs'):
+                (package/'identity.py').write_text('NV = 21\n# source comment changed\n')
+                with patch.object(Path, 'read_bytes', side_effect=AssertionError('runtime source fingerprint')):
+                    loaded, _, hit = source_cache['generated_package'](manifest, {}, forbidden, root)
+                    self.assertEqual(loaded, package)
+                    self.assertTrue(hit)
+                with self.assertRaisesRegex(ValueError, 'stale source pins'):
+                    source_cache['index_packages'](root, [package])
+                (package/'MODEL_MANIFEST.json').write_text(json.dumps({'nv': 43}))
+                with self.assertRaisesRegex(ValueError, 'model manifest differs'):
+                    source_cache['generated_package'](manifest, {}, forbidden, root)
+                (package/'MODEL_MANIFEST.json').write_text(json.dumps(manifest))
+                (package/'identity.py').unlink()
+                with self.assertRaisesRegex(MissingCompiledProduct, 'file is absent'):
                     source_cache['generated_package'](manifest, {}, forbidden, root)
 
     def test_parameter_table_covers_all_shipped_tasks_and_newton_dimensions(self):
@@ -173,14 +190,16 @@ class ObservationAotReadinessTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.contract, products, native, warp = observation_fixture(aot, self.root)
-        self.row = dict(key='suite/task.bddl',source_identity='source',num_envs=8,seed=0,
+        self.row = dict(key='suite/task.bddl',source_identity='source',real_bits=aot.scalar.bits,num_envs=8,seed=0,
             model_sha256='model', native_artifacts=native, warp_required=sorted(warp),
             warp_artifacts=warp, observation_products=products)
-        self.record = dict(status='complete',num_envs=8,seed=0,source_identity='source',
+        self.record = dict(schema='libero-unified-aot-build-v1',real_bits=aot.scalar.bits,
+            status='complete',num_envs=8,seed=0,source_identity='source',
             observation_contract=self.contract, tasks={self.row['key']:self.row}, artifacts={**native, **warp})
         self.addCleanup(patch.stopall)
         patch.object(aot, 'source_identity', return_value='source').start()
         patch.object(aot, 'observation_product_contract', return_value=self.contract).start()
+        patch.object(aot, 'project_root', side_effect=lambda root: Path(root).resolve()).start()
 
     def ready(self, **kwargs):
         (self.root/'AOT_BUILD.json').write_text(json.dumps(self.record))
@@ -200,30 +219,32 @@ class ObservationAotReadinessTests(unittest.TestCase):
         with self.assertRaises(MissingCompiledProduct):
             self.ready(debug=True)
 
-    def test_legacy_complete_and_missing_cold_capture_evidence_are_not_ready(self):
+    def test_requested_profile_requires_observer_abi_but_not_capture_proofs(self):
         baseline = deepcopy(self.record)
         mutations = [lambda: self.record.pop('observation_contract'),
             lambda: self.row.pop('observation_products'),
-            lambda: self.row['observation_products']['profiles']['dual-rgb128'].pop('installation'),
-            lambda: self.row['observation_products']['profiles']['no-camera'].update(captured_features=[]),
-            lambda: self.row['observation_products'].update(replayed=True),
-            lambda: self.row['observation_products']['profiles']['dual-rgb128'].update(dataflow_profile='compatible')]
+            lambda: self.row['observation_products']['profiles']['no-camera'].pop('installation'),
+            lambda: self.row['observation_products']['profiles']['no-camera']['installation'].update(batch_observation_abi='old'),
+            lambda: self.row['observation_products']['profiles']['no-camera'].update(dataflow_profile='compatible')]
         for mutation in mutations:
             self.record = deepcopy(baseline)
             self.row = self.record['tasks']['suite/task.bddl']
             mutation()
             with self.subTest(mutation=mutations.index(mutation)), self.assertRaises(MissingCompiledProduct):
                 self.ready()
+        self.record = deepcopy(baseline)
+        self.row = self.record['tasks']['suite/task.bddl']
+        self.row['observation_products']['profiles']['no-camera']['captured_features'] = []
+        self.row['observation_products']['replayed'] = True
+        self.ready()
 
     def test_each_profile_requires_its_native_and_loaded_warp_artifact_binding(self):
         baseline = deepcopy(self.record)
         mutations = [lambda: self.row['native_artifacts'].clear(),
             lambda: self.row['warp_artifacts'].clear(),
-            lambda: self.row['observation_products']['profiles']['dual-rgb128']['warp_modules'].pop(
-                'libero.gpu.host.adapters.observations.scene_kinematics'),
-            lambda: self.row['observation_products']['profiles']['no-camera']['installation'].update(native_artifacts=[]),
-            lambda: self.record['artifacts'].pop(next(iter(self.row['native_artifacts']))),
-            lambda: self.record['artifacts'].pop(next(iter(self.row['warp_artifacts'])))]
+            lambda: self.row['observation_products']['profiles']['no-camera']['warp_modules'].pop(
+                'libero.gpu.host.adapters.observations.device'),
+            lambda: self.row['observation_products']['profiles']['no-camera']['installation'].update(native_artifacts=[])]
         for mutation in mutations:
             self.record = deepcopy(baseline)
             self.row = self.record['tasks']['suite/task.bddl']
@@ -231,17 +252,51 @@ class ObservationAotReadinessTests(unittest.TestCase):
             with self.subTest(mutation=mutations.index(mutation)), self.assertRaises(MissingCompiledProduct):
                 self.ready()
 
-    def test_file_tampering_is_rejected_after_the_contract_check(self):
-        path=self.root/next(iter(self.row['warp_artifacts']))
-        path.write_bytes(b'changed Warp binary')
-        with self.assertRaisesRegex(ValueError,'prebuilt artifact differs'):
+    def test_missing_requested_product_is_rejected_without_hashing(self):
+        path=self.root/next(iter(self.row['observation_products']['profiles']['no-camera']['native_artifacts']))
+        path.unlink()
+        with patch.object(self.aot, '_sha', side_effect=AssertionError('runtime hash')), \
+                self.assertRaisesRegex(MissingCompiledProduct,'Required task product is missing'):
             self.ready()
 
-    def test_batch_constructor_source_changes_invalidate_the_explicit_contract(self):
+    def test_runtime_does_not_recertify_host_source_or_unrelated_products(self):
         changed=deepcopy(self.contract)
         changed['source_files']['host/adapters/environment/batch_env.py']='changed-but-excluded-from-global-pin'
-        with patch.object(self.aot,'observation_product_contract',return_value=changed):
-            with self.assertRaises(MissingCompiledProduct):
+        self.record['artifacts']['unrelated/missing.so'] = 'not-a-runtime-dependency'
+        self.record['tasks']['other/task.bddl'] = {'incomplete': True}
+        # Physics products are checked by their actual load-only bindings.
+        self.row['native_artifacts']['physics/deferred-to-loader.so'] = 'recorded-product'
+        with patch.object(self.aot,'observation_product_contract',return_value=changed), \
+                patch.object(self.aot,'source_identity',side_effect=AssertionError('runtime source scan')), \
+                patch.object(self.aot,'_sha',side_effect=AssertionError('runtime hash')):
+            self.ready()
+
+    def test_unrequested_camera_products_may_be_absent_but_shared_files_remain_required(self):
+        profiles = self.row['observation_products']['profiles']
+        camera = profiles['dual-rgb128']
+        for spelling in camera['native_artifacts']:
+            if spelling not in profiles['no-camera']['native_artifacts']:
+                (self.root/spelling).unlink()
+        self.ready()
+        with self.assertRaisesRegex(MissingCompiledProduct, 'Required task product is missing'):
+            self.ready(observation_options=dict(use_camera_obs=True))
+        common = next(iter(profiles['no-camera']['native_artifacts']))
+        camera['native_artifacts'][common] = self.row['native_artifacts'][common]
+        (self.root/common).unlink()
+        with self.assertRaisesRegex(MissingCompiledProduct, 'Required task product is missing'):
+            self.ready()
+
+    def test_unrequested_profile_metadata_is_not_inspected(self):
+        self.row['observation_products']['profiles']['dual-rgb128'] = None
+        self.ready()
+
+    def test_runtime_preserves_manifest_precision_world_and_scene_requirements(self):
+        baseline = deepcopy(self.record)
+        for name, value in (('schema', 'old'), ('status', 'building'), ('real_bits', 16),
+                            ('num_envs', 2), ('seed', 1)):
+            self.record = deepcopy(baseline)
+            self.record[name] = value
+            with self.subTest(field=name), self.assertRaises(MissingCompiledProduct):
                 self.ready()
 
     def test_observer_preparation_cannot_be_entered_from_load_only_scope(self):

@@ -85,7 +85,6 @@ def test_optional_engine_has_separate_source_admission():
     guarded = _source_identity_files(include_excluded=True)
     optional = {name for name in guarded if '/host/backends/mjwarp/' in name or
                 '/host/backends/cuda_fp32/' in name or '/cuda/runtime/' in name or
-                name.endswith('/cpu_scene_input_source_pin.json') or
                 name.endswith('/mjwarp_source_pin.json') or name.endswith('/mjwarp_controller.cu')}
     assert optional
     assert optional.isdisjoint(native)

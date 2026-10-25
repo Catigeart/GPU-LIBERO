@@ -15,8 +15,13 @@ RENDER_FIELDS = ("xpos", "xmat", "geom_xpos", "geom_xmat", "site_xpos", "site_xm
                  "cam_xpos", "cam_xmat", "light_xpos", "light_xdir", "subtree_com")
 
 class _SnapshotData:
-    def __init__(self, snapshot, model):
-        self._snapshot = dict(snapshot); self._model = model
+    def __init__(self, snapshot, model, load_fields=None):
+        self._snapshot = {}; self._model = model
+        self._load_fields = load_fields
+        self._include(snapshot)
+
+    def _include(self, snapshot):
+        snapshot = dict(snapshot)
         if "contact" in snapshot:
             contacts=snapshot["contact"];ncon=int(np.asarray(snapshot["ncon"]).reshape(-1)[0])
             if isinstance(contacts,Mapping):
@@ -27,9 +32,14 @@ class _SnapshotData:
             else:
                 contacts=tuple(ContactPair(int(c.geom1),int(c.geom2)) for c in contacts)
             if ncon<0 or ncon>len(contacts):raise ValueError("contact count exceeds published contact capacity")
-            self._snapshot["contact"]=contacts
-            self._snapshot["ncon"]=ncon
+            snapshot["contact"]=contacts
+            snapshot["ncon"]=ncon
+        self._snapshot.update(snapshot)
+
     def __getattr__(self, name):
+        if name not in self._snapshot and name in GOAL_FIELDS and self._load_fields is not None:
+            names = ("contact", "ncon") if name in ("contact", "ncon") else (name,)
+            self._include(self._load_fields(names))
         if name not in self._snapshot:
             raise AttributeError(f"field {name} was not included in the boundary snapshot")
         return self._snapshot[name]
@@ -61,17 +71,23 @@ def boundary_predicates(env, facade, *, fields=GOAL_FIELDS):
     Visual site-alpha modifications are captured and published on exit, including
     when a predicate itself mutates object visual-affordance state.
     """
-    # A source-qualified batch plan can narrow this private read schema. Generic
-    # callers keep the original full schema; missing fields are never fabricated.
-    snapshot = facade.snapshot_fields(tuple(fields))
+    # The batch owns one synchronized sample event and caches incremental reads.
+    # Prefetch hints may underestimate a custom callback's read set. Complete
+    # those reads here while serialization is held, without rerunning callbacks.
+    fields = tuple(fields)
+    if "contact" in fields and "ncon" not in fields:
+        fields += ("ncon",)
+    snapshot = facade.snapshot_fields(fields)
     model = _VisualModel(facade.model)
     old_sim = env.sim
-    view = SimpleNamespace(model=model, data=_SnapshotData(snapshot, model))
+    view = SimpleNamespace(model=model, data=_SnapshotData(snapshot, model, facade.snapshot_fields))
     before_rgba = model.site_rgba.copy()
     env.sim = view
     try:
         yield view
     finally:
+        # A retained view must never lazily fetch from a later simulation event.
+        view.data._load_fields = None
         env.sim = old_sim
         if not np.array_equal(before_rgba, model.site_rgba):
             facade.update_visual_parameters({"site_rgba": model.site_rgba})

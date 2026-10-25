@@ -1,6 +1,6 @@
 """Fresh full-angle position owners; original mass/frame kernels unchanged."""
 import libero.gpu.precision as scalar
-import hashlib
+from ..core.static_readset import StaticReadsetSeal
 from types import SimpleNamespace
 import numpy as np
 import warp as wp
@@ -15,11 +15,6 @@ class GenericWidePositionWorkspace(GenericPositionWorkspace):
         from libero.gpu.reference.position.compos.kernel import ComposModel
         from libero.gpu.reference.position.crb.kernel import CRBModel
         from libero.gpu.reference.integration.euler_integrator.generic_workspace import GenericMassWorkspace
-        # Factor/compos/CRB are true source dependencies of this new candidate.
-        # Production acceptance must identify their complete source bundle,
-        # not only this allocation wrapper's SHA.
-        if not registry.candidates[candidate_ids['mass']].source_files:
-            raise ValueError('generic position needs complete original math source bundle')
         if type(capacity) is not int or capacity <= 0:
             raise ValueError('positive actual capacity required')
         fields, self.admission = native_fields(arrays, metadata, spec, self.MASS_FIELDS,
@@ -57,5 +52,5 @@ class GenericWidePositionWorkspace(GenericPositionWorkspace):
         self.factor.count.fill_(1)
         self._objects = (self.body, self.frames, self.compos, self.crb_model, self.factor)
         self._fields = fields
-        self._static_digests = {k: hashlib.sha256(a.tobytes()).hexdigest() for k, a in fields.items()}
+        self._static_fields_seal = StaticReadsetSeal(fields, spec.identity_key, None)
         self._frozen = self._tokens()

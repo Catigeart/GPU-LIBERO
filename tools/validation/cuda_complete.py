@@ -50,7 +50,7 @@ def signatures(candidate=False):
         paths+=list((GPU_ROOT/'cuda/runtime').glob('*.cu'))
         paths+=list((GPU_ROOT/'cuda/fp32').glob('*.cu'))+list((GPU_ROOT/'cuda/fp32').glob('*.cuh'))
         paths+=list((GPU_ROOT/'cmake').glob('FP32*.cmake'))
-        paths += [GPU_ROOT/n for n in ('host/backends/selection.py','data/cpu_scene_input_source_pin.json',
+        paths += [GPU_ROOT/n for n in ('host/backends/selection.py',
             'cmake/CudaRuntime.cmake','cmake/CudaBridges.cmake','cmake/FP32Fusion.cmake','CMakeLists.txt')]
     return {str(p.relative_to(REPO_ROOT)):digest(p) for p in sorted(set(paths))}
 

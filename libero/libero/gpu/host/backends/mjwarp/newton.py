@@ -21,8 +21,7 @@ from libero.gpu.host.runtime.newton.mjwarp_linesearch import LinesearchPlan, uns
 
 
 def hessian_product(root, *, fast_compile=False, component='hessian'):
-    """Locate a current independent CMake product; never builds on load."""
-    import subprocess
+    """Locate an offline product; the numerical binding validates its ABI."""
     from libero.gpu.host.build.compilation import MissingCompiledProduct
     from libero.gpu.host.build.project_paths import project_paths
     folder = project_paths(root).cmake / ('sm80-dev' if fast_compile else 'sm80-release')
@@ -30,9 +29,7 @@ def hessian_product(root, *, fast_compile=False, component='hessian'):
         raise ValueError('unknown Newton component')
     library = folder / ('mjwarp_' + component + '_fp32.so')
     target = 'flash_mjwarp_' + component + '_fp32'
-    result = subprocess.run(['ninja', '-C', str(folder), '-n', target],
-                            capture_output=True, text=True)
-    if not library.is_file() or result.returncode or 'ninja: no work to do.' not in result.stdout:
+    if not library.is_file():
         raise MissingCompiledProduct('Build ' + target + ' offline in ' + str(folder))
     return library
 

@@ -411,7 +411,7 @@ def _source_identity_files(*, include_excluded=False):
     excluded = {'host/build/aot.py', 'host/build/task_catalog.py', 'host/build/compilation.py',
                 'build.py', 'host/adapters/environment/batch_env.py',
                 'host/runtime/core/product_paths.py', 'cuda/control/mjwarp_controller.cu',
-                'data/mjwarp_source_pin.json', 'data/cpu_scene_input_source_pin.json', 'host/backends/selection.py',
+                'data/mjwarp_source_pin.json', 'host/backends/selection.py',
                 # Opt-in FP32 leaf owns its CUDA fingerprint/local replay
                 # receipt. It is not linked into either native scalar engine.
                 'cuda/newton/mjwarp_hessian.cu', 'cuda/newton/mjwarp_hessian.cuh',
@@ -537,15 +537,14 @@ def scene_for(root, bddl, seed):
 OBSERVATION_PRODUCT_VERSION = 1
 
 
-def observation_product_contract():
-    """Explicit default observer ABI, including excluded constructor sources."""
+def observation_product_contract(*, include_sources=True):
+    """Observer ABI; source provenance is collected only for offline builds."""
     producers = ('host/build/aot.py', 'host/adapters/environment/batch_env.py',
         'host/adapters/environment/goal_read_plan.py', 'host/bindings/observations.py',
         'host/adapters/observations/adapter.py', 'host/adapters/observations/runtime_binding.py',
         'host/adapters/observations/device.py', 'host/adapters/observations/scene_kinematics.py')
-    return dict(schema='libero-batch-observation-products-v1', version=OBSERVATION_PRODUCT_VERSION,
+    contract = dict(schema='libero-batch-observation-products-v1', version=OBSERVATION_PRODUCT_VERSION,
         dataflow_profile='fast', debug=False,
-        source_files={name: _sha(GPU_ROOT/name) for name in producers},
         host_features=['host_goal_field_plan_v1', 'dynamic_contact_fallback_v1'],
         profiles={
             'no-camera': dict(use_camera_obs=False, use_object_obs=True, camera_names=[], camera_heights=[],
@@ -553,6 +552,9 @@ def observation_product_contract():
             'dual-rgb128': dict(use_camera_obs=True, use_object_obs=True, camera_names=['agentview', 'robot0_eye_in_hand'],
                 camera_heights=[128, 128], camera_widths=[128, 128],
                 camera_depths=[False, False], camera_segmentations=[None, None])})
+    if include_sources:
+        contract['source_files'] = {name: _sha(GPU_ROOT/name) for name in producers}
+    return contract
 
 
 def observation_profile_for_options(options=None):
@@ -742,11 +744,27 @@ def _prepare_observation_profiles(env, root, *, contract=None):
         host_features=contract['host_features'], profiles=profiles)
 
 
-def _require_ready_header(record, *, num_envs, seed, fingerprint):
+def _require_ready_header(record, *, num_envs, seed):
     from .compilation import MissingCompiledProduct
-    if (record.get('status') != 'complete' or record['num_envs'] != num_envs or
-            record['seed'] != seed or record['source_identity'] != fingerprint):
-        raise MissingCompiledProduct('Unified LIBERO build is incomplete or stale; run python -m libero.gpu.build')
+    # Some generated native schedules embed nworld. The seed selects fixture
+    # placement in the prepared static model. Neither can be relaxed here.
+    if (not isinstance(record, dict) or record.get('schema') != 'libero-unified-aot-build-v1' or
+            record.get('status') != 'complete' or record.get('real_bits') != scalar.bits or
+            record.get('num_envs') != num_envs or record.get('seed') != seed or
+            not isinstance(record.get('tasks'), dict)):
+        raise MissingCompiledProduct('Unified LIBERO build has an incompatible format, precision, '
+            'world count or scene seed; run python -m libero.gpu.build')
+
+
+def _read_ready_record(root, *, num_envs, seed):
+    from .compilation import MissingCompiledProduct
+    path = root / 'AOT_BUILD.json'
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError as error:
+        raise MissingCompiledProduct('Unified LIBERO build is absent; run python -m libero.gpu.build') from error
+    _require_ready_header(record, num_envs=num_envs, seed=seed)
+    return record
 
 
 def _require_ready_task(record, root, key, *, observation_options, debug, contract):
@@ -754,40 +772,70 @@ def _require_ready_task(record, root, key, *, observation_options, debug, contra
     if key not in record['tasks']:
         raise MissingCompiledProduct('Task is absent from the unified LIBERO build: ' + key)
     row = record['tasks'][key]
-    if (row.get('key') != key or row.get('source_identity') != record['source_identity'] or
+    if (row.get('key') != key or row.get('real_bits') != record['real_bits'] or
             row.get('num_envs') != record['num_envs'] or row.get('seed') != record['seed']):
-        raise MissingCompiledProduct('Task qualification differs from the unified LIBERO build: ' + key)
-    observation_profile_for_options(observation_options)
-    if (debug or record.get('observation_contract') != contract or
-            not _observation_products_ready(record['tasks'][key].get('observation_products'), contract,
-                root=root, native_artifacts=record['tasks'][key].get('native_artifacts', {}),
-                warp_artifacts=record['tasks'][key].get('warp_artifacts', {}))):
-        raise MissingCompiledProduct('Observation products are absent or stale for the requested profile; '
-            'run python -m libero.gpu.build (default fast, debug=False only)')
-    for spelling, digest in record['tasks'][key].get('native_artifacts', {}).items():
-        if record['artifacts'].get(spelling) != digest:
-            raise MissingCompiledProduct('Task native product is absent from the unified artifact table: ' + spelling)
-    for spelling, digest in record['tasks'][key].get('warp_artifacts', {}).items():
-        if record['artifacts'].get(spelling) != digest:
-            raise MissingCompiledProduct('Task Warp product is absent from the unified artifact table: ' + spelling)
+        raise MissingCompiledProduct('Task configuration differs from the unified LIBERO build: ' + key)
+    profile = observation_profile_for_options(observation_options)
+    products = row.get('observation_products', {})
+    spec = contract['profiles'][profile]
+    # Sources and capture diagnostics describe how the offline build was made;
+    # the runtime only needs the requested observer layout and its products.
+    for actual in (record.get('observation_contract', {}), products.get('contract', {})):
+        if (debug or any(actual.get(name) != contract[name]
+                         for name in ('schema', 'version', 'dataflow_profile', 'debug')) or
+                actual.get('profiles', {}).get(profile) != spec):
+            raise MissingCompiledProduct('Observation ABI/profile is absent or incompatible: ' + profile)
+    profiles = products.get('profiles', {})
+    selected = profiles.get(profile, {})
+    installation = selected.get('installation', {})
+    if (selected.get('spec') != spec or selected.get('dataflow_profile') != 'fast' or
+            selected.get('debug') is not False or installation.get('installed') is not True or
+            installation.get('batch_observation_abi') != 'direct-v1'):
+        raise MissingCompiledProduct('Observation products are absent for the requested profile: ' + profile)
+    native = row.get('native_artifacts', {})
+    warp = row.get('warp_artifacts', {})
+    selected_native = selected.get('native_artifacts', {})
+    expected_names = {'direct_observations'} | ({'handwritten_scene'} if profile == 'dual-rgb128' else set())
+    manifests = installation.get('native_artifacts', [])
+    if {item.get('name') for item in manifests} != expected_names:
+        raise MissingCompiledProduct('Observation native products are incomplete: ' + profile)
+    for item in manifests:
+        try:
+            spelling = str(Path(item.get('library_file', item.get('library'))).relative_to(root))
+        except (TypeError, ValueError) as error:
+            raise MissingCompiledProduct('Observation library is outside the build: ' + profile) from error
+        if spelling not in selected_native or spelling not in native:
+            raise MissingCompiledProduct('Observation native product is not recorded: ' + spelling)
+    modules = selected.get('warp_modules', {})
+    if set(modules) != set(_observation_warp_modules(profile)):
+        raise MissingCompiledProduct('Observation Warp products are incomplete: ' + profile)
+    selected_warp = set()
+    for module in modules.values():
+        artifacts = module.get('artifacts', {})
+        if not artifacts or not set(artifacts) <= warp.keys():
+            raise MissingCompiledProduct('Observation Warp product is not recorded: ' + profile)
+        selected_warp.update(artifacts)
+    # The physics loaders check the actual libraries they load and their ABIs.
+    # Do not inspect unrelated profiles or duplicate their physics file checks.
+    for spelling in set(selected_native) | selected_warp:
+        path = Path(spelling)
+        if path.is_absolute() or '..' in path.parts or not (root / path).is_file():
+            raise MissingCompiledProduct('Required task product is missing: ' + spelling)
 
 
 def qualify_ready_session(root=None, *, num_envs, seed):
-    """Strictly qualify one immutable build for explicit in-process reuse.
-
-    No GPU initialization, compilation, manifest update or cache write occurs.
-    The caller must keep the source/build tree immutable until session.close().
-    Reuse checks file metadata, not a second content hash; this is not a guard
-    against an adversary who can forge the filesystem metadata. Scene contents
-    retain the independent strict checks in scene_for().
-    """
+    """Compatibility handle for one build selection; performs no source scan."""
     from .ready_session import ReadySession
     return ReadySession._qualify(project_root(root), num_envs=num_envs, seed=seed)
 
 
 def require_ready(root, bddl, *, num_envs, seed, observation_options=None, debug=False,
                   ready_session=None, return_record=True):
-    from .compilation import MissingCompiledProduct
+    """Select a prepared task/profile; actual physics loaders check their own libraries.
+
+    This reads manifest configuration and observer product paths, not a source
+    fingerprint or a full-library-bank readiness proof.
+    """
     root = project_root(root)
     if ready_session is not None:
         from .ready_session import ReadySession
@@ -795,17 +843,10 @@ def require_ready(root, bddl, *, num_envs, seed, observation_options=None, debug
             raise TypeError('ready_session must be created by qualify_ready_session')
         return ready_session.require_ready(root, bddl, num_envs=num_envs, seed=seed,
             observation_options=observation_options, debug=debug, return_record=return_record)
-    path = root / 'AOT_BUILD.json'
-    if not path.is_file():
-        raise MissingCompiledProduct('Unified LIBERO build is absent; run python -m libero.gpu.build')
-    record = json.loads(path.read_text())
-    _require_ready_header(record, num_envs=num_envs, seed=seed, fingerprint=source_identity())
+    record = _read_ready_record(root, num_envs=num_envs, seed=seed)
     key = Path(bddl).parent.name + '/' + Path(bddl).name
     _require_ready_task(record, root, key, observation_options=observation_options,
-        debug=debug, contract=observation_product_contract())
-    for spelling, digest in record['artifacts'].items():
-        if _sha(root / spelling) != digest:
-            raise ValueError('prebuilt artifact differs: ' + spelling)
+        debug=debug, contract=observation_product_contract(include_sources=False))
     return record if return_record else None
 
 
@@ -833,9 +874,14 @@ def offline_newton_source(root, nv, nm):
         raise MissingCompiledProduct(f'Newton instance NV={nv}, NM={nm} was not built')
     directory = Path(entry['directory'])
     for name, digest in entry['files'].items():
-        if _sha(directory/name) != digest:
+        if not (directory/name).is_file():
+            raise MissingCompiledProduct('Newton instance file is absent: '+str(directory/name))
+        if compilation_allowed() and _sha(directory/name) != digest:
             raise ValueError('offline Newton instance changed: '+str(directory/name))
-    return directory, json.loads((directory/'candidate.json').read_text())
+    manifest = json.loads((directory/'candidate.json').read_text())
+    if (manifest.get('nv'), manifest.get('nM')) != (nv, nm):
+        raise ValueError('Newton instance dimensions differ from requested model')
+    return directory, manifest
 
 
 def propagate_scene_aliases(root, tasks, *, fingerprint, num_envs, seed):

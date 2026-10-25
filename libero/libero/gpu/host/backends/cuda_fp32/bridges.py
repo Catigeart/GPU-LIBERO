@@ -1,6 +1,5 @@
 """Typed load-only controller/observable transport entry points."""
 import ctypes as ct
-import hashlib
 from pathlib import Path
 
 
@@ -21,25 +20,40 @@ class Scene(ct.Structure):
         'source','scene','periods','enabled','elapsed','sampled','generation','parents','parent_generation','captured','mask')]
 
 
+def _load_library(path):
+    """Bind and validate once, when an owned stream first needs this library."""
+    library=ct.CDLL(str(path))
+    p=ct.c_void_p;i=ct.c_int
+    signatures=dict(points=[i,i,i,p,p,p],gather=[ct.POINTER(Gather),p],scatter=[i,i,p,p,p,i,p],
+        masked=[i,i,p,p,p,p],bootstrap=[i]+[p]*10,count=[i,i]+[p]*7,
+        pack=[i,i,i,i,i,p,p,p],observe=[ct.POINTER(Observe),ct.c_float,i,p],
+        reset_observation=[i,i,i]+[p]*7,capture_scene=[ct.POINTER(Scene),ct.c_float,i,p],
+        scene_transform=[i,i,i,i]+[p]*9,collision_reset=[p,p,p])
+    for name,args in signatures.items():
+        f=getattr(library,'flash_bridge_'+name);f.argtypes=args;f.restype=i
+    for name,structure in (('gather',Gather),('observe',Observe),('scene',Scene)):
+        f=getattr(library,'flash_bridge_'+name+'_bytes');f.restype=ct.c_size_t
+        if f()!=ct.sizeof(structure):raise ValueError('Bridge ABI mismatch: '+name)
+    return library
+
+
 class Bridges:
+    """Stream-local calls into a shared, stateless C ABI.
+
+    Components using the same stream reuse its validated library bindings.
+    Products stay fixed for the lifetime of the process: ctypes/dlopen does not
+    provide same-path hot reload after an offline rebuild. There is no runtime
+    file polling or process-wide cache keeping closed environments alive.
+    """
     def __init__(self,path,stream):
-        from libero.gpu.host.paths import GPU_ROOT
-        self.path=Path(path);self.stream=stream;self.library=ct.CDLL(str(self.path))
-        self.library.flash_bridge_source_id.restype=ct.c_char_p
-        expected=hashlib.sha256(':'.join(hashlib.sha256((GPU_ROOT/k).read_bytes()).hexdigest() for k in
-            ('cuda/runtime/bridges.cu','cuda/runtime/bridge_types.cuh','cmake/CudaBridges.cmake')).encode()).hexdigest()
-        if self.library.flash_bridge_source_id().decode()!=expected:raise RuntimeError('Stale CUDA bridge product; rebuild offline')
-        p=ct.c_void_p;i=ct.c_int
-        signatures=dict(points=[i,i,i,p,p,p],gather=[ct.POINTER(Gather),p],scatter=[i,i,p,p,p,i,p],
-            masked=[i,i,p,p,p,p],bootstrap=[i]+[p]*10,count=[i,i]+[p]*7,
-            pack=[i,i,i,i,i,p,p,p],observe=[ct.POINTER(Observe),ct.c_float,i,p],
-            reset_observation=[i,i,i]+[p]*7,capture_scene=[ct.POINTER(Scene),ct.c_float,i,p],
-            scene_transform=[i,i,i,i]+[p]*9,collision_reset=[p,p,p])
-        for name,args in signatures.items():
-            f=getattr(self.library,'flash_bridge_'+name);f.argtypes=args;f.restype=i
-        for name,structure in (('gather',Gather),('observe',Observe),('scene',Scene)):
-            f=getattr(self.library,'flash_bridge_'+name+'_bytes');f.restype=ct.c_size_t
-            if f()!=ct.sizeof(structure):raise ValueError('Bridge ABI mismatch: '+name)
+        self.path=Path(path).resolve();self.stream=stream
+        libraries=getattr(stream,'_bridge_libraries',None)
+        if libraries is None:
+            libraries={};stream._bridge_libraries=libraries
+        if self.path not in libraries:
+            libraries[self.path]=_load_library(self.path)
+        self.library=libraries[self.path]
+
     def call(self,name,*args):
         code=getattr(self.library,'flash_bridge_'+name)(*args,self.stream.cuda_stream)
         if code:raise RuntimeError('CUDA bridge '+name+': error '+str(code))

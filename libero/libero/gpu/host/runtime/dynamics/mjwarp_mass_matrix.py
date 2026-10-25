@@ -71,10 +71,7 @@ class MassMatrix:
         if not self.path.is_file():
             raise MissingCompiledProduct('Build flash_mjwarp_mass_matrix_fp32 offline')
         self.library = ct.CDLL(str(self.path))
-        self.library.flash_mjwarp_mass_matrix_source_id.restype = ct.c_char_p
         self.library.flash_mjwarp_mass_matrix_arguments_bytes.restype = ct.c_size_t
-        if self.library.flash_mjwarp_mass_matrix_source_id().decode() != source_id():
-            raise MissingCompiledProduct('Mass matrix binary is stale; rebuild offline')
         if self.library.flash_mjwarp_mass_matrix_arguments_bytes() != ct.sizeof(MassMatrixInputs):
             raise ValueError('Mass matrix C/Python ABI differs')
         if not stream.device.is_cuda or self.library.flash_mjwarp_mass_matrix_arch() != stream.device.arch:

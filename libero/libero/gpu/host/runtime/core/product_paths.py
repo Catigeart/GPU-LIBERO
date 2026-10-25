@@ -44,16 +44,6 @@ def record_build(kind, identity, commands=()):
         project['events'].append(event)
 
 
-def record_module_binding(target, execution):
-    """Keep process-local CUDA addresses outside the shared compiler products."""
-    import json
-    directory = build_directory('module-binding') if _PROJECT.get() is not None else Path(target)
-    observation = directory / 'MODULE_IDENTITY_OBSERVATION.json'
-    with observation.open('x') as stream:
-        json.dump(execution, stream, sort_keys=True, indent=2)
-    return str(observation)
-
-
 def collision_build_root(root, module, gpu_root):
     """Different generated source paths retain distinct exact compiler argv."""
     root, module, gpu_root = Path(root), Path(module).resolve(), Path(gpu_root).resolve()
@@ -263,11 +253,11 @@ def current_build_lifetime():
 
 
 def private_product_root(directory):
-    """Keep signed-cache materializations out of the persistent compiler bank."""
-    from libero.gpu.host.build.product_cache import current_product_authority
+    """Keep instance-private materializations out of the persistent compiler bank."""
+    from libero.gpu.host.build.product_cache import current_product_cache
     directory = Path(directory).resolve()
     owner = current_build_lifetime()
-    if owner is None or current_product_authority() is None or directory.is_relative_to(owner.path):
+    if owner is None or current_product_cache() is None or directory.is_relative_to(owner.path):
         return directory
     return owner.path / 'native-products' / hashlib.sha256(str(directory).encode()).hexdigest()[:24]
 

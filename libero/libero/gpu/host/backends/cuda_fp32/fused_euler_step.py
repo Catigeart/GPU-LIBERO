@@ -42,8 +42,7 @@ class FusedEulerStep:
         reject_output_overlap(arrays,('matrix','factor','diagonal','solution','euler_derivative',
             'euler_qpos','euler_qvel','publication_time','publication_overflow','warmstart'))
         if not self.path.is_file():raise MissingCompiledProduct('Build flash_fp32_fused_euler_step offline')
-        self.library=lib=ct.CDLL(str(self.path));lib.flash_fp32_euler_step_source_id.restype=ct.c_char_p
-        if lib.flash_fp32_euler_step_source_id().decode()!=source_id():raise MissingCompiledProduct('Stale Euler step; rebuild offline')
+        self.library=lib=ct.CDLL(str(self.path))
         if lib.flash_fp32_euler_step_arch()!=self.stream.device.arch:raise ValueError('Euler step architecture differs')
         for name,kind in (('mass',MassFactorInputs),('tail',TailInputs)):
             size=getattr(lib,'flash_fp32_euler_step_'+name+'_bytes');size.restype=ct.c_size_t

@@ -4,9 +4,7 @@ Only diagnostic execution is requested here. Source admission and numerical
 qualification belong to the runtime owners; this factory grants neither.
 """
 import numpy as np
-import inspect
-import hashlib
-from pathlib import Path
+from libero.gpu.host.runtime.core.model_bytes import actual_decoder_record
 from collections.abc import Mapping
 from libero.gpu.host.adapters.environment.assembly import assemble_single_world_task
 from libero.gpu.host.adapters.environment.resident_runtime import ResidentPhysicsFacadeRuntime, fixed_root_descriptors, fixed_contact_reader
@@ -29,16 +27,6 @@ def default_integration_state(model):
 
 
 
-def actual_decoder_record(built):
-    """Pin the actual class producer's loaded source, never infer a path by name."""
-    pin=built.metadata['decoder_pin']
-    if type(built).__module__ != pin['module']:
-        raise ValueError('built model decoder module differs from captured producer')
-    source=Path(inspect.getfile(type(built))).resolve()
-    digest=hashlib.sha256(source.read_bytes()).hexdigest()
-    if digest != pin['source_sha256']:
-        raise ValueError('actual loaded model decoder source differs from captured SHA')
-    return {'path':str(source),'sha256':digest}
 
 def _native_intake_package(built):
     """Bind the actual native model and generate current S sources cold."""
@@ -52,7 +40,7 @@ def _native_intake_package(built):
     built._gpu_native_intake_binding = binding
     return binding.spec, binding.package
 
-def create(built):
+def create(built, *, physics_factory=None, assembler=None):
     """Callable runtime-factory entry, requiring actual owner modules/callbacks."""
     from libero.gpu.host.runtime.core.namespace import require_canonical_gpu_namespace
     require_canonical_gpu_namespace()
@@ -68,9 +56,11 @@ def create(built):
     built.metadata['decoder_record']=decoder_record
     state=default_integration_state(built.native_model)
     spec,package=_native_intake_package(built)
-    prepared=prepare_shape_physics(built,state=state,mode='diagnostic',with_controller=True,
+    physics_factory = prepare_shape_physics if physics_factory is None else physics_factory
+    assembler = assemble_prepared if assembler is None else assembler
+    prepared=physics_factory(built,state=state,mode='diagnostic',with_controller=True,
         model_spec=spec,constraint_package=package)
-    return assemble_prepared(built,prepared)
+    return assembler(built,prepared)
 
 
 def assemble_prepared(built,prepared,*,observation_continuation=None):
