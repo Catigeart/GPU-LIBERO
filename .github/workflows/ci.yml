@@ -14,7 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      MUJOCO_GL: disable
+      # robosuite 1.4.0 overrides "disable" with EGL. "glx" keeps the GLFW
+      # import path; host tests create no GL context and need no EGL driver.
+      MUJOCO_GL: glx
       CUDA_VISIBLE_DEVICES: ''
     steps:
       - uses: actions/checkout@v7

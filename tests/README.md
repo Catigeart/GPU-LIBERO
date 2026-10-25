@@ -78,7 +78,9 @@ unittest discovery. Individual optional suites retain their dependency requireme
 
 CI installs `tools/requirements-ci.txt`, including robosuite's original host
 interfaces, MuJoCo 2.3.7 for native model intake, and Warp host types. The workflow
-sets `MUJOCO_GL=disable` and hides CUDA devices; no renderer or GPU is required.
+sets `MUJOCO_GL=glx` and hides CUDA devices. robosuite 1.4.0 overrides `disable`
+with `egl`; `glx` instead selects its GLFW import path without loading EGL.
+These tests create no GL context and need no display server or GPU.
 
 These tests use temporary fixtures and mock or injected runtime components. They do not compile CUDA, execute GPU physics, render through a real OpenGL context, or benchmark performance. They do not establish full-application numerical qualification.
 
