@@ -58,9 +58,30 @@ separately records its targeted geometry and three-task correctness follow-up.
 
 ## Performance
 
-### Native GPU FP64: current and paired results
+### Current GPU FP64: public step() end-to-end
 
-The latest complete native GPU FP64 measurement is the **standalone current**
+The 2026-10-25 to 2026-10-26 run measured actual public `env.step(action)` wall time on an **NVIDIA A100 SXM4 40GB**, **N=2**, no cameras. Each of all **130 distinct tasks** ran five warmup controls followed by **20 continuous timed controls, once**, with 25 physical substeps per control. Values are **environment control steps per second summed over both worlds**.
+
+| Task suite | Tasks | Public step throughput | Total timed seconds |
+| --- | ---: | ---: | ---: |
+| LIBERO-Spatial | 10 | 20.59 | 19.426 |
+| LIBERO-Object | 10 | 35.35 | 11.315 |
+| LIBERO-Goal | 10 | 32.98 | 12.129 |
+| LIBERO-90 | 90 | 38.27 | 94.077 |
+| LIBERO-10 | 10 | 37.95 | 10.540 |
+| All distinct tasks | 130 | 35.26 | 147.487 |
+
+Throughput is total environment control steps divided by total timed seconds, never an arithmetic average of task rates. Timing includes action submission, OSC, physics, required stream synchronization, host observation packaging and task predicates. Construction, reset, graph preparation, warmup, policy inference, logging and diagnostics are outside the timed block. Actions are generated before timing.
+
+The run retains the existing FP64 baseline initial-state banks, seed 0 and fixed per-world action `[0.02, -0.015, 0.01, 0.005, -0.003, 0.002, 0.1]`. It explicitly selects the existing optimized native path with `staged=True`, `motion_passive=True`, `actuation_solve=True`, `motion_threads=512`, `force_threads=256`, `defer_post=True` and `fast_compile=True`: `ControllerAlignedSubstep` for NV39 and `PeeledForceSubstep` for the remaining catalogue shapes. Solver semantics and physics algorithms were not changed.
+
+All retained tasks completed **500 timed physical integrations per world**, with no runtime errors or runtime compiler commands. Other GPU processes were monitored throughout each worker and immediately before/after timing; attempts sampling another process were excluded. Median construction, reset and graph preparation times were **25.63 s**, **0.21 s** and **6.10 s**, separately recorded.
+
+[Per-task wall-clock data](media/benchmarks/fp64-public-step-tasks-20261025.csv) · [Suite summary](media/benchmarks/fp64-public-step-summary-20261025.csv) · [Protocol and provenance](media/benchmarks/fp64-public-step-provenance-20261025.json).
+
+### Historical GPU FP64: device-only and paired results
+
+The historical device-only native GPU FP64 measurement is the **standalone current**
 run on October 23–25, 2026. A separate paired run in October compared the
 frozen and current implementations within each task. Both used an NVIDIA A100
 SXM4 40GB, **N=2**, no cameras, five warmup controls and 20 continuing timed
@@ -109,63 +130,41 @@ and reused the same compiled kernels. Source identities are retained per task.
 [standalone per-task data](media/benchmarks/fp64-current-standalone-20261025.csv) ·
 [paired per-task data](media/benchmarks/fp64-paired-20261022.csv) ·
 [measurement provenance](media/benchmarks/fp64-native-provenance-20261025.json).
-This CUDA-event interval differs from the historical public-`step()` wall-clock
-GPU FP64 interval below, so the new values do not replace that historical
-column or establish a new CPU/GPU speedup measurement.
+This historical CUDA-event interval differs from the current public-`step()`
+wall-clock results above and in the four-backend summary below, so these device-only values do not replace the public-step column below
+or establish a new CPU/GPU speedup measurement.
 
-### Historical four-backend measurements
+### Four-backend recorded throughput
 
-Saved measurements on an **NVIDIA A100 SXM4 40GB**, **N=2**, **no cameras**:
-each task uses five warmup control steps followed by 20 continuously timed
-control steps, measured once. Values below are **environment control steps per
-second, summed over both worlds**. Higher values mean greater throughput.
+The GPU FP64 column below uses the new **2026-10-25 to 2026-10-26 public-step wall-clock run**. CPU FP64, MJWarp FP32 and independent GPU FP32 retain their existing measurements; they were **not retested**. All use A100 SXM4 40GB where applicable, N=2, no cameras, five warmup and 20 timed controls per task. Throughput is total environment control steps divided by total time.
 
-**The two campaigns use different timing scopes and GPU load. These are
-historical observations, not a controlled four-backend ranking.**
+**Dates, action protocols, timing scopes and GPU load differ. This is an absolute-throughput summary, not a controlled four-backend ranking or a same-workload speedup claim.**
 
-![Absolute recorded throughput for CPU FP64, GPU FP64, original MJWarp FP32 and independent GPU FP32, with different timing scopes explicitly marked](media/benchmarks/libero-suite-throughput.svg)
+![Absolute recorded throughput for four backends, with refreshed public-step GPU FP64 and retained historical measurements](media/benchmarks/libero-suite-throughput.svg)
 
 | Task suite | Tasks | CPU FP64 | GPU FP64 | MJWarp FP32 | GPU FP32 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| LIBERO-Spatial | 10 | 31.99 | 19.92 | 49.25 | 58.45 |
-| LIBERO-Object | 10 | 44.38 | 31.89 | 53.08 | 93.03 |
-| LIBERO-Goal | 10 | 44.02 | 29.65 | 39.40 | 83.90 |
-| LIBERO-90 | 90 | 46.75 | 35.20 | 58.90 | 83.04 |
-| LIBERO-10 | 10 | 46.94 | 34.21 | 56.29 | 78.24 |
-| All distinct tasks | 130 | 44.78 | 32.49 | 55.30 | 80.78 |
+| LIBERO-Spatial | 10 | 31.99 | 20.59 | 49.25 | 58.45 |
+| LIBERO-Object | 10 | 44.38 | 35.35 | 53.08 | 93.03 |
+| LIBERO-Goal | 10 | 44.02 | 32.98 | 39.40 | 83.90 |
+| LIBERO-90 | 90 | 46.75 | 38.27 | 58.90 | 83.04 |
+| LIBERO-10 | 10 | 46.94 | 37.95 | 56.29 | 78.24 |
+| All distinct tasks | 130 | 44.78 | 35.26 | 55.30 | 80.78 |
 
-| Paths | Date | Measured interval | GPU competition |
+Values are **environment control steps per second summed over both worlds**.
+
+| Backend | Date | Measured interval | Competition |
 | --- | --- | --- | --- |
-| CPU FP64 / GPU FP64 | 2026-10-19 | Public `step()` wall time, including control, physics, observations and host task predicates | Original campaign records no competing GPU samples |
-| Original MJWarp FP32 / independent GPU FP32 | 2026-10-21 | CUDA-event device control intervals, including action upload, physics, OSC and GPU observations; excludes host observation packaging and predicates | Other GPU work resident; per-task load samples retained |
+| CPU FP64 | 2026-10-19, retained | Public `step()` wall time; two CPU MuJoCo 2.3.7 subprocess workers on distinct physical cores, one BLAS thread each | Historical campaign conditions |
+| GPU FP64 | 2026-10-25 to 2026-10-26, refreshed | Complete public `step()` wall time, including host observations and task predicates; existing optimized native kernels | Only attempts without sampled other GPU processes retained |
+| MJWarp FP32 / independent GPU FP32 | 2026-10-21, retained | CUDA-event intervals including upload, physics, OSC and device observations; excludes host packaging and predicates | Shared GPU; per-task samples retained |
 
-CPU uses MuJoCo 2.3.7, two `SubprocVectorEnv` workers on distinct physical cores,
-and one BLAS thread per worker. GPU FP64 uses the native single-physical-substep
-fusion and outer control Graph. Original MJWarp means pinned upstream physics
-with the project's shared OSC/observation integration, without the migrated CUDA
-physics replacements. GPU FP32 is the independent Warp-free CUDA owner.
+Creation, reset, graph preparation, compilation and rendering are excluded. Each control contains 25 physical substeps; throughput is not multiplied by 25. LIBERO-100 is the union of LIBERO-90 and LIBERO-10, not another set of measurements. The old LIBERO-90 task 85 CPU/GPU time-event comparison flag remains explicitly historical in the CSV.
 
-Suite throughput is `sum(worlds * timed_control_steps) / sum(elapsed_seconds)`,
-not an arithmetic mean of per-task rates. Each control contains 25 physical
-substeps; the reported throughput is not multiplied by 25. Creation, reset,
-Graph preparation, compilation and rendering are excluded from both campaigns.
-Runtime compilation was disabled. The saved FP64 build used Release
-`-O3 -DNDEBUG` with `FLASH_FAST_COMPILE=ON`; detailed provenance is linked below.
+**FP32 timings predate the ND-05 GJK correction and subsequent world-local fusion.** These later changes did not repeat the full-suite timings. See [FP32 regional checks and timings](libero/libero/gpu/host/backends/cuda_fp32/README.md#supported-scope-and-validation). Original MJWarp denotes pinned upstream physics with the shared project OSC/observation integration; GPU FP32 denotes the independent Warp-free CUDA backend.
 
-All 130 recorded tasks are included. LIBERO-90 task 85 has a pre-existing FP64
-CPU/GPU reset/time-event difference, retained in the per-task CSV flag.
-LIBERO-100 is the union of LIBERO-90 and LIBERO-10, not another 100 measurements.
-**FP32 timing predates the ND-05 GJK correction.** Subsequent local geometry and
-three-task correctness checks did not repeat the full-suite timings. No new
-physics or performance run was performed to assemble this figure. The chart also
-predates the subsequent world-local FP32 fusion. That work uses
-[regional endpoint checks and local timings](libero/libero/gpu/host/backends/cuda_fp32/README.md#supported-scope-and-validation);
-it does not provide a new full-suite throughput result.
-
-[Per-task CSV](media/benchmarks/task-throughput.csv) ·
-[Aggregate CSV](media/benchmarks/suite-throughput.csv) ·
-[Measurement provenance and original input hashes](media/benchmarks/provenance.json).
-Regenerate the CSV aggregate and SVG with `python tools/plot_suite_throughput.py`.
+[Per-task CSV](media/benchmarks/task-throughput.csv) · [Aggregate CSV](media/benchmarks/suite-throughput.csv) · [Measurement provenance](media/benchmarks/provenance.json).
+Regenerate the aggregate and SVG with `python tools/plot_suite_throughput.py`.
 
 ## FP32 numerical corrections and scope
 

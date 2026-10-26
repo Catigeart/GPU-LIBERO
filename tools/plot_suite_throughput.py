@@ -56,8 +56,8 @@ def main():
     metadata = json.loads(args.provenance.read_text())
     if hashlib.sha256(args.data.read_bytes()).hexdigest() != metadata['published_task_csv_sha256']:
         raise ValueError('Published per-task data differs from its provenance')
-    if not metadata['unlike_timing_scopes'] or metadata['new_physics_executed']:
-        raise ValueError('This figure represents historical measurements with different timing scopes')
+    if not metadata['unlike_timing_scopes']:
+        raise ValueError('This figure requires explicit different-timing-scope provenance')
     args.aggregate.parent.mkdir(parents=True, exist_ok=True)
     with args.aggregate.open('w', newline='') as output:
         writer = csv.DictWriter(output, fieldnames=list(rows[0]), lineterminator='\n')
@@ -105,9 +105,9 @@ def main():
              fontsize=12.5, color='#536170')
     fig.legend(*ax.get_legend_handles_labels(), loc='upper left', bbox_to_anchor=(.027, .904),
                frameon=False, ncol=2, fontsize=10.5, columnspacing=2)
-    fig.text(.035, .815, 'Historical measurements · different timing scopes; not a controlled four-way ranking',
+    fig.text(.035, .815, metadata.get('figure_scope_note', 'Historical measurements · different timing scopes; not a controlled four-way ranking'),
              fontsize=11, weight='bold', color='#7C4922')
-    notes = (
+    notes = metadata.get('figure_notes') or (
         '5 warmup + 20 timed controls per task · one measurement · throughput = total work / total time',
         'FP64: 2026-10-19 public step wall time, including host observations and task predicates.',
         'FP32: 2026-10-21 device control time, excluding those host stages; measured on a shared GPU.',

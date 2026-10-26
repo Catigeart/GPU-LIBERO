@@ -1,5 +1,5 @@
 {
-  "schema": "flash-libero-four-backend-throughput-v1",
+  "schema": "flash-libero-four-backend-throughput-v2",
   "figure_command": "python tools/plot_suite_throughput.py",
   "gpu": "NVIDIA A100-SXM4-40GB",
   "worlds": 2,
@@ -12,7 +12,7 @@
   "unit": "environment control steps per second, summed across worlds",
   "aggregation": "sum(worlds * timed control steps) / sum(elapsed seconds); never arithmetic mean of task throughputs",
   "unlike_timing_scopes": true,
-  "new_physics_executed": false,
+  "new_physics_executed": true,
   "latest_numerical_revision_timed": false,
   "inputs": [
     {
@@ -22,6 +22,10 @@
     {
       "path": "results/warpfree_fp32_20261021/task-summary.csv",
       "sha256": "b82415a04f4b384652d035865570ea55bd3e8174a8fd6c312e2013f6545a00a7"
+    },
+    {
+      "path": "results/fp64_public_step_20261025/tasks.csv",
+      "sha256": "81ba09455af3524b7edbf8bbc97f1c8fb499513e03b37e8875bc2a7c7c0b2269"
     }
   ],
   "sources": {
@@ -35,14 +39,34 @@
       "competition": "CPU workers pinned; original GPU campaign reports zero competing GPU samples"
     },
     "gpu_fp64": {
-      "date": "2026-10-19",
-      "run": "optimization_campaign_20261019/final130",
+      "date": "2026-10-25 to 2026-10-26",
+      "run": "fp64_public_step_20261025",
       "arithmetic": "FP64",
-      "engine": "native CUDA single-substep fusion plus control Graph",
-      "timing": "public step() wall clock including host observation packaging and task predicates; stream synchronized",
-      "csv_field": "gpu_elapsed_s",
-      "build": "Release -O3 -DNDEBUG; FLASH_FAST_COMPILE=ON; major CUDA --Ofast-compile=min",
-      "competition": "original campaign reports zero competing GPU samples"
+      "source_commit": "3049f1ddd2d870e456cdcbd1584ecb3e7d8da1b1",
+      "engine": "native CUDA optimized physical substep kernels and control graph",
+      "timing": "20 continuous public env.step calls, perf_counter wall clock; action submission, OSC, physics, synchronization, host observations and task predicates included",
+      "csv_field": "gpu_fp64_elapsed_s",
+      "competition": "Only successful attempts with no sampled other GPU processes retained; process samples throughout worker and before/after timing",
+      "initial_states": "catalogue per-task initial_states.npy; reset(seed=0)",
+      "seed": 0,
+      "action": [
+        0.02,
+        -0.015,
+        0.01,
+        0.005,
+        -0.003,
+        0.002,
+        0.1
+      ],
+      "native_options": {
+        "fast_compile": true,
+        "staged": true,
+        "motion_passive": true,
+        "actuation_solve": true,
+        "motion_threads": 512,
+        "force_threads": 256,
+        "defer_post": true
+      }
     },
     "mjwarp_fp32": {
       "date": "2026-10-21",
@@ -79,9 +103,17 @@
     "task_id": 85,
     "included_in_recorded_aggregates": true,
     "task": "libero_90/STUDY_SCENE3_pick_up_the_white_mug_and_place_it_to_the_right_of_the_caddy.bddl",
-    "note": "Pre-existing FP64 CPU/GPU reset/time-event mismatch; per-task flag preserved. This chart includes all recorded measurements and makes no matched-event ranking claim."
+    "note": "Historical 2026-10-19 CPU/GPU reset/time-event comparison; preserved under historical_fp64_time_events_match_20261019. This does not qualify a new matched-event CPU/GPU comparison."
   },
-  "interpretation": "Historical observations from two campaigns with different timing scopes and GPU competition; not a controlled four-way ranking or same-workload speedup.",
+  "interpretation": "Current GPU FP64 public-step wall time with retained historical CPU/MJWarp/GPU FP32 data. Different dates, actions and timing scopes; not a controlled four-way speedup experiment.",
   "derived_suite": "LIBERO-100 is LIBERO-90 plus LIBERO-10, not another 100 distinct measurements",
-  "published_task_csv_sha256": "2732967bdcb9eab84e6b2900f43f87795e933771b27fa75d00098ad4da9d05f1"
+  "published_task_csv_sha256": "319a60dd400e4c53d0662bb73fc46787debe117eb7083d802c88ab45ed286a22",
+  "figure_scope_note": "GPU FP64 refreshed \u00b7 other backends retained \u00b7 different dates, inputs and timing scopes",
+  "figure_notes": [
+    "5 warmup + 20 timed controls per task \u00b7 N=2 \u00b7 throughput = total work / total elapsed time",
+    "GPU FP64: 2026-10-25 to 2026-10-26 public step wall time, including host observations and task predicates.",
+    "CPU FP64: retained 2026-10-19 public-step results; inputs are not a new matched CPU/GPU experiment.",
+    "MJWarp / GPU FP32: retained 2026-10-21 device intervals; host stages excluded, shared GPU.",
+    "FP32 records precede ND-05 and world-local fusion. No CPU or FP32 measurements were repeated."
+  ]
 }
