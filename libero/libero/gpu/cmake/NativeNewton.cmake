@@ -1,0 +1,38 @@
+# The ordinary FP64 forward uses the same checked-in model instances as the
+# fused path. Compile the maintained kernel, rather than requesting a Python
+# environment to record source for each dimension.
+if(NOT TARGET flash_cuda_options)
+  return()
+endif()
+set(native_newton_targets)
+foreach(nv IN LISTS velocities)
+  set(d ${dimensions_${nv}})
+  list(GET d 0 nq)
+  list(GET d 1 nm)
+  list(GET d 2 nj)
+  list(GET d 3 nu)
+  set(definitions FLASH_SUBSTEP_NV=${nv} FLASH_SUBSTEP_NQ=${nq}
+    FLASH_SUBSTEP_NM=${nm} FLASH_SUBSTEP_NJ=${nj} FLASH_SUBSTEP_NU=${nu})
+  set(vendor flash_native_newton_vendor_nv${nv})
+  flash_mathdx(${vendor} "${FLASH_GPU}/cuda/newton/native_vendor.cu" 64 ${definitions})
+  set(vendor_input "${FLASH_VENDOR_INPUT}")
+  set(vendor_target "${FLASH_VENDOR_TARGET}")
+  set(object flash_native_newton_kernel_nv${nv})
+  flash_object(${object} "${FLASH_GPU}/cuda/newton/native_instances.cu" 64)
+  target_compile_definitions(${object} PRIVATE ${definitions})
+  set(target flash_native_newton_nv${nv})
+  add_library(${target} SHARED EXCLUDE_FROM_ALL
+    $<TARGET_OBJECTS:${object}> ${vendor_input})
+  target_link_libraries(${target} PRIVATE flash_cuda_options)
+  add_dependencies(${target} ${vendor_target})
+  set_target_properties(${target} PROPERTIES PREFIX "" OUTPUT_NAME native_newton_nv${nv}
+    CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" JOB_POOL_LINK flash_cuda_link)
+  target_link_options(${target} PRIVATE "$<HOST_LINK:LINKER:--no-undefined>")
+  if(FLASH_GLOBAL_DEVICE_LTO)
+    target_link_options(${target} PRIVATE "$<DEVICE_LINK:-dlto>")
+    target_link_libraries(${target} PRIVATE "${FLASH_SOLVERDX}")
+  endif()
+  list(APPEND native_newton_targets ${target})
+endforeach()
+add_custom_target(flash_native_newton_all DEPENDS ${native_newton_targets})

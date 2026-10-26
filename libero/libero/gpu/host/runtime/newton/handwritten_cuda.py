@@ -1,9 +1,10 @@
-"""Direct-pointer handwritten Newton binding; offline builds live in host/build.
+"""Direct-pointer binding for the maintained CMake Newton model instances.
 
 Retained stage metadata supplies the call order and actual buffer bindings.
 No Warp ModuleBuilder, generated arithmetic, array descriptors or Warp C++
 headers are used. The old lowered core remains an independent reference.
-Runtime prepares the pointer layout and schedule, then loads an offline product.
+Runtime prepares the pointer layout, then loads an offline product. Explicit
+research schedules retain the legacy source/preparation path in host/build.
 """
 import libero.gpu.precision as scalar
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
@@ -530,84 +531,114 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                     counter_pointer,metric_pointer,self.phase_trace_capacity,metric_operands)
         Param=type('HandwrittenParameters',(ct.Structure,),{'_fields_':[(n,t) for n,t,_ in fields]})
         self.params=Param(*values)
-        declarations='\n'.join(f'{kind} {name};' for name,_,kind in fields)
-        views=[];loads=[];stores=[]
-        for e in arrays.values():
-            if not e['view_required']:continue
-            name,stride=e['name'],e['stride']
-            globalptr=f'p->{name}'+(f'+w*{stride}' if stride else '')
-            localptr=f'shared+{e["offset"]}' if e['shared'] else globalptr
-            views.append(f'{e["ctype"]}* {name}={localptr};')
-            if e['shared']:
-                if e['array'].ptr not in seeded:loads.append(f'libero_newton_io::copy_block(({globalptr}),{name},{stride});')
-                stores.append(f'libero_newton_io::copy_block({name},({globalptr}),{stride});')
-        header_dir=(GPU_ROOT / 'cuda/newton')
-        paths=[GPU_ROOT/'cuda/common/vector.cuh',GPU_ROOT/'cuda/common/warp.cuh',GPU_ROOT/'cuda/common/packed_mass_gather.cuh']+[header_dir/(name+'.cuh') for name in ('math','constraint','hessian','state','glue')]+external_headers
-        if use_dx:
-            if use_blas: paths.extend([(GPU_ROOT / 'cuda/newton/hessian_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/direction_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/line_search_warp.cuh'),(GPU_ROOT / 'cuda/newton/s07_blas_dx.cuh')])
-            paths.append((GPU_ROOT / 'cuda/newton/potrf_dx.cuh'))
-            if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands.cuh')
-        from libero.gpu.host.build.newton import LINESEARCH, HEADERS, obtain_product
-        native=LINESEARCH
-        factor_shared=[arrays.get((a.ptr,a.dtype),{}).get('shared',False) for a in (ws.H,ws.Hcone)]
-        source=f'#define LIBERO_NEWTON_SCALAR_IO {int(self.scalar_io)}\n#define NEWTON_BLOCK_THREADS {block_size}\n#define NV {nv}\n#define NM {nm}\n#define ROWS {ws.rows}\n#define DATAFLOW_FAST_PROFILE {int(diagnostic_profile=="fast")}\n#define DIRECTION_BASE_SHARED {int(factor_shared[0])}\n#define DIRECTION_CONE_SHARED {int(factor_shared[1])}\n'+native
-        if use_dx:
-            source=f'#define DX_SM {wp.get_device(ws.device).arch*10}\n#define DX_THREADS {block_size}\n#define DX_MATRIX_BYTES {dx_bytes}\n#define DX_HESSIAN_K {hessian_k}\n#define LIBERO_HESSIAN_BLAS {int(use_blas)}\n'+source
-            source=('#define LIBERO_CONE_HESSIAN_STRATEGY '+str({'rank':0,'batch':1,'auto':2}[effective_cone_strategy])+'\n'
-                '#define LIBERO_CONE_BATCH_THRESHOLD '+str(cone_threshold)+'\n'
-                '#define LIBERO_RANK_REBUILD_THRESHOLD '+str(rebuild_threshold)+'\n'
-                '#define LIBERO_NEWTON_ISLANDS '+str(int(newton_islands=='exact'))+'\n'+source)
-        source+='#define CF_S_KBIP_PLANES '+str(int(diagnostic_profile=='fast'))+'\n'
-        source+=HEADERS
-        source+='\nstruct Parameters {\n'+declarations+'\n};\n'
-        source+=f'static_assert(sizeof(Parameters)=={ct.sizeof(Param)},"pointer ABI");\n'
-        entry_decl=',const int* entry_upstream,const int* entry_enabled,const int* entry_publication,const int64_t* entry_plan,int entry_supplied' if adapter is not None else ''
-        source+='__global__ void handwritten_newton(const Parameters* p'+entry_decl+'){\nint w=blockIdx.y;\n'
-        if self.phase_profiling:
-            source+='libero_profile_init();\nlibero_profile_begin('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
-            loads=[phase_profile.wrap_stage('\n'.join(loads),'resident_load','prefix')] if loads else []
-            stores=[phase_profile.wrap_stage('\n'.join(stores),'resident_store','tail')] if stores else []
-            adapter_begin=[phase_profile.wrap_stage('\n'.join(adapter_begin),'entry_seed','prefix')] if adapter_begin else []
-            adapter_commit=[phase_profile.wrap_stage('\n'.join(adapter_commit),'public_commit','tail')] if adapter_commit else []
-        profile_external_code=[phase_profile.wrap_stage('\n'.join(external_code),'external_prefix','prefix')] if self.phase_profiling and external_code else external_code
-        profile_external_tail_code=[phase_profile.wrap_stage('\n'.join(external_tail_code),'external_tail','tail')] if self.phase_profiling and external_tail_code else external_tail_code
-        source+="""extern __shared__ __align__(32) real_t shared[];
-__shared__ int invariant_valid,changed_count;
-if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
-"""+head_source['shared']+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
-        if use_dx:
-            # Align the device-library matrix workspace independently of views.
-            shared_bytes=((shared_bytes+15)//16)*16
-            source+=f'real_t* dx_matrix=shared+{shared_bytes//scalar.itemsize};\n'
-            shared_bytes+=dx_bytes
-        if mass_guard:
-            source+='__shared__ int mass_plan_valid;\nif(threadIdx.x==0)mass_plan_valid=1;\n__syncthreads();\n'
-            condition='||'.join(a+'[i]!='+b+'[i]' for a,b in mass_guard)
-            source+='for(int i=threadIdx.x;i<NV;i+=blockDim.x)if('+condition+')atomicExch(&mass_plan_valid,0);\n__syncthreads();\n'
-        source+='\n'.join(calls['prefix'])+f'\nint iteration_slot=0;\nfor(;iteration_slot<{ws.maxiter};++iteration_slot){{\nif(!{active_name}[0])break;\n'
-        source+='\n'.join(calls['loop'])+f'\n}}\nif(iteration_slot<{ws.maxiter}){{\n'+inactive+'\n}\n'+'\n'.join(calls['tail']+adapter_commit+profile_external_tail_code)+'\n'+'\n'.join(stores)+'\n}\n'
-        if self.phase_profiling:
-            end=source.rfind('\n}\n')
-            if end<0:raise RuntimeError('profile kernel end missing')
-            finish='\nlibero_profile_end('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
-            finish+=f'libero_profile_store(p->{profile_pointer}+w*{len(phase_profile.PHASES)*2});'
-            if self.phase_trace_capacity:finish+='\n'+trace_store
-            source=source[:end]+finish+source[end:]
-        if adapter is None:
-            source+=f'extern "C" int launch_persistent(const void* p,int worlds,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p);return (int)cudaGetLastError();}}\n'
+        # The shipped fast FP64 schedule has one explicit CUDA instantiation
+        # per model family. Keep optional research schedules on their existing
+        # separately prepared products, without changing their semantics.
+        catalogue_entry = (scalar.bits == 64 and block_size == 128 and shared_state
+            and use_dx and use_blas and diagnostic_profile == 'fast'
+            and adapter is not None and external_prefix is None
+            and external_tail is not None and head_metadata is None
+            and not self.phase_profiling and newton_islands == 'off'
+            and effective_cone_strategy == 'auto' and cone_threshold == nv
+            and rebuild_threshold == nv//2 and ws.maxiter == 100
+            and ws.warmstart_enabled and ct.sizeof(Param) == 2040
+            and [stage['function'] for stage in external_tail.get('stages', ())]
+                == ['libero_tail::post_private'])
+        if catalogue_entry:
+            from .catalogue import load
+            from libero.gpu.host.runtime.core.product_paths import current_build_project
+            project = current_build_project()
+            if project is None:
+                raise ValueError('Native catalogue loading requires the owning build project')
+            shared_bytes = (shared_bytes+15)//16*16 + dx_bytes
+            product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
+                nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
+                maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
+                block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
+                combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,
+                dx_bytes=dx_bytes, hessian_k=hessian_k, newton_islands=newton_islands,
+                phase_profiling=self.phase_profiling)
+            with wp.ScopedDevice(ws.device):
+                product = load(product_config, build_root=project['root'], mathdx_root=mathdx_root)
         else:
-            source+='extern "C" int launch_persistent(const void*,int,void*){return (int)cudaErrorInvalidValue;}\n'
-            source+=f'extern "C" int launch_entry(const void* p,int worlds,const int* upstream,const int* enabled,const int* publication,const int64_t* plan,int supplied,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p,upstream,enabled,publication,plan,supplied);return (int)cudaGetLastError();}}\n'
-        product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
-            nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
-            maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
-            block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
-            combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,
-            dx_bytes=dx_bytes, hessian_k=hessian_k, newton_islands=newton_islands,
-            phase_profiling=self.phase_profiling)
-        with wp.ScopedDevice(ws.device):
-            product = obtain_product(template=source, headers=paths, config=product_config,
-                build_root=build_root, runtime_root=self.root, mathdx_root=mathdx_root)
+            declarations='\n'.join(f'{kind} {name};' for name,_,kind in fields)
+            views=[];loads=[];stores=[]
+            for e in arrays.values():
+                if not e['view_required']:continue
+                name,stride=e['name'],e['stride']
+                globalptr=f'p->{name}'+(f'+w*{stride}' if stride else '')
+                localptr=f'shared+{e["offset"]}' if e['shared'] else globalptr
+                views.append(f'{e["ctype"]}* {name}={localptr};')
+                if e['shared']:
+                    if e['array'].ptr not in seeded:loads.append(f'libero_newton_io::copy_block(({globalptr}),{name},{stride});')
+                    stores.append(f'libero_newton_io::copy_block({name},({globalptr}),{stride});')
+            header_dir=(GPU_ROOT / 'cuda/newton')
+            paths=[GPU_ROOT/'cuda/common/vector.cuh',GPU_ROOT/'cuda/common/warp.cuh',GPU_ROOT/'cuda/common/packed_mass_gather.cuh']+[header_dir/(name+'.cuh') for name in ('math','constraint','hessian','state','glue')]+external_headers
+            if use_dx:
+                if use_blas: paths.extend([(GPU_ROOT / 'cuda/newton/hessian_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/direction_blas_dx.cuh'),(GPU_ROOT / 'cuda/newton/line_search_warp.cuh'),(GPU_ROOT / 'cuda/newton/s07_blas_dx.cuh')])
+                paths.append((GPU_ROOT / 'cuda/newton/potrf_dx.cuh'))
+                if newton_islands=='exact':paths.append(GPU_ROOT/'cuda/newton/islands.cuh')
+            from libero.gpu.host.build.newton import LINESEARCH, HEADERS, obtain_product
+            native=LINESEARCH
+            factor_shared=[arrays.get((a.ptr,a.dtype),{}).get('shared',False) for a in (ws.H,ws.Hcone)]
+            source=f'#define LIBERO_NEWTON_SCALAR_IO {int(self.scalar_io)}\n#define NEWTON_BLOCK_THREADS {block_size}\n#define NV {nv}\n#define NM {nm}\n#define ROWS {ws.rows}\n#define DATAFLOW_FAST_PROFILE {int(diagnostic_profile=="fast")}\n#define DIRECTION_BASE_SHARED {int(factor_shared[0])}\n#define DIRECTION_CONE_SHARED {int(factor_shared[1])}\n'+native
+            if use_dx:
+                source=f'#define DX_SM {wp.get_device(ws.device).arch*10}\n#define DX_THREADS {block_size}\n#define DX_MATRIX_BYTES {dx_bytes}\n#define DX_HESSIAN_K {hessian_k}\n#define LIBERO_HESSIAN_BLAS {int(use_blas)}\n'+source
+                source=('#define LIBERO_CONE_HESSIAN_STRATEGY '+str({'rank':0,'batch':1,'auto':2}[effective_cone_strategy])+'\n'
+                    '#define LIBERO_CONE_BATCH_THRESHOLD '+str(cone_threshold)+'\n'
+                    '#define LIBERO_RANK_REBUILD_THRESHOLD '+str(rebuild_threshold)+'\n'
+                    '#define LIBERO_NEWTON_ISLANDS '+str(int(newton_islands=='exact'))+'\n'+source)
+            source+='#define CF_S_KBIP_PLANES '+str(int(diagnostic_profile=='fast'))+'\n'
+            source+=HEADERS
+            source+='\nstruct Parameters {\n'+declarations+'\n};\n'
+            source+=f'static_assert(sizeof(Parameters)=={ct.sizeof(Param)},"pointer ABI");\n'
+            entry_decl=',const int* entry_upstream,const int* entry_enabled,const int* entry_publication,const int64_t* entry_plan,int entry_supplied' if adapter is not None else ''
+            source+='__global__ void handwritten_newton(const Parameters* p'+entry_decl+'){\nint w=blockIdx.y;\n'
+            if self.phase_profiling:
+                source+='libero_profile_init();\nlibero_profile_begin('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
+                loads=[phase_profile.wrap_stage('\n'.join(loads),'resident_load','prefix')] if loads else []
+                stores=[phase_profile.wrap_stage('\n'.join(stores),'resident_store','tail')] if stores else []
+                adapter_begin=[phase_profile.wrap_stage('\n'.join(adapter_begin),'entry_seed','prefix')] if adapter_begin else []
+                adapter_commit=[phase_profile.wrap_stage('\n'.join(adapter_commit),'public_commit','tail')] if adapter_commit else []
+            profile_external_code=[phase_profile.wrap_stage('\n'.join(external_code),'external_prefix','prefix')] if self.phase_profiling and external_code else external_code
+            profile_external_tail_code=[phase_profile.wrap_stage('\n'.join(external_tail_code),'external_tail','tail')] if self.phase_profiling and external_tail_code else external_tail_code
+            source+="""extern __shared__ __align__(32) real_t shared[];
+    __shared__ int invariant_valid,changed_count;
+    if(threadIdx.x==0){invariant_valid=0;changed_count=0;}
+    """+head_source['shared']+'\n'.join(views)+'\n'+'\n'.join(profile_external_code+loads+adapter_begin)+'\n__syncthreads();\nS07Args ls={};\n'+'\n'.join(ls_fields)+'\n'
+            if use_dx:
+                # Align the device-library matrix workspace independently of views.
+                shared_bytes=((shared_bytes+15)//16)*16
+                source+=f'real_t* dx_matrix=shared+{shared_bytes//scalar.itemsize};\n'
+                shared_bytes+=dx_bytes
+            if mass_guard:
+                source+='__shared__ int mass_plan_valid;\nif(threadIdx.x==0)mass_plan_valid=1;\n__syncthreads();\n'
+                condition='||'.join(a+'[i]!='+b+'[i]' for a,b in mass_guard)
+                source+='for(int i=threadIdx.x;i<NV;i+=blockDim.x)if('+condition+')atomicExch(&mass_plan_valid,0);\n__syncthreads();\n'
+            source+='\n'.join(calls['prefix'])+f'\nint iteration_slot=0;\nfor(;iteration_slot<{ws.maxiter};++iteration_slot){{\nif(!{active_name}[0])break;\n'
+            source+='\n'.join(calls['loop'])+f'\n}}\nif(iteration_slot<{ws.maxiter}){{\n'+inactive+'\n}\n'+'\n'.join(calls['tail']+adapter_commit+profile_external_tail_code)+'\n'+'\n'.join(stores)+'\n}\n'
+            if self.phase_profiling:
+                end=source.rfind('\n}\n')
+                if end<0:raise RuntimeError('profile kernel end missing')
+                finish='\nlibero_profile_end('+str(phase_profile.PHASES.index('kernel_total'))+');\n'
+                finish+=f'libero_profile_store(p->{profile_pointer}+w*{len(phase_profile.PHASES)*2});'
+                if self.phase_trace_capacity:finish+='\n'+trace_store
+                source=source[:end]+finish+source[end:]
+            if adapter is None:
+                source+=f'extern "C" int launch_persistent(const void* p,int worlds,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p);return (int)cudaGetLastError();}}\n'
+            else:
+                source+='extern "C" int launch_persistent(const void*,int,void*){return (int)cudaErrorInvalidValue;}\n'
+                source+=f'extern "C" int launch_entry(const void* p,int worlds,const int* upstream,const int* enabled,const int* publication,const int64_t* plan,int supplied,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p,upstream,enabled,publication,plan,supplied);return (int)cudaGetLastError();}}\n'
+            product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
+                nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
+                maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
+                block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
+                combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,
+                dx_bytes=dx_bytes, hessian_k=hessian_k, newton_islands=newton_islands,
+                phase_profiling=self.phase_profiling)
+            with wp.ScopedDevice(ws.device):
+                product = obtain_product(template=source, headers=paths, config=product_config,
+                    build_root=build_root, runtime_root=self.root, mathdx_root=mathdx_root)
         self.library = self._resource_library = product['library']
         self._resource_info = product['resources']
         resource_usage = dict(reg=self._resource_info['registers_per_thread'],

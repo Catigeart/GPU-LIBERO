@@ -17,7 +17,7 @@ CPU_TESTS = ("test_installation_layout.py", "test_resource_paths.py", "test_prod
              "test_native_capsule_sources.py", "test_fp32_fusion_schedule.py", "test_gpu_staged_substep.py", "test_gpu_subtree_topology.py", "test_gpu_memory_budget.py", "test_gpu_batch_env.py",
              "test_deferred_native_build.py", "test_release_inputs.py",
              "test_validation_tools.py", "test_validation_runner.py", "test_validation_precision.py", "test_precision_policy.py",
-             "test_gpu_build_lifetime.py", "test_gpu_compatibility_build.py", "test_gpu_cache_hardening.py",
+             "test_gpu_build_lifetime.py", "test_gpu_batch_build.py", "test_gpu_compatibility_build.py", "test_gpu_cache_hardening.py",
              "test_gpu_substep_build.py", "test_cuda_fp32_bridges.py", "test_mjwarp_products.py",
              "test_gpu_goal_read_plan.py", "test_gpu_aot_build.py", "test_gpu_ready_session.py",
              "test_gpu_shape_assembly.py", "test_gpu_constructor_wiring.py", "test_gpu_continuation_transport.py", "test_gpu_startup.py",

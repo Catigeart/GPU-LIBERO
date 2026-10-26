@@ -80,7 +80,8 @@ with qualify_ready_session(build_root, num_envs=8, seed=0) as ready:
 ```
 
 This session API applies to the native products. Select FP64 before importing
-typed modules; the independent FP32 backend uses its own offline preparation.
+typed modules. Both batch backends use `python -m libero.gpu.build`, from their
+separate dependency environments, with explicit `--precision fp64` or `fp32`.
 The retained `qualify_ready_session` name now creates a lightweight compatibility
 handle for a build root, world count and seed. With or without this handle,
 construction reads the offline manifest and checks the requested task and
@@ -89,8 +90,10 @@ build bank. Prepared scene and product-specific ABI/source checks remain at
 their own loading boundaries. Full build hashes are used by offline preparation
 and reuse checks, not repeated by this readiness entry.
 
-World count remains part of the native build contract because some generated
-kernels specialize it; the seed identifies prepared scene data. A session
+World count remains part of the native preparation contract, including its
+world-count-dependent constraint selectors; the seed identifies prepared scene
+data. The generated Newton launch accepts world count at runtime and no longer
+duplicates identical code for different world counts. A session
 neither writes the manifest nor permits compilation. Closing it prevents further
 use; it does not own environments or libraries. `ready.info` describes this
 lightweight validation and `ready.record` returns a detached manifest copy.
@@ -606,8 +609,8 @@ changing CUDA before starting a new process. Build inputs are maintained project
 is no execution recorder, numbered-stage dispatch, pointer dispatch table, or
 runtime CUDA source generator in this fusion entry.
 
-The complete fused path currently targets SM80. The substep CMake build reads
-`data/libero_task_parameters.json` and compiles
+The complete fused path currently targets SM80. The substep CMake build reads the checked-in C++ declarations in
+`cuda/step/instantiations/libero_models.def` and compiles
 all 13 dimension families covering the 130 shipped tasks. `flash_substeps_all`
 is one offline build; the NV39 development target remains `flash_substep` and
 produces `substep.so`. Other dimensions use `flash_substep_nv21`, etc., producing
@@ -615,6 +618,28 @@ produces `substep.so`. Other dimensions use `flash_substep_nv21`, etc., producin
 model dimensions and verifies the library's exported dimensions before launch.
 World count is a runtime argument, not a template instance. Models with the
 same dimensions share numerical code while keeping their own model arrays.
+
+The common `python -m libero.gpu.build --precision fp64` entry invokes CMake
+once for the selected compiler profile. It neither constructs task environments
+nor captures graphs to discover compilation products. `flash_native_batch_all`
+includes all 13 fused and motion/force families, the adopted NV39 staged entry,
+and all 13 ordinary Newton instances. `flash_gpu_all` is the default project
+build and adds independent FP32 production components. Ordered and profiling
+comparison targets remain explicit.
+
+Ordinary fast FP64 Newton now lives in `cuda/newton/native_kernel.cuh`, with
+explicit definitions in `native_instances.cu`. `native_layout.cuh` derives
+per-model pitches and shared offsets at compile time; `native_parameters.cuh`
+retains the original pointer ABI. Numerical leaves remain in their maintained
+Newton/Post headers, with the same stage/barrier order. `native_vendor.cu` owns
+the independently compiled MathDx bridge. Runtime `host/runtime/newton/catalogue.py`
+loads the selected `native_newton_nv*.so` and checks its actual ABI/configuration.
+The shipped entry does not emit CUDA source or compile while creating worlds.
+Non-default research schedules retain their existing explicit preparation path.
+
+CPU scene inputs and the legacy native transport catalogue are separate from
+this CMake numerical build. Ordinary public calls do not inherit compilation
+permission from an earlier offline constructor.
 
 `substep_parameters.cuh` defines the dimension template. `substep_shape.cuh`
 selects an offline instance through compiler definitions. Shared vector pitches,

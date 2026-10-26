@@ -23,7 +23,7 @@ This source checkout includes a small regression suite for installation and publ
 | `test_collision_load_only.py` | Native collision loading without compiler/image/SDK fingerprint checks or identity files; ABI, CUDA query/launch errors, cache lifetime and legacy recipe selection remain. Uses simulated CUDA exports; no physics execution. |
 | `test_newton_load_only.py` | Offline Newton build versus runtime selection, loaded-kernel ABI/resource query, no runtime SDK/compiler/source checks, missing or mismatched products and failed publication. Uses simulated compiler/CUDA exports. |
 | `test_collision_model_binding.py` | Resident collision static/context checks without source scans or file leases; loaded export, parameter, buffer, stream and close contracts, plus descriptive decoder intake. Host-only fixtures. |
-| `test_fp32_load_only.py` | CUDA runtime/fused bindings without source certificates; portable scene data checks and read-only legacy scene reuse. |
+| `test_fp32_load_only.py` | CUDA runtime/fused bindings without source certificates; portable scene data, host camera/lifecycle option sharing, and read-only legacy scene reuse. |
 | `test_gpu_capability_registry.py` | In-memory domain/capacity/rejection checks without development files; explicit offline qualification still checks provenance. |
 | `test_gpu_environment_lifecycle.py` | Read-only scene/project loads, partial close retry, shared stateless code, and in-memory model/Newton intake. |
 | `test_gpu_substep_build.py` | Stable CMake build directories across single-substep source edits and load-only runtime boundaries. |
@@ -33,6 +33,7 @@ This source checkout includes a small regression suite for installation and publ
 | `test_gpu_shape_assembly.py`, `test_gpu_startup.py` | Explicit FP64 constructor selection, startup behavior, failure cleanup and retained compatibility entries. |
 | `test_gpu_controller_copy_plan.py` | Cold all-world copy packets, odd tails, private gate wiring and snapshot/field alias fallback. |
 | `test_gpu_aot_build.py` | Complete task/shape instance coverage; runtime template loading checks model/presence without file hashes, while offline indexing rejects stale sources; cache misses and Warp worker compilation guards. |
+| `test_gpu_batch_build.py` | Checked-in CUDA instances cover all 130 task shapes; CMake-only builds need no physics imports or environments; backend/profile routing, compiler failure propagation and scoped offline compilation permission. Host-only fixtures. |
 | `test_gpu_ready_session.py` | Task-local readiness and compatibility sessions without source or whole-bank hashing. |
 | `test_gpu_observer_graph_mutations.py`, `test_gpu_batch_direct_observations.py` | Public observable changes, callback fallback, cold Graph binding checks and explicit lazy rendering. |
 | `gpu_product_compatibility/test_camera_contract.py` | Camera keys, shapes, segmentation mapping, and observation clocks using an injected bridge. |

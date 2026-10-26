@@ -15,6 +15,56 @@ from libero.gpu.host.build.compilation import MissingCompiledProduct
 
 
 class LoadOnlyTests(unittest.TestCase):
+    def test_previous_exact_scene_key_loads_without_migration_or_scanning(self):
+        task = dict(key='suite/task', files={'scene.xml':'scene'})
+        options = dict(use_camera_obs=False, ignore_done=True)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(scene_cache, 'engine_identity', return_value={'python':'3.16.0'}):
+            root = Path(directory)
+            legacy = dict(scene_cache.binding('<mujoco/>', options, task),
+                          options=options, scene_parameters=None)
+            key = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
+            old = root/'mjwarp/models'/key
+            old.mkdir(parents=True)
+            (old/'model.mjb').write_bytes(b'prepared model')
+            (old/'receipt.json').write_text(json.dumps(dict(schema='modern-scene-v2', binding=legacy)))
+            with patch.object(Path, 'glob', side_effect=AssertionError('runtime directory scan')), \
+                    patch.object(scene_cache, 'offline_inputs', side_effect=AssertionError('offline validation')):
+                folder, model, _, _ = scene_cache.locate(root, '<mujoco/>', options, task, prepare=False)
+            self.assertEqual(model, old/'model.mjb')
+            self.assertFalse(folder.exists())
+
+    def test_verified_scene_reindex_shares_existing_model_storage(self):
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/'old.mjb'
+            source.write_bytes(b'complete immutable CPU model')
+            value = hashlib.sha256(source.read_bytes()).hexdigest()
+            built = NS(xml='<mujoco/>', native_model=object(), metadata=dict(model_sha256=value))
+            row = dict(model_sha256=value,
+                       processed_xml_sha256=hashlib.sha256(built.xml.encode()).hexdigest())
+            save = Mock(side_effect=AssertionError('must reuse the verified model'))
+            with patch.dict(sys.modules, {'mujoco': NS(mj_saveModel=save)}), \
+                    patch.object(scene_cache, 'offline_inputs', return_value={}):
+                scene_cache.finish(root/'new', built, row, {}, prepare=True,
+                                   xml=built.xml, compiled_model=source)
+            self.assertEqual(source.stat().st_ino, (root/'new/model.mjb').stat().st_ino)
+            save.assert_not_called()
+
+    def test_host_camera_and_episode_options_do_not_require_another_cpu_model(self):
+        task = dict(key='suite/task', files={'scene.xml': 'fixed-scene'})
+        with patch.object(scene_cache, 'engine_identity', return_value={'python': '3.16.0'}):
+            plain = scene_cache.binding('<mujoco/>', {}, task)
+            cameras = scene_cache.binding('<mujoco/>', dict(use_camera_obs=True,
+                has_offscreen_renderer=True, camera_heights=256,
+                camera_names=['agentview'], ignore_done=True, horizon=1000), task)
+            self.assertEqual(plain, cameras)
+            legacy = dict(plain, options=dict(use_camera_obs=False, ignore_done=True))
+            self.assertEqual(scene_cache._data_binding(legacy), plain)
+            self.assertNotEqual(plain, scene_cache.binding('<mujoco/>', dict(robots=['Other']), task))
+            self.assertNotEqual(plain, scene_cache.binding('<mujoco model="changed"/>', {}, task))
+
     def test_runtime_binds_exports_without_source_files(self):
         library = Mock()
         with patch.object(device.ct, 'CDLL', return_value=library), \

@@ -24,36 +24,50 @@ Use an isolated Python environment:
 
 ```sh
 python -m pip install '.[cuda-fp32]'
-python -m libero.gpu.host.backends.cuda_fp32.prepare \
-  --build-root /path/to/common-project --tasks all \
+python -m libero.gpu.build --precision fp32 \
+  --build-root /path/to/common-project \
   --mathdx-root /path/to/mathdx --jobs 2
 ```
 
-To create a common catalogue from scratch, invoke the following in the separate
-CPU MuJoCo 2.3.7 environment, with this checkout on `PYTHONPATH`. No Warp package
-is needed in that environment either:
+CPU scene preparation is separate from this CMake build. To create a new
+common catalogue, use the CPU-only command in the separate CPU MuJoCo 2.3.7
+environment (with the `cpu-catalog` extra installed):
 
 ```sh
-python -m pip install '.[cpu-catalog]'
 python -m libero.gpu.host.backends.cuda_fp32.catalog \
   --build-root /path/to/new-common-project --tasks all --seed 0
+```
+
+Then import its fixed scenes in the independent FP32 environment:
+
+```sh
+python -m libero.gpu.host.backends.cuda_fp32.prepare \
+  --build-root /path/to/common-project --tasks all --skip-build
 ```
 
 The common project contains the CPU scene catalogue
 `TASK_INSTANCES.json`, scene XML, fixed fixture parameters and initial states.
 Those are CPU model inputs, not serialized Warp arrays. The existing catalogue
 preparation uses CPU MuJoCo 2.3.7; run it in its separate CPU environment.
-The command above imports the inputs using CPU MuJoCo 3.16.0 and builds only
-the independent runtime/transport, shared handwritten CUDA targets and
-independently compiled FP32 fusion targets.
-It advances zero physics substeps. Existing compatible CMake products are reused.
-`--skip-build` prepares scenes only. After upgrading from the legacy scene cache,
+The scene command imports these inputs using CPU MuJoCo 3.16.0. CUDA compilation
+uses the fixed `flash_cuda_fp32_all` CMake target; it does not load scenes or
+construct GPU environments. The default compiler profile is `dev`;
+`--build-mode release` selects the other profile, and `--build-mode all`
+explicitly requests both. Existing compatible CMake products are reused.
+The older preparation command retains task selectors and `--release`, with
+`--skip-build` selecting only CPU scene preparation. After upgrading from the legacy scene cache,
 run this once for the task profiles you use; it validates and imports compatible
 old MJBs into the direct-load format without compiling CUDA. Ordinary environment
 construction never scans old cache directories or hashes asset/binary contents.
 Offline preparation validates those contents; runtime retains format, model
 layout and task association checks. Preparation and execution must be serialized
 on shared GPU machines. Runtime construction defaults to `allow_compile=False`.
+Camera observation choices, image dimensions and episode lifecycle options
+reuse the same fixed CPU model: they configure each fresh host shell, rather
+than selecting another MJB. Physics XML, fixed scene inputs and non-host model
+options remain part of model selection. Preparing all tasks therefore covers
+the ordinary no-camera and default camera observation configurations without
+creating separate compiled scene copies for each observation size.
 
 ```python
 from libero.libero.envs import GpuBatchEnv

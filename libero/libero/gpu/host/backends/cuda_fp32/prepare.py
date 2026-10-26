@@ -17,19 +17,11 @@ COMPONENTS = ('controller', 'hessian', 'direction', 'constraint', 'linesearch',
     'constraint_build', 'broadphase', 'plane', 'box', 'convex', 'queries', 'publication')
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--build-root', type=Path, required=True)
-    parser.add_argument('--tasks', nargs='+', default=['all'])
-    parser.add_argument('--skip-build', action='store_true')
-    parser.add_argument('--release', action='store_true')
-    parser.add_argument('--jobs', type=int, default=2)
-    parser.add_argument('--arch', type=int, default=80)
-    parser.add_argument('--mathdx-root', type=Path)
-    parser.add_argument('--output', type=Path)
-    args = parser.parse_args()
-    if args.jobs < 1:
-        parser.error('--jobs must be positive')
+def prepare_project(build_root, *, tasks=('all',), modes=('dev',), skip_build=False,
+                    jobs=2, arch=80, mathdx_root=None):
+    """Shared implementation for the unified entry and the legacy CLI."""
+    if jobs < 1:
+        raise ValueError('--jobs must be positive')
     from libero.gpu import precision
     precision.select('fp32')
     from libero.gpu.host.paths import REPO_ROOT, GPU_ROOT
@@ -38,11 +30,11 @@ def main():
     from .scene import build_scene
     from .model import prepare
     from .layout_specs import MODEL_ARRAYS
-    root = project_paths(args.build_root).base
-    tasks = json.loads((root / 'TASK_INSTANCES.json').read_text())['tasks']
-    selected = [t for t in tasks if any(s in ('all', t['suite'], t['suite']+':'+str(t['task_id'])) for s in args.tasks)]
+    root = project_paths(build_root).base
+    catalogue = json.loads((root / 'TASK_INSTANCES.json').read_text())['tasks']
+    selected = [t for t in catalogue if any(s in ('all', t['suite'], t['suite']+':'+str(t['task_id'])) for s in tasks)]
     if not selected:
-        parser.error('No matching catalogue tasks')
+        raise ValueError('No matching catalogue tasks')
     rows = []
     for task in selected:
         built, bank, _, identity = build_scene(root,
@@ -56,26 +48,48 @@ def main():
         print(json.dumps(dict(phase='cpu-scene', task=task['key'], done=len(rows), total=len(selected))), flush=True)
         del built, bank, prepared
         gc.collect()
-    folder = root / 'cmake-control' / ('sm80-release' if args.release else 'sm80-dev')
-    if not args.skip_build:
+    folders = []
+    for mode in modes:
+        folder = root / 'cmake-control' / f'sm{arch}-{mode}'
+        folders.append(str(folder))
+        if skip_build:
+            continue
         source = REPO_ROOT if (REPO_ROOT/'CMakeLists.txt').is_file() else GPU_ROOT
         configure = ['cmake', '-S', str(source), '-B', str(folder), '-G', 'Ninja',
-            '-DCMAKE_BUILD_TYPE=Release', '-DFLASH_CUDA_ARCH='+str(args.arch),
-            '-DFLASH_FAST_COMPILE='+('OFF' if args.release else 'ON')]
-        if args.mathdx_root:
-            configure.append('-DFLASH_MATHDX_ROOT='+str(args.mathdx_root))
+            '-DCMAKE_BUILD_TYPE=Release', '-DFLASH_CUDA_ARCH='+str(arch),
+            '-DFLASH_FAST_COMPILE='+('OFF' if mode == 'release' else 'ON')]
+        if mathdx_root:
+            configure.append('-DFLASH_MATHDX_ROOT='+str(mathdx_root))
         subprocess.run(configure, check=True)
         targets = ['flash_cuda_runtime', 'flash_cuda_bridges_fp32', 'flash_fp32_fused_tail',
                    'flash_fp32_fused_observations', 'flash_fp32_fused_position', 'flash_fp32_fused_kinematic_mass',
                    'flash_fp32_fused_motion', 'flash_fp32_fused_motion_passive', 'flash_fp32_fused_control_prepare',
                    'flash_fp32_fused_controller', 'flash_fp32_fused_actuation_solve', 'flash_fp32_fused_euler_step', 'flash_fp32_fused_control_drive'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
-        subprocess.run(['cmake', '--build', str(folder), '--parallel', str(args.jobs), '--target', *targets], check=True)
-    report = dict(tasks=rows, cuda_directory=str(folder), warp_dependency=False,
-                  physics_integrations=0, scene_backend='CPU MuJoCo 3.16.0')
+        subprocess.run(['cmake', '--build', str(folder), '--parallel', str(jobs), '--target', *targets], check=True)
+    return dict(tasks=rows, cuda_directory=folders[0], cuda_directories=folders,
+                warp_dependency=False, physics_integrations=0, scene_backend='CPU MuJoCo 3.16.0')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--build-root', type=Path, required=True)
+    parser.add_argument('--tasks', nargs='+', default=['all'])
+    parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--release', action='store_true')
+    parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--arch', type=int, default=80)
+    parser.add_argument('--mathdx-root', type=Path)
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error('--jobs must be positive')
+    report = prepare_project(args.build_root, tasks=args.tasks,
+        modes=('release',) if args.release else ('dev',), skip_build=args.skip_build,
+        jobs=args.jobs, arch=args.arch, mathdx_root=args.mathdx_root)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2)+'\n')
-    print(json.dumps(dict(prepared=len(rows), physics_integrations=0, warp_dependency=False)), flush=True)
+    print(json.dumps(dict(prepared=len(report['tasks']), physics_integrations=0, warp_dependency=False)), flush=True)
 
 
 if __name__ == '__main__':

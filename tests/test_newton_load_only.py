@@ -69,6 +69,40 @@ class NativeProductTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'shared memory exceeds'): self.load()
 
 
+class CatalogueProductTests(unittest.TestCase):
+    def test_declared_instance_loads_without_source_sdk_or_compiler_access(self):
+        from libero.gpu.host.runtime.newton import catalogue
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/'cmake-control/sm80-dev/native_newton_nv21.so'
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'prebuilt CUDA')
+            config = dict(nv=21,nM=86,rows=30032,contacts=5000,maxiter=100,
+                block_threads=128,precision_bits=64,architecture=80,warmstart=True,
+                use_dx=True,use_blas=True,phase_profiling=False,
+                parameter_bytes=2040,shared_bytes=19232)
+            values = (21,86,30032,5000,100,128,64,80,1,1,1,0)
+            lib = NS(native_newton_configuration=Mock(side_effect=lambda index:values[index]))
+            with patch.dict(os.environ, {'LIBERO_GPU_BUILD_MODE':'dev'}), \
+                    patch.object(catalogue,'load_product',return_value=(lib,{})) as load, \
+                    patch.object(Path,'read_text',side_effect=AssertionError('source/SDK read')):
+                result = catalogue.load(config,build_root=root,mathdx_root='/absent/sdk')
+                self.assertIs(result['library'],lib)
+                self.assertFalse(result['metadata']['source_generation'])
+                self.assertEqual(load.call_args.args[0],path)
+                with self.assertRaisesRegex(ValueError,'configuration differs'):
+                    catalogue.load(dict(config,maxiter=50),build_root=root,mathdx_root='/absent/sdk')
+
+    def test_missing_instance_requires_offline_build(self):
+        from libero.gpu.host.runtime.newton import catalogue
+        with TemporaryDirectory() as directory, \
+                patch.dict(os.environ,{'LIBERO_GPU_BUILD_MODE':'dev'}), \
+                patch.object(catalogue,'load_product') as load:
+            with self.assertRaisesRegex(MissingCompiledProduct,'libero.gpu.build'):
+                catalogue.load(dict(nv=21,architecture=80),build_root=directory,mathdx_root=None)
+            load.assert_not_called()
+
+
 class ProductSelectionTests(unittest.TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
@@ -122,7 +156,7 @@ class ProductSelectionTests(unittest.TestCase):
     def test_dimensions_layout_precision_and_algorithm_choose_distinct_products(self):
         self.prepare()
         variants = [dict(self.args, template='different layout')]
-        for key, value in dict(precision_bits=32, architecture=90, rows=256, nworld=8,
+        for key, value in dict(precision_bits=32, architecture=90, rows=256,
                                maxiter=50, warmstart=False, combined_entry=False, block_threads=64,
                                newton_islands='exact', phase_profiling=True).items():
             variants.append(dict(self.args, config=dict(self.config, **{key: value})))
@@ -130,6 +164,39 @@ class ProductSelectionTests(unittest.TestCase):
             for args in variants:
                 with self.subTest(args=args['config']), self.assertRaises(MissingCompiledProduct):
                     build.obtain_product(**args)
+        self.assertEqual(len(self.compile_calls), 1)
+
+    def test_world_count_reuses_the_same_code_but_source_schedule_still_matters(self):
+        self.prepare()
+        with compilation_scope(False):
+            for worlds in (1, 8, 4096):
+                result = build.obtain_product(**dict(self.args,
+                    config=dict(self.config, nworld=worlds)))
+                self.assertEqual(result['metadata']['compile_commands_executed'], [])
+            with self.assertRaises(MissingCompiledProduct):
+                build.obtain_product(**dict(self.args, template='different world-dependent code'))
+        self.assertEqual(len(self.compile_calls), 1)
+
+    def test_previous_world_count_product_remains_load_only_compatible(self):
+        from libero.gpu.host.build.product_cache import product_cache_scope
+        product = self.prepare()
+        folder = Path(product['metadata']['product_build']['cache']['directory'])
+        receipt = json.loads((folder/'receipt.json').read_text())
+        identity = receipt['identity']['build']
+        identity['config']['nworld'] = 2
+        artifacts = {name:(folder/name).read_bytes() for name in ('newton.so','product.json')}
+        description = json.loads(artifacts['product.json'])
+        description['selection']['config']['nworld'] = 2
+        artifacts['product.json'] = json.dumps(description).encode()
+        with compilation_scope(True), product_cache_scope(self.args['build_root']/'products') as cache:
+            cache.obtain_artifacts(identity, ('launch_persistent','newton_kernel_info','launch_entry'),
+                names=('newton.so','product.json'), build=lambda:artifacts,
+                validate=lambda:None, exports=lambda artifacts:None)
+        (folder/'receipt.json').unlink()
+        with compilation_scope(False), patch.object(build, '_prepare_build',
+                side_effect=AssertionError('runtime compilation preparation')):
+            result = build.obtain_product(**self.args)
+        self.assertEqual(result['metadata']['compile_commands_executed'], [])
         self.assertEqual(len(self.compile_calls), 1)
 
     def test_offline_input_change_rebuilds_same_runtime_selection(self):

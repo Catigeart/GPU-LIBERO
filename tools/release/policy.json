@@ -1,7 +1,7 @@
 {
   "roots": ["libero", "scripts", "benchmark_scripts", "templates", "tests", "licenses", "tools", "media", ".github"],
   "root_files": ["setup.py", "pyproject.toml", "MANIFEST.in", "CMakeLists.txt", "README.md", "CONTRIBUTING.md", "AGENTS.md", "LICENSE", "requirements.txt", "requirements-mjwarp.txt", "requirements-cuda-fp32.txt", ".gitignore", ".gitattributes"],
-  "source_extensions": [".py", ".cu", ".cuh", ".cmake", ".h", ".hpp", ".c", ".cpp", ".xml", ".bddl", ".yaml", ".yml", ".json", ".csv", ".svg", ".txt", ".md", ".ps1", ".sh", ".in", ".toml"],
+  "source_extensions": [".py", ".cu", ".cuh", ".def", ".cmake", ".h", ".hpp", ".c", ".cpp", ".xml", ".bddl", ".yaml", ".yml", ".json", ".csv", ".svg", ".txt", ".md", ".ps1", ".sh", ".in", ".toml"],
   "excluded_directories": [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules", "evidence", "qa", "owners", "doc", "docs"],
   "excluded_filenames": ["RESULT.json", "SOURCE_MANIFEST.json", "EVIDENCE_INDEX.json", "SOURCE_CANDIDATE.json", "OPTIMIZATION_SUMMARY.md", "ADOPTION.patch"],
   "excluded_paths": ["libero/libero/gpu/host/runtime/dynamics/generic_atomic_provenance.json", "libero/libero/gpu/host/runtime/dynamics/generic_atomic_postfix_provenance_r01.json"]

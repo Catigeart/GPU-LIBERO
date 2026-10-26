@@ -14,7 +14,8 @@ function(flash_object name source precision_bits)
   add_library(${name} OBJECT "${source}")
   target_link_libraries(${name} PRIVATE flash_cuda_options${precision_suffix})
   set_target_properties(${name} PROPERTIES CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" UNITY_BUILD OFF JOB_POOL_COMPILE flash_cuda_compile)
+    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" UNITY_BUILD OFF JOB_POOL_COMPILE flash_cuda_compile
+    EXCLUDE_FROM_ALL TRUE)
   target_include_directories(${name} PRIVATE "${FLASH_MATHDX_ROOT}/include"
     "${FLASH_MATHDX_ROOT}/external/cutlass/include")
 endfunction()
@@ -130,7 +131,7 @@ function(flash_variant nv nq nm nj nu precision_bits osc_input osc_target)
     set(osc flash_osc_solver${precision_suffix})
     set(pipeline flash_controller_pipeline${precision_suffix})
     set(profile_definitions)
-    set(excluded)
+    set(excluded EXCLUDE_FROM_ALL)
     set(atomic_input)
     if(FLASH_NEWTON_ATOMIC_REDUCTIONS AND NOT mode MATCHES "ordered")
       set(atomic_input $<TARGET_OBJECTS:flash_newton_atomic${precision_suffix}>

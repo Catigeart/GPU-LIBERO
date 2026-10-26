@@ -83,7 +83,10 @@ def construction_scope(function):
 def environment_scope(function):
     @wraps(function)
     def wrapped(self, *args, **kwargs):
-        with compilation_scope(getattr(self, 'allow_compile', True)) as scope:
+        # Constructor permission is not permission for future step/reset calls.
+        # Only a surrounding explicit offline scope may compile lazy products.
+        scope = current_scope()
+        with compilation_scope(False) if scope is None else nullcontext(scope) as scope:
             try:
                 return function(self, *args, **kwargs)
             finally:

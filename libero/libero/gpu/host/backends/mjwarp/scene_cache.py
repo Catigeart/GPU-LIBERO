@@ -2,9 +2,23 @@
 import hashlib
 import json
 import os
+import errno
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from libero.gpu.host.build.compilation import MissingCompiledProduct
+
+# The supplied scene XML and fixed fixture inputs define the CPU MJB. These
+# robosuite options configure host observations/rendering or episode lifecycle;
+# build_task_model still applies them to each fresh domain shell, not the MJB.
+_HOST_OPTIONS = frozenset(('use_camera_obs', 'use_object_obs', 'camera_names',
+    'camera_heights', 'camera_widths', 'camera_depths', 'camera_segmentations',
+    'has_renderer', 'has_offscreen_renderer', 'render_camera',
+    'render_collision_mesh', 'render_visual_mesh', 'renderer', 'renderer_config',
+    'hard_reset', 'ignore_done', 'horizon', 'reward_scale', 'reward_shaping'))
+
+
+def _model_options(options):
+    return {key: value for key, value in options.items() if key not in _HOST_OPTIONS}
 
 
 def digest(path):
@@ -19,16 +33,20 @@ def engine_identity():
 def binding(xml, options, task):
     # Hash the already-loaded XML/options, never asset or library files here.
     return dict(engine=engine_identity(), task=task['key'], scene=task['files']['scene.xml'],
-                imported_xml_sha256=hashlib.sha256(xml.encode()).hexdigest(), options=options)
+                imported_xml_sha256=hashlib.sha256(xml.encode()).hexdigest(), options=_model_options(options))
 
 
-def _data_binding(record):
+def _data_binding(record, *, normalize_options=True):
     record = dict(record)
     record.pop('sources', None)
     record.pop('assets', None)
     engine = dict(record['engine'])
     engine.pop('library_sha256', None)
     record['engine'] = engine
+    # Existing prepared receipts can be read directly when only these host
+    # choices differ. Numerical XML, engine and fixed scene inputs still match.
+    if normalize_options and 'options' in record:
+        record['options'] = _model_options(record['options'])
     parameters = record.get('scene_parameters')
     if parameters is not None:
         parameters = dict(parameters)
@@ -72,6 +90,16 @@ def locate(root, xml, options, task, *, prepare, scene_parameters=None):
             _validate_offline(model, row, inputs)
         return folder, model, row, record
     if not prepare:
+        # An upgrade must not force an all-scene migration before training.
+        # Probe the exact previous key, without scanning or publishing files.
+        legacy = _data_binding(dict(binding(xml, options, task), options=options,
+                                    scene_parameters=scene_parameters), normalize_options=False)
+        key = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
+        old = Path(root)/'mjwarp/models'/key
+        if old != folder and (old/'receipt.json').is_file() and (old/'model.mjb').is_file():
+            row = json.loads((old/'receipt.json').read_text())
+            if row.get('schema') == 'modern-scene-v2' and _data_binding(row['binding']) == record:
+                return folder, old/'model.mjb', row, record
         raise MissingCompiledProduct('Prepare the modern scene offline (including legacy-cache migration); '
                                      'CPU2.3.7 MJB is incompatible: ' + str(folder))
     # Legacy discovery is an offline migration only; never scan during training.
@@ -88,7 +116,7 @@ def locate(root, xml, options, task, *, prepare, scene_parameters=None):
     return folder, None, None, record
 
 
-def finish(folder, built, row, record, *, prepare=False, xml=None):
+def finish(folder, built, row, record, *, prepare=False, xml=None, compiled_model=None):
     if not prepare:
         if row is None:
             raise MissingCompiledProduct('Runtime scene publication is disabled; prepare offline')
@@ -105,7 +133,18 @@ def finish(folder, built, row, record, *, prepare=False, xml=None):
     tmp = folder / ('model-' + str(os.getpid()) + '.tmp.mjb')
     tmp_receipt = folder / ('receipt-' + str(os.getpid()) + '.tmp.json')
     try:
-        mujoco.mj_saveModel(built.native_model, str(tmp), None)
+        linked = False
+        if row is not None and compiled_model is not None:
+            # A verified legacy MJB already has exactly these model bytes.
+            # Re-index its immutable inode instead of duplicating mesh/textures.
+            try:
+                os.link(compiled_model, tmp)
+                linked = True
+            except OSError as error:
+                if error.errno not in (errno.EXDEV, errno.EPERM, errno.EACCES):
+                    raise
+        if not linked:
+            mujoco.mj_saveModel(built.native_model, str(tmp), None)
         value = digest(tmp)
         if value != built.metadata['model_sha256']:
             raise RuntimeError('Modern scene serialization differs from prepared metadata')

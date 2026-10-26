@@ -116,7 +116,8 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
         cache_folder,compiled,receipt,cache_binding = scene
         built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,
             static_model_setup=lambda shell,native:apply_scene_inputs(shell,native,scene_parameters),**options)
-        finish(cache_folder,built,receipt,cache_binding,prepare=prepare,xml=xml)
+        finish(cache_folder,built,receipt,cache_binding,prepare=prepare,xml=xml,
+               compiled_model=compiled)
     host = built.native_model
     for name in ('nq', 'nv', 'nu', 'nbody', 'njnt', 'ngeom', 'nsite'):
         if int(getattr(host, name)) != task['dimensions'][name]:

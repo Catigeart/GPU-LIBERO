@@ -13,7 +13,7 @@ import subprocess
 import uuid
 
 from libero.gpu.host.paths import GPU_ROOT
-from libero.gpu.host.build.compilation import compilation_allowed, require_compilation
+from libero.gpu.host.build.compilation import compilation_allowed, require_compilation, MissingCompiledProduct
 from libero.gpu.host.build.product_cache import current_product_cache, product_cache_scope
 from libero.gpu.host.runtime.core.product_paths import nvcc_path, record_build
 
@@ -170,6 +170,11 @@ def obtain_product(*, template, headers, config, build_root, runtime_root, mathd
 def _obtain_product(*, template, headers, config, build_root, runtime_root, mathdx_root=None):
     """Select by layout/schedule/options; prepare inputs only in offline mode."""
     from libero.gpu.host.runtime.newton.native_product import load_product
+    # The launch accepts `worlds`; every pointer pitch is per world. The source
+    # schedule below still distinguishes any actual world-dependent code.
+    legacy_config = dict(config)
+    config = dict(config)
+    config.pop('nworld', None)
     headers = [Path(p).resolve().relative_to(GPU_ROOT).as_posix() for p in headers]
     selection = dict(schema='libero-newton-launch-v1', config=dict(config), headers=headers,
                      schedule=hashlib.sha256(template.encode()).hexdigest())
@@ -197,7 +202,9 @@ def _obtain_product(*, template, headers, config, build_root, runtime_root, math
         return {'newton.so': raw, 'product.json': json.dumps(description, sort_keys=True).encode()}
     def exports(artifacts):
         description = json.loads(artifacts['product.json'])
-        if description['selection'] != selection:
+        recorded = dict(description['selection'], config=dict(description['selection']['config']))
+        recorded['config'].pop('nworld', None)
+        if recorded != selection:
             raise ValueError('Newton product launch selection differs')
         destination = Path(runtime_root)/('newton-'+uuid.uuid4().hex+'.so')
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -209,8 +216,18 @@ def _obtain_product(*, template, headers, config, build_root, runtime_root, math
     symbols = ['launch_persistent', 'newton_kernel_info']
     if config['combined_entry']:
         symbols.append('launch_entry')
-    _, receipt, status = cache.obtain_artifacts(identity, symbols,
-        names=('newton.so', 'product.json'), build=build, validate=validate, exports=exports)
+    try:
+        _, receipt, status = cache.obtain_artifacts(identity, symbols,
+            names=('newton.so', 'product.json'), build=build, validate=validate, exports=exports)
+    except MissingCompiledProduct:
+        if offline or legacy_config == config:
+            raise
+        # Read-only compatibility with the former world-count key. This exact
+        # schedule/layout/options match keeps prepared projects usable until
+        # the next offline build publishes the world-independent selection.
+        legacy = dict(selection, config=legacy_config)
+        _, receipt, status = cache.obtain_artifacts(legacy, symbols,
+            names=('newton.so', 'product.json'), build=build, validate=validate, exports=exports)
     executed = [] if status['hit'] else commands
     record_build('newton-cuda', status['key'], executed)
     result['metadata'] = dict(result['metadata'], sha256=status['key'],

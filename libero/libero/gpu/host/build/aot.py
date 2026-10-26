@@ -935,8 +935,9 @@ def _instance_reuse_only(job):
 
 def _compile_instance_locked(job):
     from .compilation import compilation_scope
+    from .product_cache import require_product_persistence
     reuse_only = _instance_reuse_only(job)
-    with compilation_scope(False) if reuse_only else nullcontext() as scope:
+    with require_product_persistence(), compilation_scope(False) if reuse_only else nullcontext() as scope:
         return _compile_instance_in_scope(job, reuse_events=scope['events'] if reuse_only else ())
 
 

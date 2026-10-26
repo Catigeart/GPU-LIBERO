@@ -58,85 +58,7 @@ separately records its targeted geometry and three-task correctness follow-up.
 
 ## Performance
 
-### Current GPU FP64: public step() end-to-end
-
-The 2026-10-25 to 2026-10-26 run measured actual public `env.step(action)` wall time on an **NVIDIA A100 SXM4 40GB**, **N=2**, no cameras. Each of all **130 distinct tasks** ran five warmup controls followed by **20 continuous timed controls, once**, with 25 physical substeps per control. Values are **environment control steps per second summed over both worlds**.
-
-| Task suite | Tasks | Public step throughput | Total timed seconds |
-| --- | ---: | ---: | ---: |
-| LIBERO-Spatial | 10 | 20.59 | 19.426 |
-| LIBERO-Object | 10 | 35.35 | 11.315 |
-| LIBERO-Goal | 10 | 32.98 | 12.129 |
-| LIBERO-90 | 90 | 38.27 | 94.077 |
-| LIBERO-10 | 10 | 37.95 | 10.540 |
-| All distinct tasks | 130 | 35.26 | 147.487 |
-
-Throughput is total environment control steps divided by total timed seconds, never an arithmetic average of task rates. Timing includes action submission, OSC, physics, required stream synchronization, host observation packaging and task predicates. Construction, reset, graph preparation, warmup, policy inference, logging and diagnostics are outside the timed block. Actions are generated before timing.
-
-The run retains the existing FP64 baseline initial-state banks, seed 0 and fixed per-world action `[0.02, -0.015, 0.01, 0.005, -0.003, 0.002, 0.1]`. It explicitly selects the existing optimized native path with `staged=True`, `motion_passive=True`, `actuation_solve=True`, `motion_threads=512`, `force_threads=256`, `defer_post=True` and `fast_compile=True`: `ControllerAlignedSubstep` for NV39 and `PeeledForceSubstep` for the remaining catalogue shapes. Solver semantics and physics algorithms were not changed.
-
-All retained tasks completed **500 timed physical integrations per world**, with no runtime errors or runtime compiler commands. Other GPU processes were monitored throughout each worker and immediately before/after timing; attempts sampling another process were excluded. Median construction, reset and graph preparation times were **25.63 s**, **0.21 s** and **6.10 s**, separately recorded.
-
-[Per-task wall-clock data](media/benchmarks/fp64-public-step-tasks-20261025.csv) · [Suite summary](media/benchmarks/fp64-public-step-summary-20261025.csv) · [Protocol and provenance](media/benchmarks/fp64-public-step-provenance-20261025.json).
-
-### Historical GPU FP64: device-only and paired results
-
-The historical device-only native GPU FP64 measurement is the **standalone current**
-run on October 23–25, 2026. A separate paired run in October compared the
-frozen and current implementations within each task. Both used an NVIDIA A100
-SXM4 40GB, **N=2**, no cameras, five warmup controls and 20 continuing timed
-controls per task, with 25 physical substeps per control. CUDA events measured
-the captured control Graph. Values are **environment control steps per second
-summed over both worlds**; higher is faster.
-
-| Task suite | Tasks | Current standalone | Current paired | Frozen paired | Paired current / frozen | Paired strict endpoints |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LIBERO-Spatial | 10 | 21.58 | 19.48 | 18.56 | 1.050× | 10/10 |
-| LIBERO-Object | 10 | 37.12 | 36.85 | 34.64 | 1.064× | 10/10 |
-| LIBERO-Goal | 10 | 34.61 | 34.41 | 32.20 | 1.069× | 10/10 |
-| LIBERO-90 | 90 | 40.35 | 40.03 | 37.51 | 1.067× | 87/90 |
-| LIBERO-10 | 10 | 40.18 | 39.86 | 37.38 | 1.067× | 10/10 |
-| **All distinct tasks** | **130** | **37.13** | **36.37** | **34.17** | **1.064×** | **127/130** |
-
-Suite throughput divides the total environment control steps by the sum of
-CUDA-event elapsed seconds; it is not an average of per-task rates. The speedup
-column uses only the **paired** run. Its versions kept independent continuing
-states and alternated timed order. The standalone current result is a separate
-run and has no paired ratio. LIBERO-100 is the union of LIBERO-90 and LIBERO-10,
-not another set of measurements.
-
-The timed Graph includes physics, controller and device-side low-dimensional
-observation sampling. It excludes construction, reset, Graph capture, action
-staging, host observation packaging, host task predicates and camera rendering.
-In the standalone run, all 130 retained tasks completed 500 timed physical
-integrations per world without runtime compilation, simulation errors or resets.
-GPU process samples immediately before and after each interval showed only the
-benchmark process; contended attempts were discarded and rerun. Median
-construction, reset and Graph capture times were 52.70 s, 0.39 s and 9.98 s,
-respectively, outside the timed interval.
-
-One Spatial task in the paired run sampled other GPU work; the other 129 did
-not. All 130 paired task ratios exceeded 1 in that run. Three LIBERO-90 tasks
-(84, 87 and 88) exceeded the strict terminal threshold after 625 physical
-substeps, then passed a separate CPU MuJoCo 2.3.7 audit against a model-based
-physical budget. The paired strict screen therefore passed **127/130**, with
-three separately qualified. This endpoint column applies to the paired run,
-not to the standalone timing check.
-
-The first 76 standalone tasks used an earlier source identity before an NV39
-admission-field correction. All 76 are non-NV39, selected `PeeledForceSubstep`,
-and reused the same compiled kernels. Source identities are retained per task.
-[Suite summary](media/benchmarks/fp64-native-summary-20261025.csv) ·
-[standalone per-task data](media/benchmarks/fp64-current-standalone-20261025.csv) ·
-[paired per-task data](media/benchmarks/fp64-paired-20261022.csv) ·
-[measurement provenance](media/benchmarks/fp64-native-provenance-20261025.json).
-This historical CUDA-event interval differs from the current public-`step()`
-wall-clock results above and in the four-backend summary below, so these device-only values do not replace the public-step column below
-or establish a new CPU/GPU speedup measurement.
-
-### Four-backend recorded throughput
-
-The GPU FP64 column below uses the new **2026-10-25 to 2026-10-26 public-step wall-clock run**. CPU FP64, MJWarp FP32 and independent GPU FP32 retain their existing measurements; they were **not retested**. All use A100 SXM4 40GB where applicable, N=2, no cameras, five warmup and 20 timed controls per task. Throughput is total environment control steps divided by total time.
+The GPU FP64 column uses the **2026-10-25 to 2026-10-26 public-step wall-clock run covering all 130 tasks**. CPU FP64, MJWarp FP32 and independent GPU FP32 retain their existing measurements; they were **not retested**. All use NVIDIA A100 SXM4 40GB where applicable, **N=2**, no cameras, five warmup and **20 continuous timed controls, once per task**. Suite throughput divides total environment control steps by total elapsed time, rather than averaging task rates.
 
 **Dates, action protocols, timing scopes and GPU load differ. This is an absolute-throughput summary, not a controlled four-backend ranking or a same-workload speedup claim.**
 
@@ -159,7 +81,13 @@ Values are **environment control steps per second summed over both worlds**.
 | GPU FP64 | 2026-10-25 to 2026-10-26, refreshed | Complete public `step()` wall time, including host observations and task predicates; existing optimized native kernels | Only attempts without sampled other GPU processes retained |
 | MJWarp FP32 / independent GPU FP32 | 2026-10-21, retained | CUDA-event intervals including upload, physics, OSC and device observations; excludes host packaging and predicates | Shared GPU; per-task samples retained |
 
-Creation, reset, graph preparation, compilation and rendering are excluded. Each control contains 25 physical substeps; throughput is not multiplied by 25. LIBERO-100 is the union of LIBERO-90 and LIBERO-10, not another set of measurements. The old LIBERO-90 task 85 CPU/GPU time-event comparison flag remains explicitly historical in the CSV.
+GPU FP64 timing wraps actual `env.step(action)` calls, including action submission, OSC, physics, required stream synchronization, host observation packaging and task predicates. Construction, reset, graph preparation and warmup are timed separately; actions are generated beforehand, and logging, diagnostics and file IO stay outside the measured loop. All 130 retained tasks completed **500 timed physical integrations per world**, with no runtime errors or compiler commands. Attempts sampling another GPU process were excluded; valid completed tasks were retained on resume.
+
+The FP64 run reuses the baseline initial-state banks, seed 0 and fixed action `[0.02, -0.015, 0.01, 0.005, -0.003, 0.002, 0.1]` in both worlds. Existing optimized options are `staged=True`, `motion_passive=True`, `actuation_solve=True`, `motion_threads=512`, `force_threads=256`, `defer_post=True` and `fast_compile=True`: `ControllerAlignedSubstep` for NV39, `PeeledForceSubstep` for other catalogue shapes. Solver semantics and physics algorithms are unchanged. The full timed block totals **147.487 s**, yielding **35.26 environment control steps/s** across 130 tasks. [FP64 per-task timings and setup costs](media/benchmarks/fp64-public-step-tasks-20261025.csv) · [FP64 suite summary](media/benchmarks/fp64-public-step-summary-20261025.csv) · [FP64 protocol and provenance](media/benchmarks/fp64-public-step-provenance-20261025.json).
+
+Creation, reset, graph preparation, compilation and rendering are excluded from throughput. Each control contains 25 physical substeps; throughput is not multiplied by 25. LIBERO-100 is the union of LIBERO-90 and LIBERO-10, not another set of measurements. The old LIBERO-90 task 85 CPU/GPU time-event comparison flag remains explicitly historical in the CSV.
+
+Historical GPU FP64 **device-only CUDA Graph** results (October 23–25, 2026; **37.13 environment control steps/s** across 130 tasks) and the earlier paired experiment remain available as [suite summary](media/benchmarks/fp64-native-summary-20261025.csv), [standalone per-task data](media/benchmarks/fp64-current-standalone-20261025.csv), [paired per-task data](media/benchmarks/fp64-paired-20261022.csv) and [provenance](media/benchmarks/fp64-native-provenance-20261025.json). These exclude action staging and host packaging/predicates and are not mixed into the public-step column or figure.
 
 **FP32 timings predate the ND-05 GJK correction and subsequent world-local fusion.** These later changes did not repeat the full-suite timings. See [FP32 regional checks and timings](libero/libero/gpu/host/backends/cuda_fp32/README.md#supported-scope-and-validation). Original MJWarp denotes pinned upstream physics with the shared project OSC/observation integration; GPU FP32 denotes the independent Warp-free CUDA backend.
 
@@ -231,8 +159,8 @@ in an isolated environment and follow its
 
 ```bash
 python -m pip install '.[cuda-fp32]'
-python -m libero.gpu.host.backends.cuda_fp32.prepare \
-  --build-root /path/to/common-project --tasks all \
+python -m libero.gpu.build --precision fp32 \
+  --build-root /path/to/common-project \
   --mathdx-root /path/to/mathdx --jobs 2
 ```
 
@@ -247,9 +175,10 @@ python -m pip install 'cmake>=3.24,<4' ninja
 python -m pip install '.[native]'
 ```
 
-Use `-e` for an editable installation of the chosen extra. The FP32 preparation
-command consumes a common CPU scene catalogue; the linked guide includes its
-Warp-free catalogue builder for a new project.
+Use `-e` for an editable installation of the chosen extra. CUDA compilation
+and CPU scene preparation are separate: the build command needs no task
+environment or visible GPU. The linked FP32 guide describes its CPU scene
+catalogue and preparation commands.
 The extras select incompatible CPU MuJoCo versions and must not be combined.
 
 This distribution installs the `libero` package. Use an environment containing this installation when running your LIBERO code.
@@ -264,17 +193,45 @@ To prepare assets and initial states before creating an environment:
 python -m libero.libero.resource_cli assets init_states
 ```
 
-Prepare the complete native FP64 GPU project once before creating native batches:
+Compile all declared native FP64 CUDA instances in one project:
 
 ```bash
-python -m libero.gpu.build --precision fp64 --num-envs 8 --jobs 3
+python -m libero.gpu.build --precision fp64 --jobs 3
 ```
 
-The build enumerates all 130 shipped tasks, materializes their model and template
-instances, and compiles missing CUDA/Warp products into one project. LIBERO-100
-reuses the existing 90-task and 10-task sets. Matching products are shared across
-tasks. The generated [parameter table](libero/libero/gpu/data/libero_task_parameters.json)
-records every task and the 13 distinct Newton dimension pairs.
+The checked-in [model declarations](libero/libero/gpu/cuda/step/instantiations/libero_models.def)
+list the 13 unique dimension tuples covering all 130 tasks. CMake compiles every
+instance directly, including ordinary Newton, fused substeps and the adopted
+motion/force/controller-aligned paths. The build command does not instantiate
+environments, reset tasks, capture graphs or run physics. World count is a
+runtime argument rather than a numerical template parameter.
+
+The default `dev` compiler profile matches the accepted fast-compile configuration.
+Use `--build-mode release` or explicitly `--build-mode all` for another compiler
+profile; `--ordered-reductions` includes ordered comparison products. These
+choices do not discover task instances at runtime. Repeating a matching build
+uses normal Ninja dependency tracking. Native Newton loads the resulting
+`native_newton_nv*.so` files; it does not generate a CUDA source file or invoke
+a compiler in the shipped fast FP64 path. Set `LIBERO_GPU_BUILD_MODE=release`
+when loading its release profile. Research configurations retain their explicit
+legacy preparation tools.
+
+CMake is also a direct entry, without Python or MuJoCo:
+
+```bash
+cmake -S . -B /path/to/project/cmake-control/sm80-dev -G Ninja \
+  -DFLASH_MATHDX_ROOT=/path/to/mathdx -DFLASH_FAST_COMPILE=ON
+cmake --build /path/to/project/cmake-control/sm80-dev --parallel 3
+```
+
+The default `flash_gpu_all` target includes native FP64 and independent FP32
+production products. `flash_native_batch_all` and `flash_cuda_fp32_all` select
+one backend. CPU scene/resource preparation and the legacy native transport
+catalogue remain separate from numerical CUDA compilation; the build command
+never performs a 130-environment bootstrap. The
+[task parameter table](libero/libero/gpu/data/libero_task_parameters.json)
+retains the full task-to-model mapping. Initialization and ordinary runtime
+loading still check their actual model and ABI requirements.
 
 ## Getting Started
 
@@ -290,7 +247,7 @@ available through `physics_engine="native"`. Select precision before importing
 typed physics modules and prepare products offline. Precision is fixed per
 process; products can coexist in the same CMake build. See the
 [precision guide](libero/libero/gpu/PRECISION.md) for selection, storage,
-validation and current scope. The benchmark results above remain FP64.
+validation and current scope. The performance section identifies each backend and timing scope.
 
 Use `GpuBatchEnv` to advance multiple worlds of **one task and one shared static
 model** in a GPU batch. This is separate from the compatible
@@ -546,6 +503,7 @@ Set the suite, task, seed, epoch, and training-task index to match your checkpoi
 | `LIBERO_CONFIG_PATH` | Directory containing your LIBERO resource-path configuration. |
 | `LIBERO_RESOURCE_PATH` | Cache location for automatically fetched task assets and initial states. |
 | `LIBERO_GPU_CACHE_DIR` | GPU build and runtime cache directory. |
+| `LIBERO_GPU_BUILD_MODE` | Native Newton compiler profile to load: `dev` (default) or `release`; must match the offline build. |
 | `LIBERO_NVCC` | Path to the CUDA compiler. |
 | `LIBERO_MATHDX_ROOT` | MathDx installation root containing `include/`, `external/cutlass/include/`, and `lib/libcusolverdx.a`. |
 
