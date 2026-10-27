@@ -1,6 +1,7 @@
 """Actual N=2 public forward, controller query and complete Graph ownership."""
 import argparse,json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from unittest.mock import patch
 import numpy as np
 from .mjwarp_camlight import digest
@@ -72,7 +73,7 @@ def main(argv=None,*,args=None):
     from libero.libero.envs import GpuBatchEnv
     from libero.gpu.host.build.compilation import compilation_scope
     from libero.gpu.host.backends.mjwarp.build import profile_sources
-    tasks=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'];task=next(t for t in tasks if t['suite']+':'+str(t['task_id'])==args.task)
+    tasks=load_catalog(args.build_root);task=next(t for t in tasks if t['suite']+':'+str(t['task_id'])==args.task)
     with compilation_scope(args.prepare) as scope:
         env=GpuBatchEnv(str(Path(get_libero_path('bddl_files'))/task['key']),2,physics_engine='mjwarp',precision='fp32',initialize=False,allow_compile=False,build_root=args.build_root,use_camera_obs=False,ignore_done=True,mjwarp_options=dict(preset='cuda_libero',fast_compile=True))
         try:

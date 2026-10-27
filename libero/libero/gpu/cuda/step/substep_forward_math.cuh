@@ -710,7 +710,7 @@ static __device__ void reference(int w, int32_t *committed, int32_t *counts, rea
 }
 
 namespace physics_constraint_reference::cf_s {
-constexpr int CF_S_DX_SM = 800;
+constexpr int CF_S_DX_SM = FLASH_CUDA_ARCH * 10;
 static __device__ __forceinline__ bool s1_block_any(bool bad) {
   __shared__ int votes[32], result;
   int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;

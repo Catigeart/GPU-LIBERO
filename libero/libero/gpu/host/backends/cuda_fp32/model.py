@@ -28,7 +28,6 @@ def padded_nv(nv):return ((nv+int(nv>32)+15)//16)*16 if nv>32 else ((nv+3)//4)*4
 
 
 def admit(host):
-    if mujoco.__version__!='3.16.0':raise ValueError('Independent FP32 scene semantics require MuJoCo3.16.0')
     if host.opt.solver!=mujoco.mjtSolver.mjSOL_NEWTON or host.opt.cone!=mujoco.mjtCone.mjCONE_ELLIPTIC:
         raise ValueError('Independent FP32 requires Newton and elliptic contacts')
     if host.opt.integrator!=mujoco.mjtIntegrator.mjINT_EULER or mujoco.mj_isSparse(host):

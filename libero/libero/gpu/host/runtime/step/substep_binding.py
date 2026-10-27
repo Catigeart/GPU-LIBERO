@@ -308,7 +308,11 @@ def bind(runtime, continuation, *, single_solve=False):
             (1, "controller_solve", t.ControllerSolveData),
             (2, "controller_commit", t.ControllerCommitData),
             (31, "controller_publish", t.ControllerPublishData)]:
-        setattr(arguments, name, _pack(kind, run._stage_args[index]))
+        values = run._stage_args[index]
+        if kind is t.ControllerSolveData:
+            # Legacy fixed OSC stages use the solver's default action scaling.
+            values = (*values, 0)
+        setattr(arguments, name, _pack(kind, values))
     _check_variant(run, dimensions)
     _check_variant(runtime._cuda_euler_plan, dimensions)
     if len(runtime._cuda_euler_plan._stage_args) != 5:

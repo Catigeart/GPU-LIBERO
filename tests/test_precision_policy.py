@@ -73,7 +73,7 @@ assert scalar.itemsize == BITS // 8
 assert ct.sizeof(scalar.ct_real) == scalar.itemsize
 assert scalar.wp_real.__name__ == 'floatBITS'
 assert scalar.wp_bits.__name__ == 'uintBITS'
-assert ct.sizeof(SubstepArguments) == (6280 if BITS == 32 else 6288)
+assert ct.sizeof(SubstepArguments) == (6288 if BITS == 32 else 6296)
 dimensions = dict(nq=1, nv=1, nu=0, na=0, nbody=1, nmocap=0,
                   nuserdata=0, nsensordata=0, nplugin=0, npluginstate=0)
 q0=np.array([0.1],dtype=np.float64)
@@ -97,11 +97,25 @@ with tempfile.TemporaryDirectory() as temporary:
     assert project_paths(prepared.precision) == prepared
     assert cmake_root(prepared.precision / 'cmake-control') == base / 'cmake-control'
     if BITS == 32:
-        (base / 'TASK_INSTANCES.json').write_text('base')
-        (prepared.precision / 'TASK_INSTANCES.json').write_text('stale')
-        try: prepare_precision_project(base)
-        except ValueError: pass
-        else: raise AssertionError('stale precision task catalogue was accepted')
+        import json
+        from libero.gpu.host.build.task_catalog import load_catalog
+        source = base / 'TASK_INSTANCES.json'
+        scene = base / 'scenes/task'
+        scene.mkdir(parents=True)
+        (scene / 'model.mjb').write_bytes(b'fixture')
+        record = dict(tasks=[dict(key='task', seed=0, directory='scenes/task',
+                                  constraint_package='constraints/task')])
+        source.write_text(json.dumps(record))
+        prepare_precision_project(base)
+        assert load_catalog(prepared.precision)[0]['directory'] == str(prepared.precision / '../scenes/task')
+        record['tasks'][0]['seed'] = 1
+        source.write_text(json.dumps(record))
+        prepare_precision_project(base)
+        moved = base.with_name('renamed')
+        base.rename(moved)
+        row = load_catalog(moved / 'fp32')[0]
+        assert row['seed'] == 1
+        assert (Path(row['directory']) / 'model.mjb').read_bytes() == b'fixture'
 # Adjacent real allocations must remain disjoint in the byte-span proof.
 arena=(scalar.ct_real*4)();applied=(scalar.ct_real*2)();external=(scalar.ct_real*6)()
 arguments=SubstepArguments()

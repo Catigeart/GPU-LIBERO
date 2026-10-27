@@ -17,7 +17,7 @@ def _write_changed(path, text):
 
 
 def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, profile_newton=False,
-            nv=39, atomic_reductions=None, single_solve=False, for_build=True):
+            nv=39, nM=None, nq=None, njnt=None, nu=None, atomic_reductions=None, single_solve=False, for_build=True):
     """Select a product; only offline build preparation needs the toolchain.
 
     Load-only callers use ``for_build=False``. They neither create directories
@@ -27,9 +27,9 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
     if type(single_solve) is not bool or single_solve and scalar.bits != 32:
         raise ValueError('single_solve requires an explicit FP32 candidate')
     from .substep_catalog import select_variant
-    variant = select_variant(nv)
+    variant = select_variant(nv, nM, nq=nq, njnt=njnt, nu=nu)
     source = Path(source).resolve()
-    sdk = Path(sdk).resolve()
+    sdk = Path(sdk).resolve() if for_build else None
     project = compiler = None
     if for_build:
         candidates = [p for p in source.parents if (p / 'CMakeLists.txt').is_file()]
@@ -67,7 +67,7 @@ def prepare(source, root, sdk, arch, *, fast_compile=False, device_lto=False, pr
         default_atomic = True
     # Source contents do not determine the build directory. Ninja's compiler
     # depfiles track each translation unit and its actual included headers.
-    config = dict(product='single-physical-substep', sdk=str(sdk),
+    config = dict(product='single-physical-substep', sdk=str(sdk) if sdk else None,
                   schedule='step1-osc-step2' if single_solve else 'cpu-three-forwards',
                   solves_per_substep=1 if single_solve else 3, single_solve=single_solve,
                   arch=int(arch), real_bits=scalar.bits, fast_compile=bool(fast_compile), device_lto=bool(device_lto),

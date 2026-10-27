@@ -1,5 +1,6 @@
 """Source-bound FP32 reference export and independent Warp-free trajectories."""
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from types import SimpleNamespace
 import hashlib
 import inspect
@@ -211,7 +212,7 @@ def main(args):
     from libero.gpu import precision
     precision.select('fp32')
     if args.worlds!=2:raise ValueError('This qualification protocol starts with N=2')
-    tasks=select_tasks(json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'],args.tasks)
+    tasks=select_tasks(load_catalog(args.build_root),args.tasks)
     args.output.mkdir(parents=True,exist_ok=True);rows=[]
     for task in tasks:
         folder=args.output/(task['suite']+'-'+str(task['task_id']))

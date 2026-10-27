@@ -7,6 +7,7 @@ the different numerical conclusions remain separate fields in its output.
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 
 import numpy as np
 
@@ -131,7 +132,7 @@ def analyze_task(folder, task, scene, scene_receipt, expected_physics=None):
 
 def main(args):
     from libero.gpu.host.backends.mjwarp.scene_inputs import read
-    tasks = select_tasks(json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks'], args.tasks)
+    tasks = select_tasks(load_catalog(args.build_root), args.tasks)
     rows, binding = [], None
     for task in tasks:
         folder = args.input / (task['suite'] + '-' + str(task['task_id']))

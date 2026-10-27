@@ -4,7 +4,7 @@
 #ifndef FLASH_SUBSTEP_SM
 #define FLASH_SUBSTEP_SM 800
 #endif
-using NativeShape = flash_libero::LiberoModel<FLASH_SUBSTEP_NV, FLASH_SUBSTEP_SM, 128>;
+using NativeShape = flash_libero::LiberoModel<FLASH_SUBSTEP_NV, FLASH_SUBSTEP_NQ, FLASH_SUBSTEP_NM, FLASH_SUBSTEP_NJ, FLASH_SUBSTEP_NU, FLASH_SUBSTEP_SM, 128>;
 using NativeLayout = libero_native::NativeNewtonLayout<NativeShape>;
 static_assert(sizeof(real_t) == 8, "The native catalogue entry is FP64");
 #define NV FLASH_SUBSTEP_NV

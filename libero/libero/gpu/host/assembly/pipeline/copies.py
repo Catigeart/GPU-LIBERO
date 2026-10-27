@@ -91,16 +91,16 @@ class TapeCopyPlan:
         self.fallback=any(_overlap(t,s) for t in targets for s,_ in pairs)
         self.fallback |= any(_overlap(t,tape.index) for t in targets)
         self.fallback |= any(_overlap(t,u) for i,t in enumerate(targets) for u in targets[i+1:])
-        args=['index: wp.array(dtype=wp.int32)']
-        body=['    i=wp.tid()','    row=index[0]',f'    if row < 0 or row >= {tape.capacity}: return']
+        args=['index: wp.array(dtype=wp.int32)', 'capacity: int']
+        body=['    i=wp.tid()','    row=index[0]','    if row < 0 or row >= capacity: return']
         names={scalar.wp_real:scalar.name,wp.int32:'int32',wp.int64:'int64'}
         for j,(s,t) in enumerate(pairs):
             dtype=names[s.dtype]
             args += [f's{j}: wp.array(dtype=wp.{dtype})',f't{j}: wp.array(dtype=wp.{dtype},ndim=2)']
-            body += [f'    if i < {s.size}: t{j}[row,i]=s{j}[i]']
+            body += [f'    if i < s{j}.shape[0]: t{j}[row,i]=s{j}[i]']
         code='@wp.kernel(enable_backward=False)\ndef tape_fields('+', '.join(args)+'):\n'+'\n'.join(body)+'\n'
         self.kernel=_load('tape_fields',code,{'wp':wp}).tape_fields
-        self.inputs=[tape.index]+[a for pair in pairs for a in pair]
+        self.inputs=[tape.index,tape.capacity]+[a for pair in pairs for a in pair]
         self.dim=max((s.size for s,_ in pairs),default=0)
 
     def launch(self):

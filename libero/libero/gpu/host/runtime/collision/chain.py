@@ -1107,8 +1107,8 @@ class CollisionChainWorkspace:
         from libero.gpu.reference.collision.collision_tree.kernel import CollisionTreeWorkspace
         from libero.gpu.reference.collision.contact_finalize.kernel import ContactFinalizeWorkspace
 
-        if nworld < 1 or nworld > 128:
-            raise ValueError('nworld must be in [1,128]')
+        if type(nworld) is not int or nworld < 1:
+            raise ValueError('nworld must be a positive integer')
         if type(borrow_detector_raw) is not bool:
             raise ValueError("borrow_detector_raw must be bool")
         if detector_backend not in ('legacy', 'handwritten_only'):

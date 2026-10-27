@@ -33,6 +33,7 @@ def compile_project(root=None, *, precision='fp64', modes=('dev',), arch=80,
         configure = ['cmake', '-S', str(source), '-B', str(folder), '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CUDA_COMPILER='+str(compiler),
             '-DFLASH_CUDA_ARCH='+str(arch), '-DFLASH_MATHDX_ROOT='+str(sdk),
+            '-DFLASH_BUILD_NATIVE='+('ON' if precision == 'fp64' else 'OFF'),
             '-DFLASH_FAST_COMPILE='+('ON' if mode == 'dev' else 'OFF')]
         build = ['cmake', '--build', str(folder), '--target', target, '--parallel', str(jobs)]
         subprocess.run(configure, check=True)

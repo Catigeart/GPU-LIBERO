@@ -680,6 +680,7 @@ struct ControllerSolveData {
   real_t *pr;
   real_t *pe;
   int *cache_valid;
+  const real_t *action_config;
 };
 
 struct ControllerCommitData {

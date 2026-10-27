@@ -30,9 +30,7 @@ def collect_roots(bundle):
             raise ValueError('preservation needs exact contiguous world domain: '+name)
         # Public efc_force is committed only for admitted worlds. Its large
         # canonical buffer is held by the original N commit on mask0.
-        if a.size//W>8192:
-            if name not in ('N.public.efc_force','N.public.efc_state'):
-                raise ValueError('required preservation root exceeds bounded copy capacity: '+name)
+        if name in ('N.public.efc_force','N.public.efc_state'):
             excluded[name]={'shape':a.shape,'reason':'canonical N force/state commit holds mask0, not read by same-step Euler'}
             return
         roots[name]=a

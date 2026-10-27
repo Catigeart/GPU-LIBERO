@@ -51,7 +51,7 @@ using Potrf =
     decltype(dx::Size<N>() + dx::Precision<float>() +
              dx::Type<dx::type::real>() + dx::Function<dx::function::potrf>() +
              dx::FillMode<dx::fill_mode::upper>() +
-             dx::Arrangement<dx::row_major>() + dx::SM<800>() +
+             dx::Arrangement<dx::row_major>() + dx::SM<(FLASH_CUDA_ARCH * 10)>() +
              dx::BlockDim<Threads>() + dx::Block());
 
 template <int N>
@@ -59,7 +59,7 @@ using Potrs =
     decltype(dx::Size<N, N, 1>() + dx::Precision<float>() +
              dx::Type<dx::type::real>() + dx::Function<dx::function::potrs>() +
              dx::FillMode<dx::fill_mode::upper>() +
-             dx::Arrangement<dx::row_major, dx::col_major>() + dx::SM<800>() +
+             dx::Arrangement<dx::row_major, dx::col_major>() + dx::SM<(FLASH_CUDA_ARCH * 10)>() +
              dx::BlockDim<64>() + dx::Block());
 
 template <int Columns, bool Transposed>
@@ -75,7 +75,7 @@ using Trsm =
                  ? dx::col_major
                  : dx::row_major,
              dx::row_major >
-                 () + dx::SM<800>() + dx::BlockDim<32>() + dx::Block());
+                 () + dx::SM<(FLASH_CUDA_ARCH * 10)>() + dx::BlockDim<32>() + dx::Block());
 
 template <int N, int Threads>
 __device__ void factor_upper(float *tile, int *info) {
@@ -312,10 +312,33 @@ __global__ void direction_blocked(DirectionInputs a, StopInputs stop) {
 extern "C" const char *flash_mjwarp_direction_source_id() {
   return FLASH_MJW_DIRECTION_SOURCE_ID;
 }
+namespace flash::mjwarp {
+template <bool Stopping>
+int launch_direction(const DirectionInputs& a, StopInputs stop, cudaStream_t stream) {
+  if (a.nv > 32 && a.nv < 64) {
+    if (a.nv < 48)
+      direction_blocked<48, Stopping><<<a.worlds,32,0,stream>>>(a,stop);
+    else
+      direction_blocked<64, Stopping><<<a.worlds,32,0,stream>>>(a,stop);
+    return int(cudaGetLastError());
+  }
+#define LIBERO_MODEL(Nv, Nq, Nm, Nj, Nu) \
+  if constexpr (Nv <= 32) { \
+    if (a.nv == Nv) { \
+      direction_small<Nv,Stopping><<<a.worlds,64,0,stream>>>(a,stop); \
+      return int(cudaGetLastError()); \
+    } \
+  }
+#include "../step/instantiations/libero_models.def"
+#undef LIBERO_MODEL
+  return int(cudaErrorInvalidValue);
+}
+}
+
 extern "C" std::size_t flash_mjwarp_direction_arguments_bytes() {
   return sizeof(flash::mjwarp::DirectionInputs);
 }
-extern "C" int flash_mjwarp_direction_arch() { return 80; }
+extern "C" int flash_mjwarp_direction_arch() { return FLASH_CUDA_ARCH; }
 extern "C" int
 flash_mjwarp_direction_launch(const flash::mjwarp::DirectionInputs *input,
                               int stage, cudaStream_t stream) {
@@ -331,34 +354,8 @@ flash_mjwarp_direction_launch(const flash::mjwarp::DirectionInputs *input,
         a.search_unchanged);
     gradient_values<<<(a.worlds * a.nv + 255) / 256, 256, 0, stream>>>(a);
   }
-  if (stage != 1) {
-    switch (a.nv) {
-#define SMALL(N)                                                               \
-  case N:                                                                      \
-    direction_small<N><<<a.worlds, 64, 0, stream>>>(a, {});                    \
-    break
-      SMALL(21);
-      SMALL(22);
-      SMALL(24);
-      SMALL(27);
-      SMALL(30);
-#undef SMALL
-    case 33:
-    case 36:
-    case 37:
-    case 39:
-    case 43:
-    case 45:
-      direction_blocked<48><<<a.worlds, 32, 0, stream>>>(a, {});
-      break;
-    case 51:
-    case 57:
-      direction_blocked<64><<<a.worlds, 32, 0, stream>>>(a, {});
-      break;
-    default:
-      return int(cudaErrorInvalidValue);
-    }
-  }
+  if (stage != 1)
+    return launch_direction<false>(a, {}, stream);
   return int(cudaGetLastError());
 }
 
@@ -378,31 +375,5 @@ flash_mjwarp_direction_stopping(const flash::mjwarp::DirectionInputs *input,
       stop->iterations < 1 || (stop->warn_overflow & (1 << 9)))
     return int(cudaErrorInvalidValue);
   const auto &a = *input;
-  switch (a.nv) {
-#define SMALL(N)                                                               \
-  case N:                                                                      \
-    direction_small<N, true><<<a.worlds, 64, 0, stream>>>(a, *stop);           \
-    break
-    SMALL(21);
-    SMALL(22);
-    SMALL(24);
-    SMALL(27);
-    SMALL(30);
-#undef SMALL
-  case 33:
-  case 36:
-  case 37:
-  case 39:
-  case 43:
-  case 45:
-    direction_blocked<48, true><<<a.worlds, 32, 0, stream>>>(a, *stop);
-    break;
-  case 51:
-  case 57:
-    direction_blocked<64, true><<<a.worlds, 32, 0, stream>>>(a, *stop);
-    break;
-  default:
-    return int(cudaErrorInvalidValue);
-  }
-  return int(cudaGetLastError());
+  return launch_direction<true>(a, *stop, stream);
 }

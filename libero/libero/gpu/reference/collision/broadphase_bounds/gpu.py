@@ -48,8 +48,8 @@ def _ptr(a: np.ndarray, ctype):
 
 
 def validate_static(static: dict[str, np.ndarray], n: int) -> tuple[int, int]:
-    if type(n) is not int or n < 1 or n > 128:
-        raise ValueError('world capacity must be int in [1,128]')
+    if type(n) is not int or n < 1:
+        raise ValueError('world capacity must be a positive integer')
     int_g = ('geom_bodyid','geom_contype','geom_conaffinity')
     int_b = ('body_geomadr','body_geomnum')
     double_g = ('geom_rbound','geom_margin')

@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 
 import numpy as np
 
@@ -39,7 +40,7 @@ def main(argv=None, *, args=None):
     from validation.common import actions, input_record, save_json
     from validation.runner import gpu_load_snapshot
 
-    tasks = json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks']
+    tasks = load_catalog(args.build_root)
     task = next(t for t in tasks if t['suite'] + ':' + str(t['task_id']) == args.task)
     bank = np.load(Path(task['directory']) / 'initial_states.npy', allow_pickle=False)
     args.output.mkdir(parents=True, exist_ok=False)

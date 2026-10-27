@@ -27,7 +27,7 @@ foreach(source IN LISTS fp32_controller_sources)
 endforeach()
 list(JOIN controller_hashes ":" controller_hash_input)
 string(SHA256 controller_source_id "${controller_hash_input}")
-if(FLASH_GLOBAL_DEVICE_LTO)
+if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
   set(controller_vendor "$<TARGET_OBJECTS:flash_osc_mathdx_fp32>")
   set(controller_vendor_target flash_osc_mathdx_fp32)
 else()
@@ -45,7 +45,7 @@ set_target_properties(flash_fp32_fused_controller PROPERTIES PREFIX "" OUTPUT_NA
   CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
   CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" UNITY_BUILD OFF
   JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
-if(FLASH_GLOBAL_DEVICE_LTO)
+if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
   target_link_options(flash_fp32_fused_controller PRIVATE "$<DEVICE_LINK:-dlto>")
   target_link_libraries(flash_fp32_fused_controller PRIVATE "${FLASH_SOLVERDX}")
 endif()

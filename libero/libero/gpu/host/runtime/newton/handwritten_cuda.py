@@ -552,7 +552,8 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                 raise ValueError('Native catalogue loading requires the owning build project')
             shared_bytes = (shared_bytes+15)//16*16 + dx_bytes
             product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
-                nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
+                nv=nv, nM=nm, **{k:adapter.rules.dims[k] for k in ('nq','njnt','nu')},
+                rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
                 maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
                 block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
                 combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,
@@ -630,7 +631,8 @@ seed_eval(0,{bind(ws.eval_trace,'eval_trace')},{bind(ws.eval_tag,'eval_tag')});
                 source+='extern "C" int launch_persistent(const void*,int,void*){return (int)cudaErrorInvalidValue;}\n'
                 source+=f'extern "C" int launch_entry(const void* p,int worlds,const int* upstream,const int* enabled,const int* publication,const int64_t* plan,int supplied,void* stream){{handwritten_newton<<<dim3(1,worlds),{block_size},{shared_bytes},(cudaStream_t)stream>>>((const Parameters*)p,upstream,enabled,publication,plan,supplied);return (int)cudaGetLastError();}}\n'
             product_config = dict(precision_bits=scalar.bits, architecture=wp.get_device(ws.device).arch,
-                nv=nv, nM=nm, rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
+                nv=nv, nM=nm, **{k:adapter.rules.dims[k] for k in ('nq','njnt','nu')},
+                rows=ws.rows, contacts=ws.contacts, nworld=ws.nworld,
                 maxiter=ws.maxiter, warmstart=bool(ws.warmstart_enabled),
                 block_threads=block_size, shared_bytes=shared_bytes, parameter_bytes=ct.sizeof(Param),
                 combined_entry=adapter is not None, use_dx=use_dx, use_blas=use_blas,

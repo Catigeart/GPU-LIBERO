@@ -169,11 +169,11 @@ class SubstepBuildTests(unittest.TestCase):
             root = Path(directory)
             for fast in (False, True):
                 with self.assertRaises(MissingCompiledProduct):
-                    controller_product(root, fast_compile=fast)
+                    controller_product(root, arch=80, fast_compile=fast)
                 library = project_paths(root).cmake / ('sm80-dev' if fast else 'sm80-release') / 'mjwarp_controller_fp32.so'
                 library.parent.mkdir(parents=True, exist_ok=True)
                 library.write_bytes(b'controller fixture')
-                self.assertEqual(controller_product(root, fast_compile=fast), library)
+                self.assertEqual(controller_product(root, arch=80, fast_compile=fast), library)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--arch', type=int, default=80)
     parser.add_argument('--mathdx-root', type=Path)
     parser.add_argument('--compatibility', action='store_true',
-                        help='prepare signed public OffScreenRenderEnv FP64 products instead of the batch catalogue')
+                        help='prepare public OffScreenRenderEnv FP64 products instead of the batch catalogue')
     parser.add_argument('--suite', default='libero_10',
                         choices=('libero_spatial', 'libero_object', 'libero_goal', 'libero_90', 'libero_10'))
     parser.add_argument('--task-ids', type=int, nargs='+', help='compatibility profile task IDs (default: selected suite)')
@@ -37,8 +37,6 @@ def main():
     if args.compatibility:
         if scalar.bits != 64:
             parser.error('--compatibility requires --precision fp64')
-        if args.device != 'cuda:0':
-            parser.error('the compatibility entry uses cuda:0; select the visible device before launching')
         if args.physics_engine == 'cuda_fp32':
             parser.error('--compatibility requires the native physics engine')
         from libero.gpu.host.build.compatibility import prepare
@@ -50,7 +48,7 @@ def main():
             parser.error('task ID outside the selected suite')
         tasks = [dict(key=args.suite + '/' + suite.get_task(i).name,
                       bddl=suite.get_task_bddl_file_path(i)) for i in ids]
-        result = prepare(project_paths(args.build_root).base, tasks,
+        result = prepare(project_paths(args.build_root).base, tasks, device=args.device,
                          progress=lambda event: print(json.dumps(event), flush=True))
         print(json.dumps(dict(status=result['status'], tasks=len(result['tasks']),
                               directory=result['project'], profile='compatibility')), flush=True)

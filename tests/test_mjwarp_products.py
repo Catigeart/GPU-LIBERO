@@ -20,7 +20,7 @@ def product_locator(module, function):
     path = GPU_ROOT / 'host/backends/mjwarp' / (module + '.py')
     node = next(node for node in ast.parse(path.read_text()).body
                 if isinstance(node, ast.FunctionDef) and node.name == function)
-    scope = {}
+    scope = {'project_paths': project_paths.project_paths, 'cmake_directory': project_paths.cmake_directory, 'MissingCompiledProduct': MissingCompiledProduct}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), scope)
     return scope[function]
 
@@ -56,10 +56,10 @@ class ProductLookupTests(unittest.TestCase):
                 for fast_compile in (False, True):
                     for component in components:
                         with self.subTest(module=module, component=component, fast_compile=fast_compile):
-                            options = dict(fast_compile=fast_compile)
+                            options = dict(arch=90, fast_compile=fast_compile)
                             if len(components) > 1:
                                 options['component'] = component
-                            folder = root / 'cmake-control' / ('sm80-dev' if fast_compile else 'sm80-release')
+                            folder = root / 'cmake-control' / ('sm90-dev' if fast_compile else 'sm90-release')
                             path = folder / ('mjwarp_' + component + '_fp32.so')
                             with self.assertRaisesRegex(MissingCompiledProduct, 'flash_mjwarp_' + component + '_fp32'):
                                 locator(root, **options)
@@ -68,7 +68,7 @@ class ProductLookupTests(unittest.TestCase):
                             path.write_bytes(b'offline library fixture')
                             self.assertEqual(locator(root, **options), path)
                             if component == components[0]:
-                                self.assertEqual(locator(root, fast_compile=fast_compile), path)
+                                self.assertEqual(locator(root, arch=90, fast_compile=fast_compile), path)
                             path.unlink()
                             path.mkdir()
                             with self.assertRaises(MissingCompiledProduct):
@@ -79,7 +79,7 @@ class ProductLookupTests(unittest.TestCase):
         for module, function in (('acceleration', 'mass_product'), ('velocity', 'velocity_product'),
                                  ('newton', 'hessian_product')):
             with self.subTest(module=module), self.assertRaises(ValueError):
-                product_locator(module, function)('/no-build-tree', component='unknown')
+                product_locator(module, function)('/no-build-tree', arch=90, component='unknown')
 
     def test_precision_namespace_resolves_shared_products_and_rejects_wrong_process(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -93,9 +93,11 @@ class ProductLookupTests(unittest.TestCase):
             product.write_bytes(b'offline library fixture')
             locate = product_locator('euler', 'euler_product')
             with patch.object(project_paths.scalar, 'bits', 32):
-                self.assertEqual(locate(namespace), product)
-            with patch.object(project_paths.scalar, 'bits', 64), self.assertRaisesRegex(ValueError, 'FP32 namespace'):
-                locate(namespace)
+                self.assertEqual(locate(namespace, arch=80), product)
+            with patch.object(project_paths.scalar, 'bits', 64):
+                self.assertEqual(locate(namespace, arch=80), product)
+                with self.assertRaisesRegex(ValueError, 'FP32 namespace'):
+                    project_paths.project_paths(namespace)
 
 
 class LeafAdmissionTests(unittest.TestCase):

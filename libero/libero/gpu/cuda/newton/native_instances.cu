@@ -17,7 +17,7 @@ extern "C" int launch_entry(const void *p, int worlds, const int *upstream, cons
   return int(cudaGetLastError());
 }
 extern "C" int native_newton_configuration(int field) {
-  const int values[] = {NV, NM, ROWS, 5000, 100, 128, 64, DX_SM / 10, 1, 1, 1, 0};
+  const int values[] = {NV, NM, ROWS, 5000, 100, 128, 64, DX_SM / 10, 1, 1, 1, 0, FLASH_SUBSTEP_NQ, FLASH_SUBSTEP_NJ, FLASH_SUBSTEP_NU};
   return field >= 0 && field < int(sizeof(values) / sizeof(values[0])) ? values[field] : -1;
 }
 extern "C" int newton_kernel_info(size_t *out, size_t count) {

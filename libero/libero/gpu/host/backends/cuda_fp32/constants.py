@@ -8,8 +8,8 @@ import enum
 import mujoco
 from . import device as storage
 
-if mujoco.__version__ != '3.16.0':
-    raise ValueError('Independent CUDA FP32 requires an isolated MuJoCo3.16.0 environment; install Flash-LIBERO[cuda-fp32]')
+# Enum values come from the loaded MuJoCo API. Prepared MJBs are separately
+# bound to the exact Python/native engine version by scene_cache.
 
 MJ_MINVAL = mujoco.mjMINVAL
 

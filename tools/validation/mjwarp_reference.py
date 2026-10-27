@@ -6,6 +6,7 @@ do not time physics and do not change any production engine/controller math.
 import argparse
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 
 import numpy as np
 
@@ -36,7 +37,7 @@ def main(argv=None, *, args=None):
     from libero.libero.envs import GpuBatchEnv
     from libero.gpu.host.build.compilation import compilation_scope, install_warp_guard
     from validation.common import actions
-    tasks = json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks']
+    tasks = load_catalog(args.build_root)
     task = next(t for t in tasks if t['suite'] + ':' + str(t['task_id']) == args.task)
     bank = np.load(Path(task['directory']) / 'initial_states.npy')
     args.output.mkdir(parents=True, exist_ok=False)

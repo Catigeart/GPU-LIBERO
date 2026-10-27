@@ -85,16 +85,18 @@ def _prepare_native(device):
         return _CACHE[cache_key]
     target=Path(root)/('native-'+key[:24]+'-sm'+str(dev.arch))
     if cache is not None:target=target.with_name(target.name+'_'+uuid.uuid4().hex)
-    nvcc=Path(os.environ.get('P06C_NVCC') or nvcc_path()).resolve()
+    from libero.gpu.host.build.compilation import compilation_allowed
+    offline = compilation_allowed()
+    nvcc=Path(os.environ.get('P06C_NVCC') or nvcc_path()).resolve() if offline else None
     gcc=Path(os.environ.get('P06C_CCBIN','/usr/bin/g++')).resolve()
     flags=[*scalar.native_flags(),'-I'+str(GPU_ROOT/'cuda/common'),'-std=c++17','-O2','-arch=sm_'+str(dev.arch),'--fmad=true',
            '--ftz=false','--prec-div=true','--prec-sqrt=true','-rdc=true',
            '-include',str(vector_header),
            '-ccbin',str(gcc)]
-    argv=[str(nvcc),*flags,'-shared','-Xcompiler','-fPIC',
-          '-Xlinker','-rpath','-Xlinker',str(nvcc.parent.parent/'lib64'),
+    argv=[str(nvcc) if nvcc else 'nvcc',*flags,'-shared','-Xcompiler','-fPIC',
+          '-Xlinker','-rpath','-Xlinker',str(nvcc.parent.parent/'lib64') if nvcc else '',
           str((MODULE / 'native_kernel.cu')),'-o',str(target/'libcollision.so')]
-    ptx_argv=[str(nvcc),*flags,'--ptx',str((MODULE / 'native_kernel.cu')),
+    ptx_argv=[str(nvcc) if nvcc else 'nvcc',*flags,'--ptx',str((MODULE / 'native_kernel.cu')),
               '-o',str(target/'collision.ptx')]
     from libero.gpu.host.build.compilation import compilation_allowed
     offline = compilation_allowed()
@@ -136,8 +138,8 @@ def _prepare_native(device):
         # is checked only during offline preparation.
         record=json.loads((target/'BUILD.json').read_text())
         if (record['sources']!=sources or record['exit_code']!=0 or
-            record['argv'] != [argv,ptx_argv] or record['cwd'] != str(target) or
-            (offline and record['toolchain_files'] != toolchain)):
+            (offline and (record['argv'] != [argv,ptx_argv] or record['cwd'] != str(target) or
+                          record['toolchain_files'] != toolchain))):
             raise ValueError('native build source/status mismatch')
         for name in ('libcollision.so','collision.ptx'):
             if not (target/name).is_file():

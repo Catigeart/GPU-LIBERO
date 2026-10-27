@@ -1,6 +1,7 @@
 """Independent FP32 public lifecycle and observation contracts, without Warp."""
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import sys
 import numpy as np
 from .cuda_complete import save, signatures
@@ -22,7 +23,7 @@ def main(args):
     from libero.libero import get_libero_path
     from libero.gpu.host.backends.cuda_fp32.scene import build_scene
     from libero.gpu.host.build.compilation import compilation_scope
-    task = json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'][0]
+    task = load_catalog(args.build_root)[0]
     bddl = Path(get_libero_path('bddl_files'))/task['key']
     options = dict(use_camera_obs=args.cameras, ignore_done=True, has_renderer=False,
                    has_offscreen_renderer=args.cameras, hard_reset=False)

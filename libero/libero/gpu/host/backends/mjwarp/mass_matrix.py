@@ -13,10 +13,10 @@ def caller_unsupported_reason(model, data):
     return None
 
 
-def matrix_product(root, *, fast_compile=False):
-    from libero.gpu.host.build.project_paths import project_paths
+def matrix_product(root,*,arch, fast_compile=False):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder = project_paths(root).cmake / ('sm80-dev' if fast_compile else 'sm80-release')
+    folder = cmake_directory(root, arch, fast_compile=fast_compile)
     target = 'flash_mjwarp_mass_matrix_fp32'; library = folder / 'mjwarp_mass_matrix_fp32.so'
     if not library.is_file():
         raise MissingCompiledProduct('Build ' + target + ' offline in ' + str(folder))

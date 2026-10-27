@@ -5,10 +5,10 @@ from mujoco_warp._src import forward,smooth
 from libero.gpu.host.runtime.dynamics.mjwarp_kinematics import KinematicFrames,caller_unsupported_reason
 
 
-def kinematics_product(root,*,fast_compile=False):
-    from libero.gpu.host.build.project_paths import project_paths
+def kinematics_product(root,*,arch,fast_compile=False):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
+    folder=cmake_directory(root, arch, fast_compile=fast_compile)
     target='flash_mjwarp_kinematics_fp32';library=folder/'mjwarp_kinematics_fp32.so'
     if not library.is_file():
         raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))

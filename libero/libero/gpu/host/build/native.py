@@ -46,8 +46,6 @@ from .product_cache import (product_cache_scope, current_product_cache,
 import numpy as np
 import warp as wp
 
-MATHDX_ROOT = '/srv/libero-split-receive-20261004-r01/dependencies/mathdx-cuda12/nvidia-mathdx-25.12.1-cuda12/nvidia/mathdx/25.12'
-_strict_receipts_scope=ContextVar('strict_build_receipts',default=None)
 _world_guard_scope=ContextVar('native_plan_world_guard',default=None)
 
 
@@ -62,13 +60,6 @@ def world_guard_scope(guard, prefixes):
     try:yield
     finally:_world_guard_scope.reset(token)
 
-@contextmanager
-def strict_build_receipts_scope(enabled=True):
-    """Explicit prototype cold constructors, without global environment edits."""
-    token=_strict_receipts_scope.set(bool(enabled))
-    try:yield
-    finally:_strict_receipts_scope.reset(token)
-
 _CTYPES = {'real_t': scalar.ct_real, 'float': ct.c_float, 'int': ct.c_int32,
            'int32_t': ct.c_int32, 'uint32_t': ct.c_uint32, 'int64_t': ct.c_int64,
            'uint64_t': ct.c_uint64, 'bool': ct.c_bool, 'size_t': ct.c_size_t}
@@ -77,9 +68,12 @@ _CTYPES = {'real_t': scalar.ct_real, 'float': ct.c_float, 'int': ct.c_int32,
 @lru_cache(maxsize=8)
 def _large_parameter_support(architecture, nvcc):
     """Cold feature gate for CUDA 12.1's extended kernel argument ABI."""
-    result=subprocess.run([nvcc,'--version'],capture_output=True,text=True)
-    version=re.search(r'release\s+(\d+)\.(\d+)',result.stdout)
-    compiler=tuple(map(int,version.groups())) if result.returncode==0 and version else (0,0)
+    if nvcc is None:
+        compiler=None
+    else:
+        result=subprocess.run([nvcc,'--version'],capture_output=True,text=True)
+        version=re.search(r'release\s+(\d+)\.(\d+)',result.stdout)
+        compiler=tuple(map(int,version.groups())) if result.returncode==0 and version else (0,0)
     driver=ct.c_int(0)
     try:
         lib=ct.CDLL('libcuda.so.1')
@@ -88,9 +82,9 @@ def _large_parameter_support(architecture, nvcc):
         if lib.cuDriverGetVersion(ct.byref(driver))!=0: driver.value=0
     except OSError:
         driver.value=0
-    supported=architecture>=70 and compiler>=(12,1) and driver.value>=12010
+    supported=architecture>=70 and (compiler is None or compiler>=(12,1)) and driver.value>=12010
     return {'supported':supported,'architecture':architecture,
-            'compiler_version':list(compiler),'driver_version':driver.value,
+            'compiler_version':list(compiler) if compiler else None,'driver_version':driver.value,
             'parameter_limit_bytes':32764 if supported else 4096,
             'documentation':'https://developer.nvidia.com/blog/?p=66058'}
 
@@ -123,12 +117,10 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
         # its exports as well; our generated C entry points stay exported.
         flags += ['-Xcompiler=-fno-gnu-unique',
                   '-Xlinker=--exclude-libs=libcusolverdx.a']
-        dx = selected_mathdx_root(MATHDX_ROOT)
-        roots += [str(dx/'include'), str(dx/'external/cutlass/include')]
-        library = dx/'lib/libcusolverdx.a'
-        from .compilation import compilation_allowed
-        if compilation_allowed() and (not library.is_file() or not (dx/'include/cublasdx.hpp').is_file()):
-            raise FileNotFoundError('MathDx installation is incomplete: '+str(dx))
+        dx = selected_mathdx_root()
+        if dx is not None:
+            roots += [str(dx/'include'), str(dx/'external/cutlass/include')]
+            library = dx/'lib/libcusolverdx.a'
     for inc in roots:
         flags += ['-I', inc]
     bridge_text = [Path(p).read_text() if isinstance(p, Path) or '\n' not in str(p)
@@ -137,22 +129,18 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     from .compilation import compilation_allowed, MissingCompiledProduct
     if cache is not None and not compilation_allowed():
         found = cache.find_native(source, bridge_text, flags, dev.arch,
-                                  str(library) if library else None, required_symbols)
+                                  str(library) if library else (True if mathdx else None), required_symbols)
         if found is None:
             raise MissingCompiledProduct('Native library is absent; prepare offline: ' + name)
         target, units, receipt = found
         fixed = target
         # Stateless plans share code. Other consumers still require an owned
         # private DSO; preserve their separate globals and unloading lifetime.
-        if not shared or not all(unit.is_file() for unit in units):
+        if not shared:
             root.mkdir(parents=True, exist_ok=True)
             stem = re.sub(r'[^A-Za-z0-9_]', '_', name) + '_' + uuid.uuid4().hex
-            units = [root/(stem + '_unit%d.cu' % i) for i in range(1+len(bridge_text))]
-            for unit, text in zip(units, [source, *bridge_text]):
-                unit.write_text(text)
-            if not shared:
-                target = root/(stem + '.so')
-                shutil.copyfile(fixed, target)
+            target = root/(stem + '.so')
+            shutil.copyfile(fixed, target)
         loaded = load_cdll(target)
         if not all(hasattr(loaded, symbol) for symbol in required_symbols):
             raise RuntimeError('native launcher symbol ABI missing')
@@ -243,6 +231,9 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
                         raise RuntimeError('native source differs from offline build inputs')
                 else:
                     path.write_text(text)
+        if shared and product_status['persisted']:
+            target = Path(product_status['directory'])/'product.so'
+            src = inputs/'unit0.cu'
         if product_status['hit']:
             cache_source=str(Path(product_status['directory'])/'product.so')
             log.write_text('Completed offline product reused; no compiler build commands executed.\n')
@@ -284,128 +275,6 @@ def _compile_library_receipted(name, source, build_root, *, device='cuda:0', mat
     return loaded, manifest
 
 
-def _compile_library_legacy(name, source, build_root, *, device='cuda:0', mathdx=False,
-                    defines=None, bridges=(), include_dirs=(), extra_flags=()):
-    """Return (ctypes library, manifest); retain source and compiler diagnostics."""
-    root = Path(build_root).resolve(); root.mkdir(parents=True, exist_ok=True)
-    dev = wp.get_device(device)
-    if not dev.is_cuda:
-        raise ValueError('native CUDA requires a CUDA device')
-    flags = ['-Xcompiler', '-fPIC', '-O3', '-std=c++17', '--fmad=true',
-             '--prec-div=true', '--prec-sqrt=true', '--expt-relaxed-constexpr',
-             '-arch=sm_%d' % dev.arch]
-    if any(x in ('--use_fast_math', '--fmad=false') for x in extra_flags):
-        raise ValueError('fast-math and disabled FMA are outside the fusion contract')
-    flags += list(extra_flags)
-    for key, value in sorted((defines or {}).items()):
-        if not re.fullmatch(r'[A-Za-z_]\w*', key):
-            raise ValueError('invalid CUDA define')
-        flags.append('-D%s=%s' % (key, value))
-    roots = [str(Path(p).resolve()) for p in include_dirs]
-    library = None
-    if mathdx:
-        dx = selected_mathdx_root(MATHDX_ROOT)
-        roots += [str(dx/'include'), str(dx/'external/cutlass/include')]
-        library = dx/'lib/libcusolverdx.a'
-        if not library.is_file() or not (dx/'include/cublasdx.hpp').is_file():
-            raise FileNotFoundError('MathDx installation is incomplete: '+str(dx))
-    for inc in roots:
-        flags += ['-I', inc]
-    bridge_text = [Path(p).read_text() if isinstance(p, Path) or '\n' not in str(p)
-                   else str(p) for p in bridges]
-    digest = hashlib.sha256((source+'\n'+'\n'.join(bridge_text)+repr(flags)).encode())
-    # User include dependencies participate in the cache; vendor archive is
-    # hashed separately. Never hash the entire installed CUDA header tree.
-    # Track actual transitive quoted includes, not every unrelated module.
-    dependency_roots = [Path(p).resolve() for p in include_dirs]
-    pending = [(source, root)] + [(text, root) for text in bridge_text]
-    dependencies = set()
-    while pending:
-        unit_text, parent = pending.pop()
-        for delimiter, spelling in re.findall(r'^\s*#\s*include\s*(["<])([^">\n]+)[">]', unit_text, re.MULTILINE):
-            inc = Path(spelling)
-            choices = [inc] if inc.is_absolute() else ([parent/inc] if delimiter == '"' else []) + [folder/inc for folder in dependency_roots]
-            header = next((p.resolve() for p in choices if p.is_file()), None)
-            if header is None or header in dependencies:
-                continue  # nvcc diagnoses unresolved includes.
-            dependencies.add(header)
-            pending.append((header.read_text(), header.parent))
-    for header in sorted(dependencies):
-        digest.update(str(header).encode());digest.update(header.read_bytes())
-    if library:
-        digest.update(library.read_bytes())
-    key = digest.hexdigest()[:20]
-    stem = re.sub(r'[^A-Za-z0-9_]', '_', name)+'_'+key
-    src = root/(stem+'.cu'); target = root/(stem+'.so')
-    src.write_text(source)
-    nvcc = nvcc_path()
-    commands = []
-    if mathdx or bridge_text:
-        objects = []
-        for index, text in enumerate([source]+bridge_text):
-            unit = src if index == 0 else root/(stem+'_bridge%d.cu' % index)
-            unit.write_text(text); obj = unit.with_suffix('.o'); objects.append(str(obj))
-            commands.append([nvcc]+flags+['-dc', '-dlto', str(unit), '-o', str(obj)])
-        commands.append([nvcc]+flags+['-shared', '-dlto']+objects+
-                        ([str(library)] if library else [])+['-o', str(target)])
-    else:
-        commands.append([nvcc]+flags+['-shared', str(src), '-o', str(target)])
-    log = root/(stem+'.log')
-    cache_source = None
-    reused = target.exists()
-    if reused:
-        previous = json.loads(target.with_suffix('.json').read_text())
-        if previous.get('sha256') != digest.hexdigest():
-            raise ValueError('cached native source identity differs')
-        binary_sha = previous.get('binary_sha256')
-        if binary_sha is not None and hashlib.sha256(target.read_bytes()).hexdigest() != binary_sha:
-            raise ValueError('cached native binary differs')
-        cache_source = str(target)
-    if not target.exists():
-        # Names distinguish plans and reports; the generic launch ABI depends
-        # only on the complete source/dependency/policy digest. Reuse an
-        # already completed identical build under another plan name.
-        cache_roots=[root]
-        explicit_cache=os.environ.get('LIBERO_CUDA_FUSION_CACHE')
-        if explicit_cache: cache_roots.append(Path(explicit_cache).resolve())
-        from libero.gpu.host.runtime.core.product_paths import current_build_project, cache_root
-        project = current_build_project()
-        if project is not None:
-            cache_roots.extend((project['root'] / 'cuda', cache_root() / 'builds'))
-        candidates=sorted({path for folder in cache_roots for path in folder.rglob('*_'+key+'.so')})
-        for candidate in candidates:
-            metadata = candidate.with_suffix('.json')
-            try:
-                identical = json.loads(metadata.read_text()).get('sha256') == digest.hexdigest()
-            except (OSError, ValueError):
-                continue
-            if identical:
-                recorded = json.loads(metadata.read_text()).get('binary_sha256')
-                if recorded is not None and hashlib.sha256(candidate.read_bytes()).hexdigest() != recorded:
-                    continue
-                shutil.copyfile(candidate,target)
-                cache_source = str(candidate)
-                reused = True
-                break
-    if not target.exists():
-        from libero.gpu.host.build.compilation import require_compilation
-        require_compilation('native CUDA library', target)
-        output = []
-        for command in commands:
-            result = subprocess.run(command, capture_output=True, text=True)
-            output.append(result.stdout+result.stderr)
-            log.write_text('\n'.join(output))
-            if result.returncode:
-                raise RuntimeError('CUDA compilation failed: '+str(log))
-    manifest = {'name': name, 'sha256': digest.hexdigest(), 'source': str(src),
-                'library': str(target), 'compile_commands': commands,
-                'fma': True, 'fast_math': False, 'architecture': dev.arch,
-                'cache_source':cache_source,
-                'binary_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),
-                'compile_commands_executed':[] if reused else commands}
-    (root/(stem+'.json')).write_text(json.dumps(manifest, indent=2))
-    return load_cdll(target), manifest
-
 
 def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
                     defines=None,bridges=(),include_dirs=(),extra_flags=(),required_symbols=(),
@@ -416,19 +285,17 @@ def compile_library(name,source,build_root,*,device='cuda:0',mathdx=False,
         raise ValueError('native scalar precision differs from the process policy')
     defines['FLASH_REAL_BITS'] = scalar.bits
     include_dirs = (*include_dirs, GPU_ROOT / 'cuda/common')
-    scoped=_strict_receipts_scope.get()
-    enabled=((scoped if scoped is not None else os.environ.get('LIBERO_BUILD_RECEIPTS')=='1')
-             if strict_build_receipts is None else bool(strict_build_receipts))
-    function=_compile_library_receipted if enabled else _compile_library_legacy
-    options=dict(device=device,mathdx=mathdx,defines=defines,bridges=bridges,
-                 include_dirs=include_dirs,extra_flags=extra_flags)
-    if enabled:options.update(required_symbols=required_symbols, shared=shared)
-    from libero.gpu.host.runtime.core.product_paths import build_unit_lock
+    from libero.gpu.host.runtime.core.product_paths import build_unit_lock, current_build_project
     from .compilation import compilation_allowed
-    scope = nullcontext() if enabled and current_product_cache() is not None and not compilation_allowed() else build_unit_lock(build_root)
-    with scope:
-        loaded,manifest=function(name,source,build_root,**options)
-    if enabled and not all(hasattr(loaded,symbol) for symbol in required_symbols):
+    project = current_build_project()
+    cache_scope = (nullcontext() if current_product_cache() is not None else
+                   product_cache_scope((project['root'] if project else Path(build_root)) / 'products'))
+    lock = build_unit_lock(build_root) if compilation_allowed() else nullcontext()
+    with cache_scope, lock:
+        loaded,manifest=_compile_library_receipted(name,source,build_root,device=device,
+            mathdx=mathdx,defines=defines,bridges=bridges,include_dirs=include_dirs,
+            extra_flags=extra_flags,required_symbols=required_symbols,shared=shared)
+    if not all(hasattr(loaded,symbol) for symbol in required_symbols):
         raise RuntimeError('native compiled launcher symbol ABI missing')
     from libero.gpu.host.runtime.core.product_paths import record_build
     record_build('native-cuda', manifest.get('sha256', name),
@@ -535,7 +402,8 @@ class NativePlan:
         parameter_abi={'parameter_bytes':parameter_bytes,'parameter_limit_bytes':4096,
                        'grid_constant':False,'large_parameter_support':None}
         if parameter_bytes>4096:
-            support=_large_parameter_support(self.device.arch,nvcc_path())
+            from .compilation import compilation_allowed
+            support=_large_parameter_support(self.device.arch,nvcc_path() if compilation_allowed() else None)
             parameter_abi.update(parameter_limit_bytes=support['parameter_limit_bytes'],
                                  grid_constant=support['supported'],large_parameter_support=support)
             if parameter_bytes>support['parameter_limit_bytes']:
@@ -576,16 +444,9 @@ extern "C" int configure_shared(int bytes) {
     return (int)cudaFuncSetAttribute(native_kernel,cudaFuncAttributeMaxDynamicSharedMemorySize,bytes);
 }
 '''
-        receipt_scope=_strict_receipts_scope.get()
-        receipt_enabled=receipt_scope if receipt_scope is not None else os.environ.get('LIBERO_BUILD_RECEIPTS')=='1'
-        if receipt_enabled:
-            self.library, self.manifest = compile_library(name,source,build_root,device=self.device,
-                    mathdx=mathdx,defines=defines,bridges=bridges,extra_flags=extra_flags,
-                    include_dirs=include_dirs,required_symbols=('launch','configure_shared'), shared=True)
-        else:
-            self.library, self.manifest = compile_library(name,source,build_root,device=self.device,
-                    mathdx=mathdx,defines=defines,bridges=bridges,extra_flags=extra_flags,
-                    include_dirs=include_dirs)
+        self.library, self.manifest = compile_library(name,source,build_root,device=self.device,
+                mathdx=mathdx,defines=defines,bridges=bridges,extra_flags=extra_flags,
+                include_dirs=include_dirs,required_symbols=('launch','configure_shared'), shared=True)
         self.library.configure_shared.argtypes=[ct.c_int]
         self.library.configure_shared.restype=ct.c_int
         with wp.ScopedDevice(self.device):

@@ -7,10 +7,10 @@ from .euler_other import advance_activation,publish_advance
 from libero.gpu.host.runtime.dynamics.mjwarp_publication import PublicationState
 
 
-def publication_product(root,*,fast_compile=False):
-    from libero.gpu.host.build.project_paths import project_paths
+def publication_product(root,*,arch,fast_compile=False):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release');path=folder/'mjwarp_publication_fp32.so';target='flash_mjwarp_publication_fp32'
+    folder=cmake_directory(root, arch, fast_compile=fast_compile);path=folder/'mjwarp_publication_fp32.so';target='flash_mjwarp_publication_fp32'
     if not path.is_file():raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
     return path
 

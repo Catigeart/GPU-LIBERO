@@ -35,7 +35,7 @@ class _OutputCopies:
             if not source.size: continue
             dtype=types[source.dtype]
             args += [f's{i}: wp.array(dtype=wp.{dtype})', f't{i}: wp.array(dtype=wp.{dtype})']
-            condition=f'cell < {source.size}'
+            condition=f'cell < s{i}.shape[0]'
             if restore:
                 condition += f' and active[cell // {source.size // ws.nworld}] == 0'
             body.append(f'    if {condition}: t{i}[cell] = s{i}[cell]')

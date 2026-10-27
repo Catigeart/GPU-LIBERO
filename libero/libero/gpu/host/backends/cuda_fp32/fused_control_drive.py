@@ -3,7 +3,7 @@ import ctypes as ct
 import hashlib
 from pathlib import Path
 from .fused_control_prepare import ControlPrepareInputs
-from libero.gpu.host.runtime.step.substep_types import ControllerSolveData
+from libero.gpu.host.runtime.control import ControllerSolveData
 from libero.gpu.host.runtime.dynamics.mjwarp_actuation import ActuationInputs
 from libero.gpu.host.runtime.dynamics.mjwarp_smooth_force import SmoothForceInputs
 from libero.gpu.host.runtime.dynamics.mjwarp_mass_solve import MassSolveInputs

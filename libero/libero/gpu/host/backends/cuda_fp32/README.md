@@ -8,7 +8,8 @@ combines accepted phases in `cuda/fp32/`.
 It is the default `GpuBatchEnv` backend when precision is omitted and
 `LIBERO_GPU_PRECISION` is unset. Select `precision="fp64"` explicitly to use
 the native FP64 backend in its separate environment.
-CPU MuJoCo 3.16.0 remains a dependency for model compilation and OpenGL rendering.
+The development environment pins CPU MuJoCo 3.16.0 for model compilation and OpenGL rendering.
+Production intake uses the actual model API; each prepared MJB is bound to its Python/native engine version.
 CPU MuJoCo 2.3.7 remains the independent reference for overlapping semantics.
 
 The algorithm reference is MJWarp commit
@@ -121,6 +122,27 @@ storage until completion, and Graphs retain launch owners. Allocation is
 forbidden during capture. Newton initializes its reusable workspace per solve;
 the conditional loop uses a current device counter without host iteration
 polling. `Controller.bootstrap` and standalone gather remain explicit entries.
+
+The runtime selects `sm<actual-device-architecture>-<mode>` after a driver-only
+device query. Pass `--arch` to the offline build for each target deployment;
+MathDx operators use that target, without an SM80 fallback. Independent FP32
+allocations, streams, graph capture, execution and release restore the calling
+thread's previous CUDA device.
+
+`scene_seed=None` uses the fixed prepared fixture scene. `seed` controls each
+world's episode sequence and can change without preparing a new scene or CUDA
+product. N is also a runtime argument, with memory and int32 indexing limits.
+Observation layout choices do not select another physics binary. OSC action
+input/output ranges, Panda formatter speed and the existing `uncouple_pos_ori`
+setting are passed to the solver; the 7-DOF Panda/9-control layout and unported
+physics families remain actual implementation limits.
+
+Prepared data uses root-relative internal paths and configured asset roots.
+A runtime deployment can contain scene data, model caches and the selected
+`.so` bank without CMake files, a compiler or the MathDx development SDK.
+Independent FP32 does not select/freeze the legacy Warp scalar policy. The
+legacy native and MJWarp dependency environments retain their own real type
+and engine compatibility requirements.
 
 ### Numerical source map and selection
 

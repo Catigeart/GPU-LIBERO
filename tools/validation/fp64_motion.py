@@ -4,6 +4,7 @@ import ctypes as ct
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import subprocess
 import time
 from types import SimpleNamespace
@@ -196,7 +197,7 @@ def main(args):
                 memory_budget_policy=asdict(memory_policy))
     def event(name,**kw):print(json.dumps(dict(event=name,**kw)),flush=True)
     with compilation_scope(False) as scope:
-        task=next(t for t in json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
+        task=next(t for t in load_catalog(args.build_root)
                   if t['suite']==args.suite and t['task_id']==args.task)
         report['inputs']=dict(task_key=task['key'],model_directory=task['directory'],
             state=str(args.state) if args.state else 'official_initial_states',

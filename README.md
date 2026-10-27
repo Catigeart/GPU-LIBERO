@@ -233,6 +233,43 @@ never performs a 130-environment bootstrap. The
 retains the full task-to-model mapping. Initialization and ordinary runtime
 loading still check their actual model and ABI requirements.
 
+Preparation has three boundaries: CPU resources/scenes, offline CUDA products,
+and load-only environment construction. The common FP32 scene catalogue is
+prepared in CPU MuJoCo 2.3.7 and imported by the modern FP32 dependency
+environment as described in the [FP32 guide](libero/libero/gpu/host/backends/cuda_fp32/README.md).
+Native CPU scenes use `python -m libero.gpu.host.build.task_catalog --build-root ROOT`.
+Native transport/observer preparation remains the existing `host.build.aot.compile_catalog`
+API; it records discarded captures without advancing physics. Numerical instances
+are declared by the complete model tuple and built through CMake, independently
+of that transport preparation.
+
+Select the offline target with `--arch CC` (`-DFLASH_CUDA_ARCH=CC` in CMake).
+Runtime queries the requested device before selecting `smCC-dev` or `smCC-release`;
+it never substitutes another architecture's product. MathDx uses the same target,
+subject to the installed SDK's actual operator support. For FP32-only CMake
+configuration, pass `-DFLASH_BUILD_NATIVE=OFF` to omit native-specific prelink
+requirements. The native local prelink still requires NVCC 13.2; the FP32 CUDA
+Graph and MathDx requirements still apply.
+
+`num_envs` is a runtime count. Available memory, int32 array spans and actual CUDA
+launch/resource limits determine capacity. `seed` controls episode RNGs;
+`scene_seed=None` selects the catalogue's fixed fixture scene, and an explicit
+`scene_seed` must match that prepared scene. A different episode seed or N does
+not select a new numerical binary. Camera names, sizes, depth, segmentation and
+object-observation choices are observation data; native preparation includes the
+no-camera, camera and depth sampler implementations rather than a benchmark
+camera whitelist.
+
+New catalogues store internal paths relative to the preparation root and XML
+assets relative to the configured LIBERO/robosuite asset roots. Move the complete
+prepared runtime data/product set together and update the resource configuration
+for external assets. Load-only execution needs CUDA runtime/driver and compatible
+MuJoCo models, but no MathDx SDK, NVCC or CMake. Development pins reproduce the
+reference environment; MJB engine identity and actual array/enum/model support
+checks remain separate runtime requirements. Rebuild older products offline after
+this update: CUDA resource exports, controller argument layout and native Newton
+shape metadata changed.
+
 ## Getting Started
 
 ### Default FP32 batches
@@ -350,9 +387,9 @@ In the default fast profile, collision processing also skips inactive-output
 backup copies and computes contact parameters only for live queries and kept
 contacts. `debug=True` retains the full-capacity collision diagnostics. Contact
 ordering, configured capacities and overflow/error handling are unchanged.
-Set `strict_build_receipts=True` to additionally use the product entry's full
-compiler/library dependency receipts and artifact cache; this can add substantial
-cold-build time. This option does not change `debug` or grant numerical qualification.
+Offline native builds use the ordinary product cache and record compiler/library
+dependencies. The legacy `strict_build_receipts` argument remains accepted; it
+no longer selects a separate builder or observer mode.
 
 For source ownership, ordinary versus explicitly fused graphs, and retained
 fallback paths, see the [runtime architecture index](libero/libero/gpu/ARCHITECTURE.md).

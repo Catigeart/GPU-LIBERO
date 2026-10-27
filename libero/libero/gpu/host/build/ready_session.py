@@ -50,8 +50,8 @@ class ReadySession:
                       debug=False, return_record=True):
         from . import aot
         self._check()
-        if (aot.project_root(root), num_envs, seed) != (self._root, self._num_envs, self._seed):
-            raise MissingCompiledProduct('Ready session root, num_envs or seed differs from this request')
+        if aot.project_root(root) != self._root:
+            raise MissingCompiledProduct('Ready session root differs from this request')
         return aot.require_ready(root, bddl, num_envs=num_envs, seed=seed,
             observation_options=observation_options, debug=debug, return_record=return_record)
 

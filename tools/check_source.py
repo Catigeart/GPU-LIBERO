@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 GPU = ROOT / "libero/libero/gpu"
 SKIP = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
-CPU_TESTS = ("test_installation_layout.py", "test_resource_paths.py", "test_product_tool_paths.py",
+CPU_TESTS = ("test_gpu_portability.py", "test_cuda_device_scope.py", "test_gpu_substep_catalog.py", "test_gpu_build_cache.py", "test_installation_layout.py", "test_resource_paths.py", "test_product_tool_paths.py",
              "test_native_capsule_sources.py", "test_fp32_fusion_schedule.py", "test_gpu_staged_substep.py", "test_gpu_subtree_topology.py", "test_gpu_memory_budget.py", "test_gpu_batch_env.py",
              "test_deferred_native_build.py", "test_release_inputs.py",
              "test_validation_tools.py", "test_validation_runner.py", "test_validation_precision.py", "test_precision_policy.py",

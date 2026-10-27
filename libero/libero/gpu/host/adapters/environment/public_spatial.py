@@ -96,12 +96,11 @@ class PublicSpatialQueries:
     def _prepare(self):
         if self._plans is not None:return
         from libero.gpu.host.runtime.core.product_paths import mathdx_root, toolchain_scope, cache_root
-        from libero.gpu.host.build.native import strict_build_receipts_scope
         from libero.gpu.host.build.product_cache import product_cache_scope
         # Public leaf calls run outside factory's original construction scope.
         # Resolve and bind the actual bundled SDK/cache authority here once.
         sdk=mathdx_root()
-        with toolchain_scope(sdk), strict_build_receipts_scope(True), product_cache_scope(cache_root()/'products'):
+        with toolchain_scope(sdk), product_cache_scope(Path(getattr(self.bundle,'build_project_root',self.build_root))/'products'):
             self._prepare_native()
 
     def _prepare_native(self):

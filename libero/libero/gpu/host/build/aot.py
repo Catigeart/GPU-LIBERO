@@ -15,7 +15,7 @@ import time
 
 from libero.gpu.host.paths import GPU_ROOT, REPO_ROOT
 from libero.gpu.host.runtime.core.product_paths import cache_root
-from .project_paths import project_paths
+from .project_paths import project_paths, relative_record
 
 
 def project_root(root=None):
@@ -483,10 +483,10 @@ def source_identity():
     return hashlib.sha256(encoded + ('|real='+str(scalar.bits)).encode()).hexdigest()
 
 
-def save(path, value):
+def save(path, value, *, root=None):
     path = Path(path)
     temporary = path.with_suffix(path.suffix + '.' + str(os.getpid()) + '.tmp')
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True)+'\n')
+    temporary.write_text(json.dumps(relative_record(value, root) if root is not None else value, indent=2, sort_keys=True)+'\n')
     temporary.replace(path)
 
 
@@ -514,16 +514,14 @@ def configure_warp_cache(root, *, seed_cache=False):
     return destination
 
 
-def scene_for(root, bddl, seed):
+def scene_for(root, bddl, seed=None):
     root = project_root(root)
     task_key = Path(bddl).parent.name + '/' + Path(bddl).name
     index = root / 'TASK_INSTANCES.json'
     if not index.exists():
         return None
-    records = json.loads(index.read_text())['tasks']
-    scene = next((r for r in records if r['key'] == task_key and r['seed'] == seed), None)
-    if scene is None:
-        return None
+    from .task_catalog import scene_record
+    scene = scene_record(root, bddl, seed)
     if _sha(bddl) != scene['bddl_sha256']:
         raise ValueError('BDDL differs from the prepared scene: ' + task_key)
     directory = Path(scene['directory'])
@@ -549,38 +547,28 @@ def observation_product_contract(*, include_sources=True):
         profiles={
             'no-camera': dict(use_camera_obs=False, use_object_obs=True, camera_names=[], camera_heights=[],
                 camera_widths=[], camera_depths=[], camera_segmentations=[]),
-            'dual-rgb128': dict(use_camera_obs=True, use_object_obs=True, camera_names=['agentview', 'robot0_eye_in_hand'],
+            'camera': dict(use_camera_obs=True, use_object_obs=True, camera_names=['agentview', 'robot0_eye_in_hand'],
                 camera_heights=[128, 128], camera_widths=[128, 128],
-                camera_depths=[False, False], camera_segmentations=[None, None])})
+                camera_depths=[False, False], camera_segmentations=[None, None]),
+            'camera-depth': dict(use_camera_obs=True, use_object_obs=True, camera_names=['agentview'],
+                camera_heights=[128], camera_widths=[128], camera_depths=[True], camera_segmentations=[None])})
     if include_sources:
         contract['source_files'] = {name: _sha(GPU_ROOT/name) for name in producers}
     return contract
 
 
 def observation_profile_for_options(options=None):
-    """Name only the two built default profiles; never broaden a ready claim."""
-    from .compilation import MissingCompiledProduct
-    options = dict(options or {})
-    if options.get('use_object_obs', True) is not True:
-        raise MissingCompiledProduct('Observation profile is absent from the unified build: use_object_obs must be True')
+    """Select sampler code by features; dimensions and camera names are data."""
+    options = options or {}
     if not options.get('use_camera_obs', False):
         return 'no-camera'
-    def pair(name, default):
-        value = options.get(name, default)
-        return list(value) if isinstance(value, (list, tuple)) else [value, value]
-    if (options.get('camera_names', ['agentview', 'robot0_eye_in_hand']) in
-            (['agentview', 'robot0_eye_in_hand'], ('agentview', 'robot0_eye_in_hand')) and
-            pair('camera_heights', 128) == [128, 128] and pair('camera_widths', 128) == [128, 128] and
-            pair('camera_depths', False) == [False, False] and
-            pair('camera_segmentations', None) == [None, None]):
-        return 'dual-rgb128'
-    raise MissingCompiledProduct('Observation profile is absent from the unified build; '
-        'only no-camera and default dual RGB 128 profiles are prepared')
+    depths = options.get('camera_depths', False)
+    return 'camera-depth' if any(depths if isinstance(depths, (tuple, list)) else [depths]) else 'camera'
 
 
 def _observation_features(profile):
     result = ['direct_sampler_v1', 'retained_sampler_fallback_v1', 'lowdim_reset_kernel_v1']
-    if profile == 'dual-rgb128':
+    if profile != 'no-camera':
         result += ['scene_clock_reset_kernel_v1', 'retained_scene_transform_fallback_v1']
     return result
 
@@ -588,7 +576,7 @@ def _observation_features(profile):
 def _observation_warp_modules(profile):
     names = ['libero.gpu.host.adapters.observations.packing',
              'libero.gpu.host.adapters.observations.device']
-    if profile == 'dual-rgb128':
+    if profile != 'no-camera':
         names.append('libero.gpu.host.adapters.observations.scene_kinematics')
     return names
 
@@ -642,7 +630,7 @@ def _observation_products_ready(products, contract, *, root, native_artifacts, w
             digest = manifest.get('library_sha256', manifest.get('binary_sha256',
                 manifest.get('build_receipt', {}).get('binary_sha256')))
             try:
-                spelling = str(Path(library).relative_to(root))
+                spelling = str((root / library).relative_to(root))
             except (TypeError, ValueError):
                 return False
             if not digest or native_artifacts.get(spelling) != digest:
@@ -650,7 +638,7 @@ def _observation_products_ready(products, contract, *, root, native_artifacts, w
             bindings[spelling] = digest
             names.add(manifest.get('name'))
         expected_names = {'direct_observations'}
-        if name == 'dual-rgb128':
+        if name != 'no-camera':
             expected_names.add('handwritten_scene')
         if names != expected_names or row.get('native_artifacts') != bindings:
             return False
@@ -709,8 +697,7 @@ def _prepare_observation_profiles(env, root, *, contract=None):
             # Alternate bindings read the same arena; neither live callback is replaced.
             binding = FixedRuntimeObservationBinding(bundle, observer)
             manifest = install_batch(observer, binding, bundle, root,
-                dataflow_profile='fast', debug=False,
-                strict_build_receipts=getattr(bundle, 'observation_build_options', {}).get('strict_build_receipts', False))
+                dataflow_profile='fast', debug=False)
             sampler = observer._cuda_direct_sampler
             fields = binding.fields()
             mask = bundle.runtime.valid
@@ -746,14 +733,11 @@ def _prepare_observation_profiles(env, root, *, contract=None):
 
 def _require_ready_header(record, *, num_envs, seed):
     from .compilation import MissingCompiledProduct
-    # Some generated native schedules embed nworld. The seed selects fixture
-    # placement in the prepared static model. Neither can be relaxed here.
     if (not isinstance(record, dict) or record.get('schema') != 'libero-unified-aot-build-v1' or
             record.get('status') != 'complete' or record.get('real_bits') != scalar.bits or
-            record.get('num_envs') != num_envs or record.get('seed') != seed or
             not isinstance(record.get('tasks'), dict)):
         raise MissingCompiledProduct('Unified LIBERO build has an incompatible format, precision, '
-            'world count or scene seed; run python -m libero.gpu.build')
+            'task manifest; prepare CPU scenes and offline products')
 
 
 def _read_ready_record(root, *, num_envs, seed):
@@ -762,7 +746,9 @@ def _read_ready_record(root, *, num_envs, seed):
     try:
         record = json.loads(path.read_text())
     except FileNotFoundError as error:
-        raise MissingCompiledProduct('Unified LIBERO build is absent; run python -m libero.gpu.build') from error
+        if not (root/'TASK_INSTANCES.json').is_file():
+            raise MissingCompiledProduct('CPU scenes are absent; prepare with python -m libero.gpu.host.build.task_catalog --build-root '+str(root)) from error
+        raise MissingCompiledProduct('Native transport/observer products are absent; after CPU scene preparation and the CMake numerical build, run host.build.aot.compile_catalog for this project') from error
     _require_ready_header(record, num_envs=num_envs, seed=seed)
     return record
 
@@ -772,36 +758,33 @@ def _require_ready_task(record, root, key, *, observation_options, debug, contra
     if key not in record['tasks']:
         raise MissingCompiledProduct('Task is absent from the unified LIBERO build: ' + key)
     row = record['tasks'][key]
-    if (row.get('key') != key or row.get('real_bits') != record['real_bits'] or
-            row.get('num_envs') != record['num_envs'] or row.get('seed') != record['seed']):
+    if row.get('key') != key or row.get('real_bits') != record['real_bits']:
         raise MissingCompiledProduct('Task configuration differs from the unified LIBERO build: ' + key)
     profile = observation_profile_for_options(observation_options)
     products = row.get('observation_products', {})
-    spec = contract['profiles'][profile]
     # Sources and capture diagnostics describe how the offline build was made;
     # the runtime only needs the requested observer layout and its products.
     for actual in (record.get('observation_contract', {}), products.get('contract', {})):
         if (debug or any(actual.get(name) != contract[name]
-                         for name in ('schema', 'version', 'dataflow_profile', 'debug')) or
-                actual.get('profiles', {}).get(profile) != spec):
+                         for name in ('schema', 'version', 'dataflow_profile', 'debug'))):
             raise MissingCompiledProduct('Observation ABI/profile is absent or incompatible: ' + profile)
     profiles = products.get('profiles', {})
     selected = profiles.get(profile, {})
     installation = selected.get('installation', {})
-    if (selected.get('spec') != spec or selected.get('dataflow_profile') != 'fast' or
+    if (selected.get('dataflow_profile') != 'fast' or
             selected.get('debug') is not False or installation.get('installed') is not True or
             installation.get('batch_observation_abi') != 'direct-v1'):
         raise MissingCompiledProduct('Observation products are absent for the requested profile: ' + profile)
     native = row.get('native_artifacts', {})
     warp = row.get('warp_artifacts', {})
     selected_native = selected.get('native_artifacts', {})
-    expected_names = {'direct_observations'} | ({'handwritten_scene'} if profile == 'dual-rgb128' else set())
+    expected_names = {'direct_observations'} | ({'handwritten_scene'} if profile != 'no-camera' else set())
     manifests = installation.get('native_artifacts', [])
     if {item.get('name') for item in manifests} != expected_names:
         raise MissingCompiledProduct('Observation native products are incomplete: ' + profile)
     for item in manifests:
         try:
-            spelling = str(Path(item.get('library_file', item.get('library'))).relative_to(root))
+            spelling = str((root / item.get('library_file', item.get('library'))).relative_to(root))
         except (TypeError, ValueError) as error:
             raise MissingCompiledProduct('Observation library is outside the build: ' + profile) from error
         if spelling not in selected_native or spelling not in native:
@@ -857,7 +840,7 @@ def instantiate_newton(root, tasks):
     for nv, nm in sorted({(r['dimensions']['nv'], r['dimensions']['nM']) for r in tasks}):
         package, manifest = load_candidate(nv, nm, root/'newton_instances')
         directory = Path(package.__path__[0])
-        instances[f'{nv}:{nm}'] = dict(directory=str(directory),
+        instances[f'{nv}:{nm}'] = dict(directory=str(directory.relative_to(root)),
             files={p.name: _sha(p) for p in directory.iterdir() if p.is_file()})
     save(root/'NEWTON_INSTANCES.json', instances)
     return instances
@@ -872,7 +855,7 @@ def offline_newton_source(root, nv, nm):
         if compilation_allowed():
             return None
         raise MissingCompiledProduct(f'Newton instance NV={nv}, NM={nm} was not built')
-    directory = Path(entry['directory'])
+    directory = Path(root) / entry['directory']
     for name, digest in entry['files'].items():
         if not (directory/name).is_file():
             raise MissingCompiledProduct('Newton instance file is absent: '+str(directory/name))
@@ -891,7 +874,7 @@ def propagate_scene_aliases(root, tasks, *, fingerprint, num_envs, seed):
     contract = observation_product_contract()
     for path in (root/'instances').glob('*/COMPILED.json'):
         row = json.loads(path.read_text())
-        if (row['source_identity']==fingerprint and row['num_envs']==num_envs and row['seed']==seed and
+        if (row['source_identity']==fingerprint and row['seed']==seed and
                 _observation_products_ready(row.get('observation_products'), contract, root=root,
                     native_artifacts=row.get('native_artifacts', {}), warp_artifacts=row.get('warp_artifacts', {}))):
             complete.setdefault(row['model_sha256'], row)
@@ -903,15 +886,14 @@ def propagate_scene_aliases(root, tasks, *, fingerprint, num_envs, seed):
         destination = root/'instances'/(task['suite']+'__'+Path(task['key']).stem)/'COMPILED.json'
         if destination.exists():
             existing = json.loads(destination.read_text())
-            if (existing['source_identity'] == fingerprint and existing['num_envs'] == num_envs
-                    and existing['seed'] == seed and
+            if (existing['source_identity'] == fingerprint and existing['seed'] == seed and
                     _observation_products_ready(existing.get('observation_products'), contract, root=root,
                         native_artifacts=existing.get('native_artifacts', {}), warp_artifacts=existing.get('warp_artifacts', {}))):
                 continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         alias = dict(source, key=task['key'], aliased_to=source['key'], seconds=0,
                      native_compiler_invocations=0, warp_compilations=0, events=[])
-        save(destination, alias)
+        save(destination, alias, root=root)
         aliases.append(alias)
     return aliases
 
@@ -963,8 +945,7 @@ def _compile_instance_in_scope(job, *, reuse_events=()):
                   all((root/p).is_file() and _sha(root/p) == digest
                       for p, digest in row.get('warp_artifacts', {}).items()) and
                   set(row.get('warp_required', [])) == set(row.get('warp_artifacts', {})))
-        if (row['source_identity'] == fingerprint and row['num_envs'] == num_envs and
-                row['seed'] == seed and 'native_artifacts' in row and intact and
+        if (row['source_identity'] == fingerprint and row['seed'] == seed and 'native_artifacts' in row and intact and
                 _observation_products_ready(row.get('observation_products'), contract, root=root,
                     native_artifacts=row.get('native_artifacts', {}), warp_artifacts=row.get('warp_artifacts', {}))):
             resumed = dict(row, resumed=True, seconds=0, events=[],
@@ -1023,7 +1004,7 @@ def _compile_instance_in_scope(job, *, reuse_events=()):
         _require_zero_compiler_commands([*reuse_events, *row['events']])
         if row['native_compiler_invocations'] or row['warp_compilations']:
             raise RuntimeError('reuse-only qualification has nonzero compiler counts; completion refused')
-    save(completed, row)
+    save(completed, row, root=root)
     return row
 
 
@@ -1054,13 +1035,13 @@ def _compile_catalog_in_scope(root, tasks, *, num_envs, seed, device, jobs, prog
         record.update(reuse_only=True, refresh_kind='reuse_validation_refresh')
     if previous_complete is not None:
         record['previous_complete_build'] = previous_complete
-    save(root / 'AOT_BUILD.json', record)
+    save(root / 'AOT_BUILD.json', record, root=root)
     models = {}
     for task in sorted(tasks, key=lambda r:(r['suite']!='libero_10',r['task_id'])):
         models.setdefault(task['model_sha256'], task)
     representatives, remaining, seen = [], [], set()
     for task in models.values():
-        key=(task['dimensions']['nv'],task['dimensions']['nM'])
+        key=tuple(task['dimensions'][k] for k in ('nv','nq','nM','njnt','nu'))
         (remaining if key in seen else representatives).append(task)
         seen.add(key)
     ordered = sorted(representatives+remaining, key=lambda task: task['suite'] != 'libero_10')
@@ -1069,12 +1050,12 @@ def _compile_catalog_in_scope(root, tasks, *, num_envs, seed, device, jobs, prog
         with get_context('spawn').Pool(jobs, maxtasksperchild=1) as pool:
             for row in pool.imap_unordered(_compile_instance, work):
                 record['tasks'][row['key']] = row
-                save(root/'AOT_BUILD.json', record)
+                save(root/'AOT_BUILD.json', record, root=root)
                 if progress:
                     progress(row, len(record['tasks']), len(work))
     except BaseException as error:
         record.update(status='failed', error=repr(error))
-        save(root/'AOT_BUILD.json', record)
+        save(root/'AOT_BUILD.json', record, root=root)
         raise
     for alias in propagate_scene_aliases(root,tasks,fingerprint=fingerprint,num_envs=num_envs,seed=seed):
         record['tasks'][alias['key']]=alias
@@ -1087,7 +1068,7 @@ def _compile_catalog_in_scope(root, tasks, *, num_envs, seed, device, jobs, prog
     if observation_product_contract() != contract:
         raise RuntimeError('Observation product contract changed during the unified build')
     index_packages(root/'specializations',
-                   [row['constraint_package'] for row in record['tasks'].values()])
+                   [root / row['constraint_package'] for row in record['tasks'].values()])
     configure_warp_cache(root, seed_cache=True)
     record['artifacts'] = {str(path.relative_to(root)): _sha(path)
         for subdirectory in ('cuda', 'collision', 'warp')
@@ -1107,5 +1088,5 @@ def _compile_catalog_in_scope(root, tasks, *, num_envs, seed, device, jobs, prog
     if reuse_only:
         _require_zero_compiler_commands(reuse_events)
     record['status'] = 'complete'
-    save(root / 'AOT_BUILD.json', record)
+    save(root / 'AOT_BUILD.json', record, root=root)
     return record

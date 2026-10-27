@@ -22,15 +22,15 @@ class MjWarpBatchEnv(GpuBatchEnv):
     physics_engine = 'mjwarp'
 
     @construction_scope
-    def __init__(self, bddl_file_name, num_envs=8, *, init_states=None, seed=0,
+    def __init__(self, bddl_file_name, num_envs=8, *, init_states=None, seed=0, scene_seed=None,
                  device='cuda:0', build_root=None, initialize=True, allow_compile=False,
                  debug=False, precision='fp32', physics_engine='mjwarp', mjwarp_options=None,
                  memory_budget=None, strict_build_receipts=False, ready_session=None,
                  profile_startup=False, algorithm_options=None,
                  **options):
         self.precision = scalar.select(precision)
-        if self.precision != 'fp32' or type(num_envs) is not int or not 1 <= num_envs <= 128:
-            raise ValueError('MJWarp requires FP32 and 1..128 worlds')
+        if self.precision != 'fp32' or type(num_envs) is not int or num_envs < 1:
+            raise ValueError('MJWarp requires FP32 and a positive integer world count')
         if ready_session is not None or algorithm_options is not None or memory_budget is not None:
             raise ValueError('native ready_session/algorithm_options/memory_budget are not MJWarp profiles')
         self.physics_engine = 'mjwarp'
@@ -52,8 +52,6 @@ class MjWarpBatchEnv(GpuBatchEnv):
         install_warp_guard()
         wp.init()
         self.stream = wp.Stream(device)
-        if self.stream.device.arch != 80:
-            raise ValueError('the current shared CUDA OSC frontend requires SM80')
         from .options import expand
         controls,self.implementation_preset=expand(mjwarp_options or {})
         fast_compile = bool(controls.pop('fast_compile', False))
@@ -130,14 +128,14 @@ class MjWarpBatchEnv(GpuBatchEnv):
         if self.publication_implementation=='cuda' and self.euler_implementation!='cuda':raise ValueError('CUDA publication requires CUDA Euler')
         self.public_forward_implementation=controls.pop('public_forward','upstream')
         if self.public_forward_implementation not in ('upstream','cuda'):raise ValueError('public_forward must be upstream or cuda')
-        self.library_path = controller_product(self.build_root, fast_compile=fast_compile)
+        self.library_path = controller_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile)
         if options.get('has_renderer') or options.get('hard_reset'):
             raise ValueError('MJWarp batch uses a fixed model with soft reset')
         options.setdefault('use_camera_obs', False)
         options.update(has_renderer=False, has_offscreen_renderer=bool(options['use_camera_obs']), hard_reset=False)
         with self._cleanup_on_error(), wp.ScopedStream(self.stream):
             self.built, self.model, bank, self.task, self.identity = build_scene(
-                self.build_root, bddl_file_name, seed, options, collision=collision,prepare=allow_compile)
+                self.build_root, bddl_file_name, scene_seed, options, collision=collision,prepare=allow_compile)
             self.initial_states = _state_bank(bank if init_states is None else init_states,
                                               self.model.nq, self.model.nv)
             self._nq, self._nv = self.model.nq, self.model.nv
@@ -154,33 +152,33 @@ class MjWarpBatchEnv(GpuBatchEnv):
             self.data = mjw.make_data(self.built.native_model, nworld=num_envs,
                                       nccdmax=self.capacities['nconmax'], **self.capacities)
             from .queries import Queries,queries_product
-            queries_library=queries_product(self.build_root,fast_compile=fast_compile) if self.queries_implementation=='cuda' else None
+            queries_library=queries_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if self.queries_implementation=='cuda' else None
             queries=Queries(self.model,self.data,self.stream,implementation=self.queries_implementation,library=queries_library)
             self.identity['queries']=queries.identity
             from .newton import Newton, hessian_product, unsupported_reason
-            hessian = (hessian_product(self.build_root, fast_compile=fast_compile)
+            hessian = (hessian_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile)
                        if self.newton_implementation in ('cuda_hessian', 'cuda_direction', 'cuda_constraint', 'cuda_linesearch', 'cuda_newton') and
                        unsupported_reason(self.model, self.data) is None else None)
             from libero.gpu.host.runtime.newton.mjwarp_direction import unsupported_reason as direction_reason
-            direction = (hessian_product(self.build_root, fast_compile=fast_compile, component='direction')
+            direction = (hessian_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile, component='direction')
                          if self.newton_implementation in ('cuda_direction', 'cuda_constraint', 'cuda_linesearch', 'cuda_newton') and hessian is not None and
                          direction_reason(self.model) is None else None)
-            constraint = (hessian_product(self.build_root, fast_compile=fast_compile, component='constraint')
+            constraint = (hessian_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile, component='constraint')
                           if self.newton_implementation in ('cuda_constraint', 'cuda_linesearch', 'cuda_newton') and direction is not None else None)
             from .newton import linesearch_reason
-            linesearch = (hessian_product(self.build_root, fast_compile=fast_compile, component='linesearch')
+            linesearch = (hessian_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile, component='linesearch')
                           if self.newton_implementation in ('cuda_linesearch', 'cuda_newton') and constraint is not None and
                           linesearch_reason(self.model) is None else None)
-            state = (hessian_product(self.build_root, fast_compile=fast_compile, component='solver_state')
+            state = (hessian_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile, component='solver_state')
                      if self.newton_implementation == 'cuda_newton' and linesearch is not None else None)
             newton = Newton(self.model, self.data, self.stream,
                             implementation=self.newton_implementation, library=hessian,
                             direction_library=direction, constraint_library=constraint, linesearch_library=linesearch, state_library=state)
             from .acceleration import Acceleration, mass_product, caller_unsupported_reason
-            mass_library = (mass_product(self.build_root, fast_compile=fast_compile)
+            mass_library = (mass_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile)
                             if self.mass_solve_implementation == 'cuda' and
                             caller_unsupported_reason(self.model, self.data) is None else None)
-            force_library = (mass_product(self.build_root, fast_compile=fast_compile, component='smooth_force')
+            force_library = (mass_product(self.build_root,arch=self.stream.device.arch, fast_compile=fast_compile, component='smooth_force')
                 if self.acceleration_implementation=='cuda' and mass_library is not None else None)
             acceleration = Acceleration(self.model, self.data, self.stream,
                 implementation=self.mass_solve_implementation, library=mass_library,
@@ -188,30 +186,30 @@ class MjWarpBatchEnv(GpuBatchEnv):
             self.identity['mass_solve'] = acceleration.identity
             self.identity['newton'] = newton.identity
             from .mass_factor import MassFactors,factor_product,caller_unsupported_reason as factor_reason
-            factor_library=(factor_product(self.build_root,fast_compile=fast_compile)
+            factor_library=(factor_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.mass_factor_implementation=='cuda' and factor_reason(self.model,self.data) is None else None)
             factors=MassFactors(self.model,self.data,self.stream,
                 implementation=self.mass_factor_implementation,library=factor_library)
             self.identity['mass_factor']=factors.identity
             from .mass_matrix import MassMatrices,matrix_product,caller_unsupported_reason as matrix_reason
-            matrix_library=(matrix_product(self.build_root,fast_compile=fast_compile)
+            matrix_library=(matrix_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.mass_matrix_implementation=='cuda' and matrix_reason(self.model,self.data) is None else None)
             matrices=MassMatrices(self.model,self.data,self.stream,
                 implementation=self.mass_matrix_implementation,library=matrix_library)
             self.identity['mass_matrix']=matrices.identity
             from .velocity import Velocity,velocity_product,caller_unsupported_reason as velocity_reason
             motion_qualified=velocity_reason(self.model,self.data) is None
-            velocity_library=(velocity_product(self.build_root,fast_compile=fast_compile)
+            velocity_library=(velocity_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.com_vel_implementation=='cuda' and motion_qualified else None)
-            bias_library=(velocity_product(self.build_root,component='bias',fast_compile=fast_compile)
+            bias_library=(velocity_product(self.build_root,arch=self.stream.device.arch,component='bias',fast_compile=fast_compile)
                 if self.bias_implementation=='cuda' and motion_qualified else None)
             from .fluid import Fluid,fluid_product,qualify as qualify_fluid
             fluid_admission=qualify_fluid(self.model,self.data,implementation=self.fluid_implementation)
-            fluid_library=fluid_product(self.build_root,fast_compile=fast_compile) if fluid_admission['selected']=='cuda' else None
+            fluid_library=fluid_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if fluid_admission['selected']=='cuda' else None
             fluid=Fluid(self.model,self.data,self.stream,implementation=self.fluid_implementation,library=fluid_library,admission=fluid_admission)
             self.identity['fluid']=fluid.identity
             from .passive import Passive,caller_unsupported_reason as passive_reason
-            passive_library=(velocity_product(self.build_root,component='passive',fast_compile=fast_compile)
+            passive_library=(velocity_product(self.build_root,arch=self.stream.device.arch,component='passive',fast_compile=fast_compile)
                 if self.passive_implementation=='cuda' and passive_reason(self.model,self.data) is None else None)
             passive_driver=Passive(self.model,self.data,self.stream,
                 implementation=self.passive_implementation,library=passive_library,fluid=fluid,queries=queries)
@@ -219,7 +217,7 @@ class MjWarpBatchEnv(GpuBatchEnv):
             from .transmission import Transmission,transmission_product,qualify as qualify_transmission
             transmission_admission=qualify_transmission(self.model,self.data,transmission=self.transmission_implementation,
                 actuator_velocity=self.actuator_velocity_implementation)
-            transmission_library=(transmission_product(self.build_root,fast_compile=fast_compile)
+            transmission_library=(transmission_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if 'cuda' in transmission_admission['selected'].values() else None)
             transmission=Transmission(self.model,self.data,self.stream,transmission=self.transmission_implementation,
                 actuator_velocity=self.actuator_velocity_implementation,library=transmission_library,admission=transmission_admission)
@@ -229,67 +227,67 @@ class MjWarpBatchEnv(GpuBatchEnv):
             self.identity['velocity']=velocity.identity
             from .external_wrench import ExternalWrench,external_wrench_product,qualify as qualify_external_wrench
             external_admission=qualify_external_wrench(self.model,self.data,implementation=self.external_wrench_implementation)
-            external_library=external_wrench_product(self.build_root,fast_compile=fast_compile) if external_admission['selected']=='cuda' else None
+            external_library=external_wrench_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if external_admission['selected']=='cuda' else None
             external_wrench=ExternalWrench(self.model,self.data,self.stream,implementation=self.external_wrench_implementation,library=external_library,admission=external_admission)
             self.identity['external_wrench']=external_wrench.identity
             from .postconstraint import Postconstraint
-            post_library=(velocity_product(self.build_root,component='postconstraint',fast_compile=fast_compile)
+            post_library=(velocity_product(self.build_root,arch=self.stream.device.arch,component='postconstraint',fast_compile=fast_compile)
                 if self.postconstraint_implementation=='cuda' and motion_qualified else None)
             postconstraint=Postconstraint(self.model,self.data,self.stream,
                 implementation=self.postconstraint_implementation,library=post_library,topology=velocity.topology,external_wrench=external_wrench)
             self.identity['postconstraint']=postconstraint.identity
             from .actuation import Actuation,actuation_product,qualify as qualify_actuation
             actuation_admission=qualify_actuation(self.model,self.data) if self.actuation_implementation=='cuda' else None
-            actuation_library=(actuation_product(self.build_root,fast_compile=fast_compile)
+            actuation_library=(actuation_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if actuation_admission is not None and actuation_admission['reason'] is None else None)
             actuation=Actuation(self.model,self.data,self.stream,implementation=self.actuation_implementation,
                 library=actuation_library,admission=actuation_admission)
             self.identity['actuation']=actuation.identity
             from .publication import Publication,publication_product,unsupported_reason as publication_reason
-            publication_library=publication_product(self.build_root,fast_compile=fast_compile) if self.publication_implementation=='cuda' and publication_reason(self.model) is None else None
+            publication_library=publication_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if self.publication_implementation=='cuda' and publication_reason(self.model) is None else None
             publication=Publication(self.model,self.data,self.stream,implementation=self.publication_implementation,library=publication_library)
             self.identity['publication']=publication.identity
             from .euler import Euler,euler_product,caller_unsupported_reason as euler_reason
-            euler_library=(euler_product(self.build_root,fast_compile=fast_compile)
+            euler_library=(euler_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.euler_implementation=='cuda' and euler_reason(self.model,self.data) is None else None)
             euler=Euler(self.model,self.data,self.stream,mass_factor=factors,
                 implementation=self.euler_implementation,library=euler_library,publication=publication)
             self.identity['euler']=euler.identity
             from .kinematics import Kinematics,kinematics_product,caller_unsupported_reason as kinematics_reason
-            kinematics_library=(kinematics_product(self.build_root,fast_compile=fast_compile)
+            kinematics_library=(kinematics_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.kinematics_implementation=='cuda' and kinematics_reason(self.model,self.data) is None else None)
             kinematics=Kinematics(self.model,self.data,self.stream,implementation=self.kinematics_implementation,
                 library=kinematics_library,topology=velocity.topology)
             self.identity['kinematics']=kinematics.identity
             from .com_pos import ComPos,com_pos_product,caller_unsupported_reason as com_pos_reason
-            com_pos_library=(com_pos_product(self.build_root,fast_compile=fast_compile)
+            com_pos_library=(com_pos_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if self.com_pos_implementation=='cuda' and com_pos_reason(self.model,self.data) is None else None)
             com_pos=ComPos(self.model,self.data,self.stream,implementation=self.com_pos_implementation,library=com_pos_library)
             self.identity['com_pos']=com_pos.identity
             from .camlight import CamLight,camlight_product,qualify as qualify_camlight
             camlight_admission=qualify_camlight(self.model,self.data,implementation=self.camlight_implementation)
-            camlight_library=(camlight_product(self.build_root,fast_compile=fast_compile)
+            camlight_library=(camlight_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile)
                 if camlight_admission['selected']=='cuda' else None)
             camlight=CamLight(self.model,self.data,self.stream,implementation=self.camlight_implementation,
                 library=camlight_library,admission=camlight_admission)
             self.identity['camlight']=camlight.identity
             from .constraint_build import ConstraintBuild,constraint_build_product,qualify as qualify_constraint_build
             constraint_admission=qualify_constraint_build(self.model,self.data,implementation=self.constraint_build_implementation)
-            constraint_library=constraint_build_product(self.build_root,fast_compile=fast_compile) if constraint_admission['selected']=='cuda' else None
+            constraint_library=constraint_build_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if constraint_admission['selected']=='cuda' else None
             constraint_build=ConstraintBuild(self.model,self.data,self.stream,implementation=self.constraint_build_implementation,library=constraint_library,admission=constraint_admission)
             self.identity['constraint_build']=constraint_build.identity
             from .collision import Collision,broadphase_product,qualify as qualify_broadphase
             broadphase_admission=qualify_broadphase(self.model,self.data,implementation=self.broadphase_implementation)
-            broadphase_library=broadphase_product(self.build_root,fast_compile=fast_compile) if broadphase_admission['selected']=='cuda' else None
+            broadphase_library=broadphase_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile) if broadphase_admission['selected']=='cuda' else None
             from .collision import qualify_plane
             plane_admission=qualify_plane(self.model,self.data,implementation=self.plane_collision_implementation)
-            plane_library=broadphase_product(self.build_root,fast_compile=fast_compile,component='plane') if plane_admission['selected']=='cuda' else None
+            plane_library=broadphase_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile,component='plane') if plane_admission['selected']=='cuda' else None
             from .collision import qualify_box
             box_admission=qualify_box(self.model,self.data,implementation=self.box_collision_implementation)
-            box_library=broadphase_product(self.build_root,fast_compile=fast_compile,component='box') if box_admission['selected']=='cuda' else None
+            box_library=broadphase_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile,component='box') if box_admission['selected']=='cuda' else None
             from .collision import qualify_convex
             convex_admission=qualify_convex(self.model,self.data,implementation=self.convex_collision_implementation)
-            convex_library=broadphase_product(self.build_root,fast_compile=fast_compile,component='convex') if convex_admission['selected']=='cuda' else None
+            convex_library=broadphase_product(self.build_root,arch=self.stream.device.arch,fast_compile=fast_compile,component='convex') if convex_admission['selected']=='cuda' else None
             collision_driver=Collision(self.model,self.data,self.stream,broadphase=self.broadphase_implementation,library=broadphase_library,admission=broadphase_admission,planes=self.plane_collision_implementation,plane_library=plane_library,plane_admission=plane_admission,boxes=self.box_collision_implementation,box_library=box_library,box_admission=box_admission,convex=self.convex_collision_implementation,convex_library=convex_library,convex_admission=convex_admission)
             self.identity['broadphase']=collision_driver.identity
             self.identity['plane_collision']=collision_driver.plane_identity

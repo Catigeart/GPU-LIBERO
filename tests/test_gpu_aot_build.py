@@ -25,7 +25,7 @@ def observation_fixture(aot, root):
     native, warp, profiles = {}, {}, {}
     for name, spec in contract['profiles'].items():
         manifests = []
-        names = ['direct_observations'] + (['handwritten_scene'] if name == 'dual-rgb128' else [])
+        names = ['direct_observations'] + (['handwritten_scene'] if name != 'no-camera' else [])
         for product in names:
             path = root/'cuda'/name/(product+'.so')
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,16 +205,16 @@ class ObservationAotReadinessTests(unittest.TestCase):
         (self.root/'AOT_BUILD.json').write_text(json.dumps(self.record))
         return self.aot.require_ready(self.root,'/bddl/suite/task.bddl',num_envs=8,seed=0,**kwargs)
 
-    def test_default_profiles_accept_only_the_recorded_observer_abi(self):
+    def test_observer_layout_options_select_generic_sampler_products(self):
         self.ready()
         self.ready(observation_options=dict(use_camera_obs=True))
         self.ready(observation_options=dict(use_camera_obs=True,
             camera_names=('agentview','robot0_eye_in_hand'),camera_heights=(128,128),camera_widths=128))
-        invalid = [dict(use_object_obs=False), dict(use_camera_obs=True,use_object_obs=False),
+        supported = [dict(use_object_obs=False), dict(use_camera_obs=True,use_object_obs=False),
             dict(use_camera_obs=True,camera_names=['agentview']),dict(use_camera_obs=True,camera_heights=64),
             dict(use_camera_obs=True,camera_depths=True),dict(use_camera_obs=True,camera_segmentations='instance')]
-        for options in invalid:
-            with self.subTest(options=options), self.assertRaises(MissingCompiledProduct):
+        for options in supported:
+            with self.subTest(options=options):
                 self.ready(observation_options=options)
         with self.assertRaises(MissingCompiledProduct):
             self.ready(debug=True)
@@ -273,7 +273,7 @@ class ObservationAotReadinessTests(unittest.TestCase):
 
     def test_unrequested_camera_products_may_be_absent_but_shared_files_remain_required(self):
         profiles = self.row['observation_products']['profiles']
-        camera = profiles['dual-rgb128']
+        camera = profiles['camera']
         for spelling in camera['native_artifacts']:
             if spelling not in profiles['no-camera']['native_artifacts']:
                 (self.root/spelling).unlink()
@@ -287,13 +287,13 @@ class ObservationAotReadinessTests(unittest.TestCase):
             self.ready()
 
     def test_unrequested_profile_metadata_is_not_inspected(self):
-        self.row['observation_products']['profiles']['dual-rgb128'] = None
+        self.row['observation_products']['profiles']['camera'] = None
         self.ready()
 
     def test_runtime_preserves_manifest_precision_world_and_scene_requirements(self):
         baseline = deepcopy(self.record)
         for name, value in (('schema', 'old'), ('status', 'building'), ('real_bits', 16),
-                            ('num_envs', 2), ('seed', 1)):
+                            ('real_bits', 32 if self.aot.scalar.bits == 64 else 64)):
             self.record = deepcopy(baseline)
             self.record[name] = value
             with self.subTest(field=name), self.assertRaises(MissingCompiledProduct):
@@ -364,12 +364,12 @@ class ObservationAotReadinessTests(unittest.TestCase):
         self.assertIn(dict(kind='warp', commands_executed=[['mock-branch-warp']]), row['events'])
         self.assertEqual(row['native_artifacts'],self.row['native_artifacts'])
         self.assertEqual(row['warp_artifacts'],self.row['warp_artifacts'])
-        self.assertEqual(set(row['observation_products']['profiles']),{'no-camera','dual-rgb128'})
+        self.assertEqual(set(row['observation_products']['profiles']),{'no-camera','camera','camera-depth'})
 
     def test_catalog_does_not_mark_complete_if_final_artifacts_diverge_from_task_rows(self):
         row=deepcopy(self.row)
         row['constraint_package']=str(self.root/'package')
-        task=dict(suite='suite',task_id=0,key='suite/task.bddl',model_sha256='model',dimensions=dict(nv=9,nM=45))
+        task=dict(suite='suite',task_id=0,key='suite/task.bddl',model_sha256='model',dimensions=dict(nv=9,nM=45,nq=9,njnt=9,nu=9))
         class Pool:
             def __init__(self,*args,**kwargs):pass
             def __enter__(self):return self
@@ -423,7 +423,7 @@ class ObservationAotReadinessTests(unittest.TestCase):
             synchronize_device=lambda *args:None)
         envs=ModuleType('libero.libero.envs');envs.GpuBatchEnv=constructor
         task=dict(suite='suite',task_id=0,key='suite/task.bddl',model_sha256='model',
-            dimensions=dict(nv=9,nM=45),directory=str(self.root))
+            dimensions=dict(nv=9,nM=45,nq=9,njnt=9,nu=9),directory=str(self.root))
         job=(task,str(self.root),8,0,'cuda:0','source',self.contract,True)
         with patch.dict(sys.modules,{'warp':warp,'libero.libero.envs':envs}), \
                 patch.object(self.aot,'configure_warp_cache') as cache,patch('numpy.load',return_value=object()), \
@@ -450,7 +450,7 @@ class ObservationAotReadinessTests(unittest.TestCase):
         self.assertEqual(row['native_compiler_invocations'],0)
         self.assertEqual(row['warp_compilations'],0)
         self.assertNotEqual(path.read_bytes(),previous)
-        self.assertEqual(json.loads(path.read_text()),row)
+        self.assertEqual(json.loads(path.read_text()),self.aot.relative_record(row,self.root))
         self.assertTrue(compilation_allowed())
 
     def test_reuse_only_native_and_warp_misses_fail_without_replacing_old_qualification(self):
@@ -515,7 +515,7 @@ class ObservationAotReadinessTests(unittest.TestCase):
     def test_reuse_only_catalog_refuses_parent_commands_or_nonzero_worker_counts(self):
         from libero.gpu.host.runtime.core import specialization_cache
         from libero.gpu.host.build.compilation import record_event
-        task=dict(suite='suite',task_id=0,key='suite/task.bddl',model_sha256='model',dimensions=dict(nv=9,nM=45))
+        task=dict(suite='suite',task_id=0,key='suite/task.bddl',model_sha256='model',dimensions=dict(nv=9,nM=45,nq=9,njnt=9,nu=9))
         row=dict(self.row,constraint_package=str(self.root/'package'),events=[],native_compiler_invocations=0,warp_compilations=0)
         class Pool:
             def __init__(self,*args,**kwargs):pass
@@ -593,7 +593,7 @@ class ObservationAotColdPreparationTests(unittest.TestCase):
         def observer_factory(model,metadata,nworld,device):
             self.assertEqual(nworld,8)
             self.assertIs(device,case.device)
-            images=[dict(name=name+'_image',shape=(128,128,3)) for name in metadata['camera_names']]
+            images=[dict(name=name+suffix,shape=(128,128,3)) for name,depth in zip(metadata['camera_names'],metadata['camera_depths']) for suffix in (['_image','_depth'] if depth else ['_image'])]
             observer=case.observer_for(images=images)
             observer.metadata=metadata
             observer.device=device
@@ -638,18 +638,18 @@ class ObservationAotColdPreparationTests(unittest.TestCase):
             products=aot.prepare_observation_products(env,'/bank',contract=contract)
         self.assertIs(case.runtime.observe,original_hook)
         self.assertIs(env._physics.bundle,case.bundle)
-        self.assertEqual(len(case.installs),2)
+        self.assertEqual(len(case.installs),3)
         self.assertIs(case.installs[0][1],case.installs[1][1])
-        self.assertEqual(log.count('capture'),2)
-        self.assertEqual(log.count('direct'),2)
-        self.assertEqual(log.count('fallback'),2)
-        self.assertEqual(log.count('lowdim-reset'),2)
-        self.assertEqual(log.count('scene-fallback'),1)
-        self.assertEqual(log.count('scene-reset'),1)
-        self.assertEqual(log.count('close'),2)
-        self.assertEqual(sum(e['kind']=='warp' for e in env.build_report['events']),2)
-        self.assertEqual(sum(e['kind']=='direct-observations' for e in env.build_report['events']),2)
-        self.assertEqual(set(products['profiles']),{'no-camera','dual-rgb128'})
+        self.assertEqual(log.count('capture'),3)
+        self.assertEqual(log.count('direct'),3)
+        self.assertEqual(log.count('fallback'),3)
+        self.assertEqual(log.count('lowdim-reset'),3)
+        self.assertEqual(log.count('scene-fallback'),2)
+        self.assertEqual(log.count('scene-reset'),2)
+        self.assertEqual(log.count('close'),3)
+        self.assertEqual(sum(e['kind']=='warp' for e in env.build_report['events']),3)
+        self.assertEqual(sum(e['kind']=='direct-observations' for e in env.build_report['events']),3)
+        self.assertEqual(set(products['profiles']),{'no-camera','camera','camera-depth'})
         self.assertTrue(all(not p['installation']['runtime_hook_installed'] for p in products['profiles'].values()))
         self.assertFalse(products['replayed'])
 

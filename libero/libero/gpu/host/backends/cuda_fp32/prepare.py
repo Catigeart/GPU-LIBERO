@@ -22,15 +22,13 @@ def prepare_project(build_root, *, tasks=('all',), modes=('dev',), skip_build=Fa
     """Shared implementation for the unified entry and the legacy CLI."""
     if jobs < 1:
         raise ValueError('--jobs must be positive')
-    from libero.gpu import precision
-    precision.select('fp32')
     from libero.gpu.host.paths import REPO_ROOT, GPU_ROOT
     from libero.gpu.host.build.project_paths import project_paths
     from libero.libero import get_libero_path
     from .scene import build_scene
     from .model import prepare
     from .layout_specs import MODEL_ARRAYS
-    root = project_paths(build_root).base
+    root = project_paths(build_root,precision='fp32').base
     catalogue = json.loads((root / 'TASK_INSTANCES.json').read_text())['tasks']
     selected = [t for t in catalogue if any(s in ('all', t['suite'], t['suite']+':'+str(t['task_id'])) for s in tasks)]
     if not selected:
@@ -57,6 +55,7 @@ def prepare_project(build_root, *, tasks=('all',), modes=('dev',), skip_build=Fa
         source = REPO_ROOT if (REPO_ROOT/'CMakeLists.txt').is_file() else GPU_ROOT
         configure = ['cmake', '-S', str(source), '-B', str(folder), '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', '-DFLASH_CUDA_ARCH='+str(arch),
+            '-DFLASH_BUILD_NATIVE=OFF',
             '-DFLASH_FAST_COMPILE='+('OFF' if mode == 'release' else 'ON')]
         if mathdx_root:
             configure.append('-DFLASH_MATHDX_ROOT='+str(mathdx_root))
@@ -67,7 +66,7 @@ def prepare_project(build_root, *, tasks=('all',), modes=('dev',), skip_build=Fa
                    'flash_fp32_fused_controller', 'flash_fp32_fused_actuation_solve', 'flash_fp32_fused_euler_step', 'flash_fp32_fused_control_drive'] + ['flash_mjwarp_'+c+'_fp32' for c in COMPONENTS]
         subprocess.run(['cmake', '--build', str(folder), '--parallel', str(jobs), '--target', *targets], check=True)
     return dict(tasks=rows, cuda_directory=folders[0], cuda_directories=folders,
-                warp_dependency=False, physics_integrations=0, scene_backend='CPU MuJoCo 3.16.0')
+                warp_dependency=False, physics_integrations=0, scene_backend='CPU MuJoCo '+rows[0]['identity']['mujoco'])
 
 
 def main():

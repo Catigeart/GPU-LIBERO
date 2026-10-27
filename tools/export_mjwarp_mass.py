@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 
 import mujoco
 import numpy as np
@@ -20,7 +21,7 @@ def main():
     if mujoco.__version__ != '2.3.7':
         raise ValueError('the independent mass layout requires MuJoCo 2.3.7')
     args.output.mkdir(parents=True, exist_ok=True)
-    tasks = json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks']
+    tasks = load_catalog(args.build_root)
     tasks = [t for t in tasks if any(s in ('all', t['suite'], t['suite'] + ':' + str(t['task_id'])) for s in args.tasks)]
     for task in tasks:
         path = Path(task['directory']) / 'model.mjb'

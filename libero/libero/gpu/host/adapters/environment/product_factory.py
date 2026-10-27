@@ -38,15 +38,15 @@ def create(built):
 
         @contextmanager
         def compilation_scope():
-            from libero.gpu.host.build.native import strict_build_receipts_scope
             from libero.gpu.host.build.product_cache import product_cache_scope
-            with toolchain_scope(sdk), strict_build_receipts_scope(True), product_cache_scope(cache_root() / 'products'):
+            with toolchain_scope(sdk), product_cache_scope(project['root'] / 'products'):
                 yield
 
         def prepare(*args, **kwargs):
             # Replacements execute after the first constructor scope has ended.
             # Each generation owns a fresh root, including its compiler copies.
             with build_project(project_root), compatibility_scope(), product_build() as generation_root, compilation_scope():
+                kwargs.setdefault('device', getattr(built, '_gpu_device', 'cuda:0'))
                 bundle = prepare_cuda_physics(*args, cuda_build_root=generation_root / 'cuda',
                                               mathdx_root=sdk, **kwargs)
                 bundle.build_project_root = project_root

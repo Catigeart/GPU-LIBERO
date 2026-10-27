@@ -48,20 +48,36 @@ def main():
     from libero.libero import get_libero_path
     from libero.libero.benchmark.init_state_io import load_init_states
     root=args.build_root.resolve();root.mkdir(parents=True,exist_ok=True)
-    if (root/'TASK_INSTANCES.json').exists():
-        parser.error('Preserve existing catalogues; select a new empty project root')
+    index=root/'TASK_INSTANCES.json'
+    previous=json.loads(index.read_text()) if index.is_file() else {}
+    records={row['key']:row for row in previous.get('tasks',[])}
     tasks=[t for t in task_catalog() if any(s in ('all',t['suite'],t['suite']+':'+str(t['task_id'])) for s in args.tasks)]
     if not tasks:parser.error('No tasks match the selectors')
     rows=[]
     for task in tasks:
-        directory=root/'scenes'/(task['suite']+'__'+Path(task['key']).stem)
+        cached=records.get(task['key'])
+        if cached and cached['seed']==args.seed and cached['bddl_sha256']==digest(task['bddl']):
+            directory=root/cached['directory']
+            inputs=root/'mjwarp/scene-inputs'/(directory.name+'.npz')
+            receipt=inputs.with_suffix('.json')
+            exported=json.loads(receipt.read_text()) if receipt.is_file() else {}
+            if (inputs.is_file() and exported.get('data_sha256')==digest(inputs) and
+                    exported.get('seed')==args.seed and exported.get('model_sha256')==cached['model_sha256'] and
+                    exported.get('scene_sha256')==cached['files']['scene.xml'] and
+                    exported.get('init_sha256')==cached['files']['initial_states.npy'] and all(
+                    (directory/name).is_file() and digest(directory/name)==value for name,value in cached['files'].items())):
+                rows.append(cached)
+                print(json.dumps(dict(done=len(rows),total=len(tasks),task=task['key'],cache_hit=True,physics_integrations=0)),flush=True)
+                continue
+        directory=root/'scenes'/(task['suite']+'__'+Path(task['key']).stem+(f'__seed{args.seed}' if args.seed else ''))
         directory.mkdir(parents=True,exist_ok=True)
         built=build_task_model(task['bddl'],use_camera_obs=False,has_renderer=False,
             has_offscreen_renderer=False,hard_reset=False,
             static_model_setup=lambda shell,model:_prepare_shared_fixtures(shell,model,args.seed))
         model=built.native_model
         mujoco.mj_saveModel(model,str(directory/'model.mjb'),None)
-        (directory/'scene.xml').write_text(built.xml)
+        from .scene import relocate_assets
+        (directory/'scene.xml').write_text(relocate_assets(built.xml,relative=True))
         source=Path(get_libero_path('init_states'))/task['suite']/(Path(task['key']).stem+'.pruned_init')
         bank=np.asarray(load_init_states(source),np.float64)
         if bank.ndim!=2 or bank.shape[0]<1 or bank.shape[1]!=1+model.nq+model.nv or not np.isfinite(bank).all():
@@ -71,7 +87,7 @@ def main():
         row={k:task[k] for k in ('key','suite','task_id','name')}
         row.update(seed=args.seed,bddl_sha256=digest(task['bddl']),model_sha256=files['model.mjb'],
             dimensions=built.metadata['dimensions'],options=built.metadata['options'],
-            static_arrays_sha256=built.metadata['static_arrays_sha256'],directory=str(directory),files=files,
+            static_arrays_sha256=built.metadata['static_arrays_sha256'],directory=str(directory.relative_to(root)),files=files,
             initial_states_shape=list(bank.shape))
         path=root/'mjwarp/scene-inputs'/(directory.name+'.npz');path.parent.mkdir(parents=True,exist_ok=True)
         np.savez(path,**portable_inputs(model,bank))
@@ -82,11 +98,12 @@ def main():
             physics_integrations=0,worlds=2)
         path.with_suffix('.json').write_text(json.dumps(receipt,indent=2)+'\n')
         rows.append(row)
+        records[row['key']]=row
         print(json.dumps(dict(done=len(rows),total=len(tasks),task=task['key'],physics_integrations=0)),flush=True)
         del built,model,bank
         gc.collect()
     (root/'TASK_INSTANCES.json').write_text(json.dumps(dict(schema='libero-all-task-instances-v1',
-        seed=args.seed,count=len(rows),tasks=rows),indent=2)+'\n')
+        seed=args.seed,count=len(records),tasks=list(records.values())),indent=2)+'\n')
 
 
 if __name__=='__main__':main()

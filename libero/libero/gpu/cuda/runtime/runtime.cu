@@ -23,14 +23,22 @@ const char* flash_runtime_source_id() { return FLASH_RUNTIME_SOURCE_ID; }
 const char* flash_runtime_error(int error) { return cudaGetErrorString(cudaError_t(error)); }
 int flash_runtime_device(int ordinal, int* arch, std::size_t* free_bytes,
                          std::size_t* total_bytes) {
-  cudaError_t error=cudaSetDevice(ordinal);
+  int previous;
+  cudaError_t error=cudaGetDevice(&previous);
+  if (error!=cudaSuccess) return error;
+  error=cudaSetDevice(ordinal);
   if (error!=cudaSuccess) return error;
   cudaDeviceProp properties;
   error=cudaGetDeviceProperties(&properties,ordinal);
-  if (error!=cudaSuccess) return error;
-  *arch=10*properties.major+properties.minor;
-  return cudaMemGetInfo(free_bytes,total_bytes);
+  if (error==cudaSuccess) {
+    *arch=10*properties.major+properties.minor;
+    error=cudaMemGetInfo(free_bytes,total_bytes);
+  }
+  cudaError_t restored=cudaSetDevice(previous);
+  return error!=cudaSuccess ? error : restored;
 }
+int flash_runtime_get_device(int* ordinal) { return cudaGetDevice(ordinal); }
+int flash_runtime_set_device(int ordinal) { return cudaSetDevice(ordinal); }
 int flash_runtime_attribute(int ordinal,int attribute,int* value) {
   return cudaDeviceGetAttribute(value,cudaDeviceAttr(attribute),ordinal);
 }

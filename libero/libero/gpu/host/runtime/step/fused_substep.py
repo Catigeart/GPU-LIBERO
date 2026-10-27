@@ -29,8 +29,6 @@ class FusedSubstep:
         self.runtime = runtime
         self.stream = runtime.stream
         self.worlds = runtime.euler.capacity
-        if self.stream.device.arch != 80:
-            raise ValueError("the complete substep reference/controller path currently targets SM80")
         euler = runtime.euler
         self.variant = select_variant(euler.nv,euler.nM,nq=euler.nq,njnt=euler.njnt,
             nu=euler.ctrl.shape[1],rows=runtime.forward.n.ws.rows,contacts=runtime.forward.n.ws.contacts)
@@ -42,7 +40,7 @@ class FusedSubstep:
         self.manifest = substep_native.prepare(GPU_ROOT / "cuda/step/fused_substep.cu",
             build_root, core.manifest["mathdx_root"], self.stream.device.arch,
             fast_compile=fast_compile, device_lto=device_lto, profile_newton=profile_newton,
-            nv=self.variant.nv, atomic_reductions=atomic_reductions, single_solve=single_solve,
+            nv=self.variant.nv, nM=self.variant.nM, nq=self.variant.nq, njnt=self.variant.njnt, nu=self.variant.nu, atomic_reductions=atomic_reductions, single_solve=single_solve,
             for_build=allow_build)
         self._graphs = {}
         self.load(allow_build=allow_build)
@@ -77,6 +75,8 @@ class FusedSubstep:
         dimension = self.library.flash_libero_substep_dimension
         dimension.argtypes = [ct.c_int]
         dimension.restype = ct.c_int
+        if dimension(9) != self.stream.device.arch * 10:
+            raise RuntimeError('loaded substep architecture differs from the requested device')
         v = self.variant
         expected = (v.nv,v.nq,v.nM,v.njnt,v.nu,v.rows,v.contacts)
         if tuple(dimension(i) for i in range(7)) != expected:

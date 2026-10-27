@@ -18,13 +18,13 @@ using Potrf9 =
     decltype(dx::Size<9>() + dx::Precision<float>() +
              dx::Type<dx::type::real>() + dx::Function<dx::function::potrf>() +
              dx::FillMode<dx::fill_mode::upper>() +
-             dx::Arrangement<dx::row_major>() + dx::SM<800>() +
+             dx::Arrangement<dx::row_major>() + dx::SM<(FLASH_CUDA_ARCH * 10)>() +
              dx::BlockDim<64>() + dx::Block());
 using Potrs9 =
     decltype(dx::Size<9, 9, 1>() + dx::Precision<float>() +
              dx::Type<dx::type::real>() + dx::Function<dx::function::potrs>() +
              dx::FillMode<dx::fill_mode::upper>() +
-             dx::Arrangement<dx::row_major, dx::col_major>() + dx::SM<800>() +
+             dx::Arrangement<dx::row_major, dx::col_major>() + dx::SM<(FLASH_CUDA_ARCH * 10)>() +
              dx::BlockDim<64>() + dx::Block());
 
 struct StepCounters {

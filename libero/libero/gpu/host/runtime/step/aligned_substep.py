@@ -36,7 +36,7 @@ class AlignedSubstep(PeeledForceSubstep):
         self.force_library = self.library
         prepared = substep_native.prepare_staged(GPU_ROOT/'cuda/step/fused_substep.cu',
             build_root, self.manifest['config']['sdk'], self.stream.device.arch,
-            nv=self.variant.nv, for_build=options.get('allow_build', False), **{k: options[k] for k in
+            nv=self.variant.nv, nM=self.variant.nM, nq=self.variant.nq, njnt=self.variant.njnt, nu=self.variant.nu, for_build=options.get('allow_build', False), **{k: options[k] for k in
             ('fast_compile', 'device_lto', 'atomic_reductions') if k in options})
         self.manifest = substep_native.finish(prepared, allow_build=options.get('allow_build', False))
         self.library = lib = ct.CDLL(self.manifest['library'])

@@ -30,32 +30,42 @@ def _scene_files(root, xml, options, task, scene_parameters, *, prepare):
         yield locate(root, xml, options, task, **kwargs)
 
 
-def scene_record(root, bddl, seed):
-    catalogue = json.loads((project_paths(root).base / 'TASK_INSTANCES.json').read_text())
-    path = Path(bddl)
-    matches = [t for t in catalogue['tasks'] if t['key'] == path.parent.name + '/' + path.name]
-    if len(matches) != 1 or matches[0]['seed'] != seed:
-        raise ValueError('MJWarp requires a matching offline task scene and seed')
-    return matches[0]
+from libero.gpu.host.build.task_catalog import scene_record
 
-def relocate_assets(xml):
-    """Relocate existing offline asset references; preserve numerical XML fields."""
-    import robosuite
-    from libero.gpu.host.paths import REPO_ROOT
+
+def relocate_assets(xml, *, relative=False):
+    """Use declared asset roots, independent of checkout/install directory names."""
     tree = ET.fromstring(xml)
+    if not any(node.get('file') for node in tree.iter()):
+        return xml
+    from libero.libero import get_libero_path
+    from robosuite.models import assets_root
+    roots = {'libero-assets': Path(get_libero_path('assets')),
+             'robosuite-assets': Path(assets_root)}
     for node in tree.iter():
         name = node.get('file')
-        if not name or Path(name).is_file():
+        if not name:
             continue
-        if '/site-packages/' in name:
-            replacement = Path(robosuite.__file__).resolve().parent.parent / name.split('/site-packages/', 1)[1]
-        elif '/Flash-LIBERO/' in name:
-            replacement = REPO_ROOT / name.split('/Flash-LIBERO/', 1)[1]
+        tagged = next(((tag, root / name[len(tag)+3:]) for tag, root in roots.items()
+                       if name.startswith(tag + '://')), None)
+        if tagged is not None:
+            tag, path = tagged
+        elif Path(name).is_file():
+            path = Path(name).resolve()
+            tag = next((tag for tag, root in roots.items() if path.is_relative_to(root.resolve())), None)
         else:
-            raise FileNotFoundError(name)
-        if not replacement.is_file():
-            raise FileNotFoundError(replacement)
-        node.set('file', str(replacement))
+            # Old XML may contain absolute paths. Match asset-relative suffixes
+            # against the configured roots, without interpreting checkout names.
+            parts = Path(name).parts
+            candidates = {(tag, root.joinpath(*parts[i:])) for tag, root in roots.items()
+                          for i in range(len(parts)) if root.joinpath(*parts[i:]).is_file()}
+            if len(candidates) != 1:
+                raise FileNotFoundError('Cannot resolve scene asset from configured roots: ' + name)
+            tag, path = candidates.pop()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        value = tag + '://' + str(path.resolve().relative_to(roots[tag].resolve())) if relative and tag else str(path)
+        node.set('file', value)
     return ET.tostring(tree, encoding='unicode')
 
 def capacity_budget(host, *, nconmax=None, njmax=None):
@@ -77,9 +87,7 @@ def capacity_budget(host, *, nconmax=None, njmax=None):
 
 def build_scene(root, bddl, seed, options, *, collision='default',prepare=False):
     import mujoco
-    if mujoco.__version__ != "3.16.0":raise ValueError("FP32 requires MuJoCo3.16.0 model semantics")
     from libero.gpu.model import build_task_model
-    from libero.gpu import precision
     task = scene_record(root, bddl, seed)
     directory = Path(task['directory'])
     if prepare:
@@ -91,7 +99,7 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     opt = tree.find('option')
     if opt is None:
         opt = ET.SubElement(tree, 'option')
-    opt.set('tolerance', format(precision.solver_tolerance(task['options']['tolerance']), '.17g'))
+    opt.set('tolerance', format(max(float(task['options']['tolerance']), 1e-6), '.17g'))
     opt.set('solver', 'Newton')
     opt.set('jacobian', 'dense')
     opt.set('iterations', str(task['options']['iterations']))
@@ -110,8 +118,8 @@ def build_scene(root, bddl, seed, options, *, collision='default',prepare=False)
     xml = ET.tostring(tree, encoding='unicode')
     from ..mjwarp.scene_cache import finish
     from .scene_inputs import read as read_scene_inputs,apply as apply_scene_inputs
-    scene_parameters,scene_binding=read_scene_inputs(project_paths(root).base,task,verify=prepare)
-    with _scene_files(project_paths(root).base, xml, options, task, scene_binding,
+    scene_parameters,scene_binding=read_scene_inputs(project_paths(root,precision='fp32').base,task,verify=prepare)
+    with _scene_files(project_paths(root,precision='fp32').base, xml, options, task, scene_binding,
                       prepare=prepare) as scene:
         cache_folder,compiled,receipt,cache_binding = scene
         built=build_task_model(bddl,xml_string_override=xml,compiled_model_file=compiled,

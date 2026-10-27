@@ -60,13 +60,13 @@ class SubstepCatalogTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]/'libero/libero/gpu/cuda/step'
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'layout.cpp';binary=Path(directory)/'layout'
-            source.write_text('#include "newton_workspace.cuh"\n#include <iostream>\n'
+            source.write_text('#define FLASH_LIBERO_PRECISION_CUH\nusing real_t=double;\n#include "newton_shared_layout.cuh"\n#include <iostream>\n'
                 'int main(){using namespace flash_libero;std::cout << SubstepShape::nv << " "'
                 '<< NewtonLayout::bytes << " " << NewtonLayout::mathdx_bytes;}\n')
             for v in variants():
                 flags=[f'-DFLASH_SUBSTEP_{k}={value}' for k,value in dict(
                     NV=v.nv,NQ=v.nq,NM=v.nM,NJ=v.njnt,NU=v.nu,CONTACTS=v.contacts).items()]
-                subprocess.run(['g++','-std=c++17','-I'+str(root),*flags,str(source),'-o',str(binary)],
+                subprocess.run(['g++','-std=c++17','-I'+str(root),'-I'+str(root.parent/'common'),*flags,str(source),'-o',str(binary)],
                     check=True,capture_output=True,text=True)
                 nv,shared,mathdx=map(int,subprocess.check_output([str(binary)],text=True).split())
                 self.assertEqual(nv,v.nv)

@@ -116,7 +116,6 @@ class GpuBatchEnv:
         from libero.gpu.host.backends.selection import resolve_engine
         physics_engine = resolve_engine(physics_engine, kwargs.get('precision'))
         if cls is GpuBatchEnv and physics_engine == 'cuda_fp32':
-            scalar.select(kwargs.get('precision') or 'fp32')
             from libero.gpu.host.backends.cuda_fp32.environment import CudaFP32BatchEnv
             return object.__new__(CudaFP32BatchEnv)
         if cls is GpuBatchEnv and physics_engine == 'mjwarp':
@@ -135,15 +134,15 @@ class GpuBatchEnv:
     @construction_scope
     @profile_construction
     def __init__(self, bddl_file_name, num_envs=8, *, init_states=None,
-                 seed=0, device='cuda:0', memory_budget=None,
+                 seed=0, scene_seed=None, device='cuda:0', memory_budget=None,
                  strict_build_receipts=False, build_root=None, initialize=True,
                  allow_compile=False, debug=False, ready_session=None,
                  profile_startup=False, algorithm_options=None, precision=None,
                  physics_engine='auto', **environment_options):
         self.physics_engine = 'native'
         self.precision = scalar.select(precision)
-        if type(num_envs) is not int or not 1 <= num_envs <= 128:
-            raise ValueError('num_envs must be an integer in [1, 128]')
+        if type(num_envs) is not int or num_envs < 1:
+            raise ValueError('num_envs must be a positive integer')
         from libero.gpu.host.runtime.core.memory_budget import normalize_memory_budget
         policy = normalize_memory_budget(memory_budget)
         if type(strict_build_receipts) is not bool:
@@ -164,7 +163,7 @@ class GpuBatchEnv:
                 require_ready(build_root, bddl_file_name, num_envs=num_envs, seed=seed,
                               observation_options=environment_options, debug=debug,
                               ready_session=ready_session, return_record=False)
-            scene = scene_for(build_root, bddl_file_name, seed)
+            scene = scene_for(build_root, bddl_file_name, scene_seed)
         configure_warp_cache(build_root)
         install_warp_guard()
         self._lock = RLock()
@@ -192,7 +191,8 @@ class GpuBatchEnv:
                             '_gpu_constructor_call', 'xml_string_override', 'compiled_model_file'}
         if scene is not None and not physical_options.intersection(options):
             directory = Path(scene['directory'])
-            options.update(xml_string_override=(directory/'scene.xml').read_text(),
+            from libero.gpu.host.backends.cuda_fp32.scene import relocate_assets
+            options.update(xml_string_override=relocate_assets((directory/'scene.xml').read_text()),
                            compiled_model_file=directory/'model.mjb')
             if init_states is None:
                 init_states = np.load(directory/'initial_states.npy', allow_pickle=False)
@@ -200,7 +200,7 @@ class GpuBatchEnv:
             raise ValueError('physical model options require their own offline build profile')
         with startup_phase('model'):
             self.built = build_task_model(bddl_file_name,
-                static_model_setup=lambda shell, model: _prepare_shared_fixtures(shell, model, seed),
+                static_model_setup=lambda shell, model: _prepare_shared_fixtures(shell, model, scene['seed'] if scene else (0 if scene_seed is None else scene_seed)),
                 **options)
         model = self.built.native_model
         if init_states is None:

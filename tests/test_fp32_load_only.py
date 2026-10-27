@@ -58,7 +58,8 @@ class LoadOnlyTests(unittest.TestCase):
             plain = scene_cache.binding('<mujoco/>', {}, task)
             cameras = scene_cache.binding('<mujoco/>', dict(use_camera_obs=True,
                 has_offscreen_renderer=True, camera_heights=256,
-                camera_names=['agentview'], ignore_done=True, horizon=1000), task)
+                camera_names=['agentview'], ignore_done=True, horizon=1000,
+                controller_configs={'type':'OSC_POSE','input_max':2}), task)
             self.assertEqual(plain, cameras)
             legacy = dict(plain, options=dict(use_camera_obs=False, ignore_done=True))
             self.assertEqual(scene_cache._data_binding(legacy), plain)

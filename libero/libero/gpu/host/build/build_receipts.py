@@ -144,9 +144,14 @@ def toolchain_record(nvcc,flags=()):
             'environment_sha256':digest(canonical(dict(os.environ))),
             'schema':'strict-toolchain-components-env-v1'}
 
+def source_digest(source):
+    from libero.gpu.host.paths import GPU_ROOT
+    return digest(source.replace(str(GPU_ROOT), '@gpu').encode())
+
+
 def build_identity(*,source,bridges,flags,toolchain,dependencies,archive,architecture):
-    payload={'schema':'compiler-dependency-build-v1','source_sha256':digest(source.encode()),
-             'bridges_sha256':[digest(x.encode()) for x in bridges],'flags':list(flags),
+    payload={'schema':'compiler-dependency-build-v1','source_sha256':source_digest(source),
+             'bridges_sha256':[source_digest(x) for x in bridges],'flags':list(flags),
              'toolchain':toolchain,'dependencies':dependencies,'archive':archive,
              'architecture':architecture,'params_launcher_abi':'included-generated-source',
              'policy':{'fma':True,'precise_div':True,'precise_sqrt':True,'ftz':False}}

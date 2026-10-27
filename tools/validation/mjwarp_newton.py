@@ -9,6 +9,7 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 
 import numpy as np
 
@@ -55,7 +56,7 @@ def model_for(root, task):
 def make_fixtures(args):
     import mujoco_warp as mjw
     from mujoco_warp._src import types
-    tasks = json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks']
+    tasks = load_catalog(args.build_root)
     task = next(t for t in tasks if t['suite'] == 'libero_10' and t['task_id'] == 4)
     host, model, identity = model_for(args.build_root, task)
     saved = dict(np.load(args.input, allow_pickle=False))

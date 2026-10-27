@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import subprocess
 import sys
 
@@ -326,7 +327,7 @@ def main():
     from validation.runner import run_task
     args.build_root = args.build_root.resolve()
     args.output = args.output.resolve()
-    tasks = select_tasks(json.loads((args.build_root / 'TASK_INSTANCES.json').read_text())['tasks'],
+    tasks = select_tasks(load_catalog(args.build_root),
                          [args.worker_task] if args.worker_task else args.tasks)
     args.output.mkdir(parents=True, exist_ok=True)
     if args.worker_task:

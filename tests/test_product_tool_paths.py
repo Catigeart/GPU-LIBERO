@@ -46,7 +46,7 @@ class ColdToolPathTests(unittest.TestCase):
             return "/chosen/toolkit/bin/nvcc"
         for environment, expected in (({"P06C_NVCC": "/private/compiler"}, "/private/compiler"),
                                       ({}, "/chosen/toolkit/bin/nvcc")):
-            namespace = {"Path": Path, "os": types.SimpleNamespace(environ=environment), "nvcc_path": selected}
+            namespace = {"Path": Path, "os": types.SimpleNamespace(environ=environment), "nvcc_path": selected, "offline": True}
             exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(native), "exec"), namespace)
             self.assertEqual(str(namespace["nvcc"]), expected)
         self.assertEqual(len(calls), 1)

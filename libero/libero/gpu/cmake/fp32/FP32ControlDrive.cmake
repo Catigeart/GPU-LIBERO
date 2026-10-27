@@ -30,7 +30,7 @@ foreach(source IN LISTS fp32_control_drive_sources)
 endforeach()
 list(JOIN control_drive_hashes ":" control_drive_hash_input)
 string(SHA256 control_drive_source_id "${control_drive_hash_input}")
-if(FLASH_GLOBAL_DEVICE_LTO)
+if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
   set(control_drive_vendor "$<TARGET_OBJECTS:flash_osc_mathdx_fp32>")
   set(control_drive_vendor_target flash_osc_mathdx_fp32)
 else()
@@ -54,7 +54,7 @@ set_target_properties(flash_fp32_fused_control_drive PROPERTIES PREFIX "" OUTPUT
   CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
   CUDA_ARCHITECTURES OFF UNITY_BUILD OFF
   JOB_POOL_COMPILE flash_cuda_compile JOB_POOL_LINK flash_cuda_link)
-if(FLASH_GLOBAL_DEVICE_LTO)
+if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
   target_link_options(flash_fp32_fused_control_drive PRIVATE "$<DEVICE_LINK:-dlto;-arch=sm_${FLASH_CUDA_ARCH}>")
   target_link_libraries(flash_fp32_fused_control_drive PRIVATE "${FLASH_SOLVERDX}")
 endif()

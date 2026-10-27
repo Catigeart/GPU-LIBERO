@@ -52,7 +52,6 @@ def finalize_handwritten_collision(collision, dynamics, transport, *, build_root
             raise ValueError('complete_only requires fast/fused/non-temporal/full32/Box50 cold ABI')
         if hasattr(ws,'_cuda_collision_complete'):
             raise ValueError('complete_only finalizer requires a fresh pending backend')
-    from libero.gpu.host.runtime.collision.handwritten_factory import collision_build_receipts_scope
     from libero.gpu.host.runtime.collision.shared import _handwritten_plans
     admission=ws._collision_cold_admission;options=admission.options
     options.update(dataflow_profile=dataflow_profile,collision_policy=dict(collision_policy),
@@ -61,13 +60,12 @@ def finalize_handwritten_collision(collision, dynamics, transport, *, build_root
         query_schedule=options.get('query_schedule','fused'),producer_blocks=options.get('producer_blocks',32))
     if complete_only:options['cold_installation_abi']='complete-only-v1'
     try:
-        with collision_build_receipts_scope():
-            configure_temporal_front(ws,dynamics,dataflow_profile=dataflow_profile,**collision_policy)
-            install_workspace(ws,root/'partial',dataflow_profile=dataflow_profile,complete_only=complete_only)
-            install_detector(ws.detect,root/'detect',diagnostic_profile=dataflow_profile,
-                query_subgroup_width=options.get('query_subgroup_width',32),box_private_capacity=options.get('box_private_capacity',50))
-            install_combined_workspace(ws,root/'complete',transport=transport,
-                query_schedule=options.get('query_schedule','fused'),producer_blocks=options.get('producer_blocks',32))
+        configure_temporal_front(ws,dynamics,dataflow_profile=dataflow_profile,**collision_policy)
+        install_workspace(ws,root/'partial',dataflow_profile=dataflow_profile,complete_only=complete_only)
+        install_detector(ws.detect,root/'detect',diagnostic_profile=dataflow_profile,
+            query_subgroup_width=options.get('query_subgroup_width',32),box_private_capacity=options.get('box_private_capacity',50))
+        install_combined_workspace(ws,root/'complete',transport=transport,
+            query_schedule=options.get('query_schedule','fused'),producer_blocks=options.get('producer_blocks',32))
         admission.seal(_handwritten_plans(ws))
         ws.seal_handwritten_backend()
         ws.validate_device_bindings(collision.stream)

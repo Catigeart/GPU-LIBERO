@@ -28,7 +28,7 @@ def _write_status(folder, result):
         temporary.unlink(missing_ok=True)
 
 
-def prepare(root, tasks, *, progress=None):
+def prepare(root, tasks, *, device='cuda:0', progress=None):
     import numpy as np
     import libero.gpu.precision as scalar
     from libero.libero.envs import OffScreenRenderEnv
@@ -59,7 +59,7 @@ def prepare(root, tasks, *, progress=None):
                 env = None
                 try:
                     env = OffScreenRenderEnv(bddl_file_name=task['bddl'], use_camera_obs=False,
-                                             ignore_done=True)
+                                             ignore_done=True, device=device)
                     env.step(np.zeros(env.env.action_dim, dtype=np.float64))
                     rows.append(dict(task=task['key'], model_sha256=env.env.built.metadata['model_sha256'],
                                      events=list(project['events'][start:]), warmup_control_steps=1))

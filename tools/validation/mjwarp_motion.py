@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from types import SimpleNamespace as NS
 import numpy as np
 from .mjwarp_motion_reference import reference, velocity, check_arrays
@@ -39,7 +40,7 @@ def freeze(args,stream):
         source=args.kinematics/(name+'.npz');receipt=json.loads(source.with_suffix('.json').read_text())
         if receipt['sha256']!=digest(source):raise RuntimeError('Frozen kinematics changed')
         with np.load(source,allow_pickle=False) as f:kin={k:f[k].copy() for k in f.files}
-        catalogue=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
+        catalogue=load_catalog(args.build_root)
         taskrow=next(t for t in catalogue if t['suite']==suite and t['task_id']==task)
         built,m,_,_,identity=build_scene(args.build_root,str(Path(get_libero_path('bddl_files'))/taskrow['key']),0,
             dict(use_camera_obs=False,has_renderer=False,has_offscreen_renderer=False,hard_reset=False,ignore_done=True))

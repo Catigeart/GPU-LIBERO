@@ -4,6 +4,7 @@ No signing key or source-tree authority is required. Runtime selects products by
 source specialization, compile options and architecture; the actual loader checks
 the C ABI. Compiler dependency/toolchain validation belongs to offline builds.
 """
+from .build_receipts import source_digest
 from contextlib import contextmanager
 from contextvars import ContextVar
 import base64
@@ -25,6 +26,15 @@ def _digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def _logical_code_path(value):
+    # The package path is stable in source and wheel layouts; checkout and
+    # installation prefixes are deployment details, including old receipts.
+    for marker in ('/libero/libero/gpu/', '/libero/gpu/'):
+        if marker in value:
+            return value[:value.index('/')] + '@gpu/' + value.split(marker, 1)[1]
+    return value
+
+
 def _selection(identity):
     """Machine-code selection, independent of the installed compiler's files."""
     result = json.loads(_canonical(identity))
@@ -32,8 +42,39 @@ def _selection(identity):
     for name in ('toolchain', 'dependencies', 'archives'):
         build.pop(name, None)
     archive = build.get('archive')
-    if isinstance(archive, dict):
-        build['archive'] = archive['path']
+    archive_path = archive.get('path') if isinstance(archive, dict) else archive
+    sdk = str(Path(archive_path).parent.parent) if isinstance(archive_path, str) and archive_path.endswith('.a') else None
+    if archive:
+        build['archive'] = True
+    flags = iter(build.get('flags', []))
+    selected = []
+    for flag in flags:
+        if flag == '-I':
+            directory = next(flags)
+            if sdk and (directory == sdk or directory.startswith(sdk + '/')):
+                continue
+            selected += ['-I', _logical_code_path(directory)]
+        else:
+            selected.append(_logical_code_path(flag))
+    if 'flags' in build:
+        build['flags'] = selected
+    if 'commands' in build:
+        commands = []
+        for command in build['commands']:
+            output = ['nvcc']
+            index = 1
+            while index < len(command):
+                arg = command[index]; index += 1
+                if arg in ('-ccbin', '-Xlinker'):
+                    if arg == '-ccbin':
+                        index += 1
+                        continue
+                    if index < len(command) and command[index] == '-rpath':
+                        index += 3
+                        continue
+                output.append(_logical_code_path(arg))
+            commands.append(output)
+        build['commands'] = commands
     return result
 
 
@@ -147,8 +188,8 @@ class ProductCache:
         return None
 
     def find_native(self, source, bridges, flags, architecture, archive, required_symbols):
-        identity = dict(schema='compiler-dependency-build-v1', source_sha256=_digest(source.encode()),
-            bridges_sha256=[_digest(text.encode()) for text in bridges], flags=list(flags),
+        identity = dict(schema='compiler-dependency-build-v1', source_sha256=source_digest(source),
+            bridges_sha256=[source_digest(text) for text in bridges], flags=list(flags),
             architecture=architecture, archive=archive, params_launcher_abi='included-generated-source',
             policy=dict(fma=True, precise_div=True, precise_sqrt=True, ftz=False))
         found = self._find(identity, required_symbols, ('product.so',))

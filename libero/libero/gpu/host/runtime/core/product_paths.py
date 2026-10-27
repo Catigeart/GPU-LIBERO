@@ -161,6 +161,9 @@ def _sdk_valid(root):
 
 
 def mathdx_root(*, download=True):
+    from libero.gpu.host.build.compilation import compilation_allowed
+    if not compilation_allowed():
+        return None
     explicit = os.environ.get('LIBERO_MATHDX_ROOT')
     if explicit:
         root = Path(explicit).expanduser().resolve()
@@ -264,17 +267,20 @@ def private_product_root(directory):
 
 @contextmanager
 def toolchain_scope(sdk):
-    sdk=Path(sdk).resolve()
-    if not _sdk_valid(sdk):
+    sdk=Path(sdk).resolve() if sdk is not None else None
+    if sdk is not None and not _sdk_valid(sdk):
         raise FileNotFoundError('Incomplete MathDx SDK: '+str(sdk))
     token=_SDK.set(sdk)
     try:yield
     finally:_SDK.reset(token)
 
 
-def selected_mathdx_root(fallback):
+def selected_mathdx_root(fallback=None):
+    from libero.gpu.host.build.compilation import compilation_allowed
+    if not compilation_allowed():
+        return None
     explicit=os.environ.get('LIBERO_MATHDX_ROOT')
-    return Path(explicit).expanduser().resolve() if explicit else (_SDK.get() or Path(fallback))
+    return Path(explicit).expanduser().resolve() if explicit else (_SDK.get() or mathdx_root())
 
 
 def nvcc_path():

@@ -24,7 +24,7 @@ class StagedSubstep(FusedSubstep):
         prepared = substep_native.prepare_staged(GPU_ROOT / 'cuda/step/fused_substep.cu',
             build_root, self.manifest['config']['sdk'], self.stream.device.arch,
             **{k: options[k] for k in ('fast_compile', 'device_lto', 'atomic_reductions') if k in options},
-            nv=self.variant.nv, for_build=options.get('allow_build', False))
+            nv=self.variant.nv, nM=self.variant.nM, nq=self.variant.nq, njnt=self.variant.njnt, nu=self.variant.nu, for_build=options.get('allow_build', False))
         self.manifest = substep_native.finish(prepared, allow_build=options.get('allow_build', False))
         self.library = lib = ct.CDLL(self.manifest['library'])
         expected = {'arguments_size': ct.sizeof(StagedArguments), 'scalar_bytes': 8,

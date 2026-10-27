@@ -26,42 +26,6 @@ def entry_copy_kind(source, target, width, block_threads):
         return 'f64_vector'
     return kind
 
-def _tile_stages(source,stages,has_slot):
-    result=[];schedule=[];pending=[]
-    def flush():
-        nonlocal source
-        if not pending:return
-        if len(pending)==1:
-            result.append(pending[0]);schedule.append(('field',pending[0][1][2]))
-        else:
-            # Several CopyPlan sources may be pasted into one translation unit.
-            # Name/guard the helper by its complete generated function contract.
-            contract=repr((has_slot,tuple((stage[1][2],tuple(stage[3])) for stage in pending)))
-            name='tile_'+hashlib.sha256(contract.encode()).hexdigest()[:20]
-            declarations=[];args=[];specs=[];calls=[]
-            for j,stage in enumerate(pending):
-                _,values,_,types=stage
-                for k,(value,typ) in enumerate(zip(values,types)):
-                    declarations.append(typ+' a'+str(j)+'_'+str(k))
-                    args.append(value);specs.append(typ)
-                slotarg='a'+str(j)+'_4' if has_slot else 'nullptr'
-                calls.append('begin+=tile_field(w,a%d_0,a%d_1,a%d_2,a%d_3,%s,begin);' %
-                             (j,j,j,j,slotarg))
-            guard='LIBERO_CF_COPY_'+name.upper()
-            source+='\n#ifndef '+guard+'\n#define '+guard+'\nnamespace cf_copy { __device__ void '+name+'(int w,'+','.join(declarations)+'){int begin=0;'+''.join(calls)+'} }\n#endif\n'
-            result.append(('cf_copy::'+name,args,'block',specs))
-            schedule.append(('tile',tuple(stage[1][2] for stage in pending)))
-        pending.clear()
-    for stage in stages:
-        width=stage[1][2]
-        if 0<width<=64:
-            pending.append(stage)
-            if len(pending)==8:flush()
-        else:
-            flush();result.append(stage);schedule.append(('field',width))
-    flush()
-    return source,result,tuple(schedule)
-
 class CopyPlan:
     def __init__(self,pairs,root,slot=None,*,compile_plan=True):
         self.pairs=tuple(pairs); self.slot=slot
@@ -105,11 +69,7 @@ class CopyPlan:
                 source+=f'__device__ void {kind}_null(int w,const {typ}*s,{typ}*t,int n,int r,size_t zero){{field(w,s,t,n,r,nullptr);}}\n'
             source+='}\n#endif // LIBERO_CF_COPY_NULL_WRAPPERS\n'
             stages=[(fn+'_null',args,mode,spec) for fn,args,mode,spec in stages]
-        # Cold independent-field tile; arguments remain frozen in launch ABI.
-        if not self.fallback:
-            source,stages,self.field_schedule=_tile_stages(source,stages,slot is not None)
-        else:
-            self.field_schedule=tuple(('ordered_fallback',) for _ in stages)
+        self.field_schedule=tuple(('field',stage[1][2]) for stage in stages)
         self.source=source;self.stages=stages
         if self.fallback and self.nworld!=1:
             raise ValueError('world-major aliased event copies require an explicit ordered fallback')

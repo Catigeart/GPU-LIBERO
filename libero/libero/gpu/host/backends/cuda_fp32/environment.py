@@ -8,7 +8,7 @@ from libero.gpu.host.adapters.environment.batch_env import GpuBatchEnv,_state_ba
 from libero.gpu.host.adapters.environment.resident_runtime import ResidentField
 from .observations import ObservationAdapter
 from libero.gpu.host.build.compilation import construction_scope
-from libero.gpu.host.build.project_paths import project_paths
+from libero.gpu.host.build.project_paths import project_paths, cmake_directory
 from . import device as cuda
 from .model import prepare,upload
 from .data import make_data
@@ -20,13 +20,13 @@ class CudaFP32BatchEnv(GpuBatchEnv):
     physics_engine='cuda_fp32'
 
     @construction_scope
-    def __init__(self,bddl_file_name,num_envs=8,*,init_states=None,seed=0,device='cuda:0',
+    def __init__(self,bddl_file_name,num_envs=8,*,init_states=None,seed=0,scene_seed=None,device='cuda:0',
             build_root=None,initialize=True,allow_compile=False,debug=False,precision='fp32',
             physics_engine='cuda_fp32',cuda_options=None,mjwarp_options=None,memory_budget=None,
             strict_build_receipts=False,ready_session=None,profile_startup=False,algorithm_options=None,**options):
-        self.precision=scalar.select(precision)
-        if self.precision!='fp32' or type(num_envs) is not int or not 1<=num_envs<=128:
-            raise ValueError('Independent FP32 requires 1..128 worlds')
+        self.precision='fp'+str(scalar._normalize(precision or 'fp32'))
+        if self.precision!='fp32' or type(num_envs) is not int or num_envs<1:
+            raise ValueError('Independent FP32 requires a positive integer world count')
         if ready_session is not None or algorithm_options is not None or memory_budget is not None:
             raise ValueError('Legacy native ready/algorithm/memory-budget profiles are not independent FP32 options')
         controls=dict(cuda_options or {})
@@ -40,8 +40,9 @@ class CudaFP32BatchEnv(GpuBatchEnv):
         self._snapshot_cache=None;self._held_contacts={};self._facades=[];self.shells=[];self._goal_plans=[]
         self.num_envs=self.env_num=num_envs;self.seed(seed);self._integrations=np.zeros(num_envs,np.int64)
         with self._cleanup_on_error():
-            self.build_root=project_paths(build_root).base;self.build_report=dict(events=[],physics_engine=self.physics_engine)
-            folder=self.build_root/'cmake-control'/('sm80-dev' if fast else 'sm80-release')
+            self.build_root=project_paths(build_root,precision='fp32').base;self.build_report=dict(events=[],physics_engine=self.physics_engine)
+            from libero.gpu.host.runtime.core.cuda_device import device_arch
+            folder=cmake_directory(self.build_root,device_arch(device),fast_compile=fast)
             self.cuda_runtime=cuda.Runtime(folder/'cuda_runtime.so')
             if not str(device).startswith('cuda:'):raise ValueError('A CUDA device is required')
             self.stream=cuda.Stream(self.cuda_runtime.device(int(str(device).split(':')[1])))
@@ -49,7 +50,7 @@ class CudaFP32BatchEnv(GpuBatchEnv):
             if options.get('has_renderer') or options.get('hard_reset'):raise ValueError('Fixed-model offscreen/soft-reset batch required')
             options.update(has_renderer=False,has_offscreen_renderer=bool(options['use_camera_obs']),hard_reset=False)
             with self.stream:
-                self.built,bank,self.task,self.identity=build_scene(self.build_root,bddl_file_name,seed,options,collision=collision,prepare=allow_compile)
+                self.built,bank,self.task,self.identity=build_scene(self.build_root,bddl_file_name,scene_seed,options,collision=collision,prepare=allow_compile)
                 self.initial_states=_state_bank(bank if init_states is None else init_states,self.built.native_model.nq,self.built.native_model.nv)
                 self.model=upload(prepare(self.built.native_model));self._nq=self.model.nq;self._nv=self.model.nv
                 self.action_dim=7;self.control_freq=self.built.metadata['control_freq']

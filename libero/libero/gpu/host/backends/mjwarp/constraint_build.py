@@ -5,10 +5,10 @@ from mujoco_warp._src import constraint
 from libero.gpu.host.runtime.dynamics.mjwarp_constraint_build import ConstraintConstruction,qualify
 
 
-def constraint_build_product(root,*,fast_compile=False):
-    from libero.gpu.host.build.project_paths import project_paths
+def constraint_build_product(root,*,arch,fast_compile=False):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
+    folder=cmake_directory(root, arch, fast_compile=fast_compile)
     target='flash_mjwarp_constraint_build_fp32';library=folder/'mjwarp_constraint_build_fp32.so'
     if not library.is_file():raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))
     return library

@@ -5,10 +5,10 @@ from mujoco_warp._src import smooth
 from libero.gpu.host.runtime.dynamics.mjwarp_com_pos import CenteredFrames, caller_unsupported_reason
 
 
-def com_pos_product(root, *, fast_compile=False):
-    from libero.gpu.host.build.project_paths import project_paths
+def com_pos_product(root,*,arch, fast_compile=False):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder = project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
+    folder = cmake_directory(root, arch, fast_compile=fast_compile)
     target = 'flash_mjwarp_com_pos_fp32'; library = folder/'mjwarp_com_pos_fp32.so'
     if not library.is_file():
         raise MissingCompiledProduct('Build '+target+' offline in '+str(folder))

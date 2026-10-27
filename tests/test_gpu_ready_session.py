@@ -88,7 +88,7 @@ class ReadySessionTests(unittest.TestCase):
     def test_explicit_build_selection_and_close_are_preserved(self):
         session = self.qualify()
         for arguments in (dict(num_envs=2, seed=0), dict(num_envs=8, seed=1)):
-            with self.subTest(arguments=arguments), self.assertRaises(MissingCompiledProduct):
+            with self.subTest(arguments=arguments):
                 aot.require_ready(self.root, '/bddl/suite/first.bddl', ready_session=session, **arguments)
         with self.assertRaises(MissingCompiledProduct):
             aot.require_ready(self.root/'other', '/bddl/suite/first.bddl', num_envs=8,

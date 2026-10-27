@@ -20,11 +20,11 @@ from libero.gpu.host.runtime.newton.mjwarp_solver_state import SolverStatePlan
 from libero.gpu.host.runtime.newton.mjwarp_linesearch import LinesearchPlan, unsupported_reason as linesearch_reason
 
 
-def hessian_product(root, *, fast_compile=False, component='hessian'):
+def hessian_product(root,*,arch, fast_compile=False, component='hessian'):
     """Locate an offline product; the numerical binding validates its ABI."""
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    from libero.gpu.host.build.project_paths import project_paths
-    folder = project_paths(root).cmake / ('sm80-dev' if fast_compile else 'sm80-release')
+    from libero.gpu.host.build.project_paths import cmake_directory
+    folder = cmake_directory(root, arch, fast_compile=fast_compile)
     if component not in ('hessian', 'direction', 'constraint', 'linesearch', 'solver_state'):
         raise ValueError('unknown Newton component')
     library = folder / ('mjwarp_' + component + '_fp32.so')

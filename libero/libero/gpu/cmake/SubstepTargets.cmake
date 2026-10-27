@@ -27,7 +27,7 @@ function(flash_mathdx name source precision_bits)
   target_compile_definitions(${name} PRIVATE ${ARGN})
   set_target_properties(${name} PROPERTIES CUDA_ARCHITECTURES OFF)
   target_compile_options(${name} PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
-  if(FLASH_GLOBAL_DEVICE_LTO)
+  if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
     set(FLASH_VENDOR_INPUT "$<TARGET_OBJECTS:${name}>" PARENT_SCOPE)
     set(FLASH_VENDOR_TARGET ${name} PARENT_SCOPE)
     return()
@@ -58,8 +58,8 @@ function(flash_variant nv nq nm nj nu precision_bits osc_input osc_target)
   foreach(group normal profile ordered ordered_profile)
     set(${group}_targets "")
   endforeach()
-  set(suffix "_nv${nv}")
-  if(nv EQUAL 39)
+  flash_shape_suffix(${nv} ${nq} ${nm} ${nj} ${nu} suffix)
+  if(suffix STREQUAL "_nv39")
     set(suffix "") # Preserve the original development target and binary.
   endif()
   set(definitions FLASH_SUBSTEP_NV=${nv} FLASH_SUBSTEP_NQ=${nq} FLASH_SUBSTEP_NM=${nm}
@@ -209,7 +209,7 @@ function(flash_variant nv nq nm nj nu precision_bits osc_input osc_target)
     flash_add_staged_substep("${suffix}" "${mathdx_input}" "${mathdx_target}"
       "${osc_input}" "${osc_target}" ${definitions})
   endif()
-  if(nv EQUAL 39)
+  if(suffix STREQUAL "")
     flash_add_newton_line_fixture("${precision_bits}" "${mathdx_input}" "${mathdx_target}" ${definitions})
   endif()
   if(FLASH_NEWTON_ATOMIC_REDUCTIONS AND
@@ -233,6 +233,43 @@ function(flash_add_precision precision_bits)
   flash_mathdx(flash_osc_mathdx${precision_suffix} "${FLASH_STEP}/instantiations/osc_mathdx.cu" ${precision_bits})
   set(FLASH_OSC_INPUT "${FLASH_VENDOR_INPUT}")
   set(FLASH_OSC_TARGET ${FLASH_VENDOR_TARGET})
+
+  # Fixed robot/controller dimensions: one ordinary and one optional profile object
+  # serve every scene shape. Numerical edits never rebuild the outer fused body.
+  foreach(mode normal profile)
+    set(osc_object flash_osc_solver${precision_suffix})
+    if(mode STREQUAL profile)
+      set(osc_object flash_osc_solver_profile${precision_suffix})
+    endif()
+    flash_object(${osc_object} "${FLASH_GPU}/cuda/control/osc_solver.cu" ${precision_bits})
+    target_compile_options(${osc_object} PRIVATE --split-compile=3)
+    if(mode STREQUAL profile)
+      set_target_properties(${osc_object} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+      target_compile_definitions(${osc_object} PRIVATE FLASH_OSC_PROFILE=1)
+    endif()
+    if(FLASH_GLOBAL_DEVICE_LTO)
+      set_target_properties(${osc_object} PROPERTIES CUDA_ARCHITECTURES OFF)
+      target_compile_options(${osc_object} PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
+    endif()
+  endforeach()
+  # Optional MJWarp frontend shares the exact maintained controller object.
+  set(mjwarp_controller flash_mjwarp_controller${precision_suffix})
+  add_library(${mjwarp_controller} SHARED EXCLUDE_FROM_ALL
+    "${FLASH_GPU}/cuda/control/mjwarp_controller.cu"
+    $<TARGET_OBJECTS:flash_osc_solver${precision_suffix}> ${FLASH_OSC_INPUT})
+  target_link_libraries(${mjwarp_controller} PRIVATE flash_cuda_options${precision_suffix})
+  add_dependencies(${mjwarp_controller} ${FLASH_OSC_TARGET})
+  set_target_properties(${mjwarp_controller} PROPERTIES PREFIX "" OUTPUT_NAME "mjwarp_controller${precision_suffix}"
+    CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" JOB_POOL_LINK flash_cuda_link)
+  if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
+    target_link_options(${mjwarp_controller} PRIVATE "$<DEVICE_LINK:-dlto>")
+    target_link_libraries(${mjwarp_controller} PRIVATE "${FLASH_SOLVERDX}")
+  endif()
+
+  if(NOT FLASH_BUILD_NATIVE)
+    return()
+  endif()
 
   # One dimension-general device object; no MathDx instantiations or shared arrays.
   flash_object(flash_newton_atomic${precision_suffix} "${FLASH_STEP}/newton_atomic.cu" ${precision_bits})
@@ -283,39 +320,7 @@ function(flash_add_precision precision_bits)
     endif()
   endforeach()
 
-  # Fixed robot/controller dimensions: one ordinary and one optional profile object
-  # serve every scene shape. Numerical edits never rebuild the outer fused body.
-  foreach(mode normal profile)
-    set(osc_object flash_osc_solver${precision_suffix})
-    if(mode STREQUAL profile)
-      set(osc_object flash_osc_solver_profile${precision_suffix})
-    endif()
-    flash_object(${osc_object} "${FLASH_GPU}/cuda/control/osc_solver.cu" ${precision_bits})
-    target_compile_options(${osc_object} PRIVATE --split-compile=3)
-    if(mode STREQUAL profile)
-      set_target_properties(${osc_object} PROPERTIES EXCLUDE_FROM_ALL TRUE)
-      target_compile_definitions(${osc_object} PRIVATE FLASH_OSC_PROFILE=1)
-    endif()
-    if(FLASH_GLOBAL_DEVICE_LTO)
-      set_target_properties(${osc_object} PROPERTIES CUDA_ARCHITECTURES OFF)
-      target_compile_options(${osc_object} PRIVATE "-arch=lto_${FLASH_CUDA_ARCH}" -dlto)
-    endif()
-  endforeach()
 
-  # Optional MJWarp frontend shares the exact maintained controller object.
-  set(mjwarp_controller flash_mjwarp_controller${precision_suffix})
-  add_library(${mjwarp_controller} SHARED EXCLUDE_FROM_ALL
-    "${FLASH_GPU}/cuda/control/mjwarp_controller.cu"
-    $<TARGET_OBJECTS:flash_osc_solver${precision_suffix}> ${FLASH_OSC_INPUT})
-  target_link_libraries(${mjwarp_controller} PRIVATE flash_cuda_options${precision_suffix})
-  add_dependencies(${mjwarp_controller} ${FLASH_OSC_TARGET})
-  set_target_properties(${mjwarp_controller} PROPERTIES PREFIX "" OUTPUT_NAME "mjwarp_controller${precision_suffix}"
-    CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
-    CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" JOB_POOL_LINK flash_cuda_link)
-  if(FLASH_GLOBAL_DEVICE_LTO)
-    target_link_options(${mjwarp_controller} PRIVATE "$<DEVICE_LINK:-dlto>")
-    target_link_libraries(${mjwarp_controller} PRIVATE "${FLASH_SOLVERDX}")
-  endif()
 
   # Gather/scheduling is scene-independent; controller edits compile only once.
   foreach(mode normal profile)
@@ -338,8 +343,8 @@ function(flash_add_precision precision_bits)
   foreach(group normal profile ordered ordered_profile)
     set(${group}_targets "")
   endforeach()
-  foreach(nv IN LISTS velocities)
-    flash_variant(${nv} ${dimensions_${nv}} ${precision_bits} "${FLASH_OSC_INPUT}" "${FLASH_OSC_TARGET}")
+  foreach(shape IN LISTS shapes)
+    flash_variant(${dimensions_${shape}} ${precision_bits} "${FLASH_OSC_INPUT}" "${FLASH_OSC_TARGET}")
     foreach(group normal profile ordered ordered_profile)
       list(APPEND ${group}_targets ${FLASH_VARIANT_${group}_TARGETS})
     endforeach()

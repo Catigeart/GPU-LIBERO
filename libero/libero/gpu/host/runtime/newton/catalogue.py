@@ -14,7 +14,9 @@ def load(config, *, build_root, mathdx_root):
     if mode not in ('dev', 'release'):
         raise ValueError('LIBERO_GPU_BUILD_MODE must be dev or release')
     folder = project_paths(build_root).cmake / f"sm{config['architecture']}-{mode}"
-    path = folder / f"native_newton_nv{config['nv']}.so"
+    shape = '_'.join(name+str(config.get(key, '')) for name,key in
+        (('nv','nv'),('nq','nq'),('nm','nM'),('nj','njnt'),('nu','nu')))
+    path = folder / ('native_newton_'+shape+'.so')
     if not path.is_file():
         raise MissingCompiledProduct('Prepare all native CUDA instances with '
             'python -m libero.gpu.build --precision fp64 --build-mode '+mode+
@@ -25,14 +27,15 @@ def load(config, *, build_root, mathdx_root):
     query = library.native_newton_configuration
     query.argtypes = [ct.c_int]
     query.restype = ct.c_int
-    expected = (config['nv'], config['nM'], config['rows'], config['contacts'],
+    expected = (config['nv'], config.get('nM'), config['rows'], config['contacts'],
         config['maxiter'], config['block_threads'], config['precision_bits'],
         config['architecture'], int(config['warmstart']), int(config['use_dx']),
-        int(config['use_blas']), int(config['phase_profiling']))
+        int(config['use_blas']), int(config['phase_profiling']),
+        config['nq'], config['njnt'], config['nu'])
     if tuple(query(i) for i in range(len(expected))) != expected:
         raise ValueError('Loaded native Newton model/configuration differs; rebuild offline')
     return dict(library=library, resources=resources, metadata=dict(
         schema='libero-native-cmake-newton-v1', library_file=str(path),
         source=str(GPU_ROOT/'cuda/newton/native_instances.cu'),
-        mathdx_root=str(mathdx_root), build_system='CMake', source_generation=False,
+        mathdx_root=str(mathdx_root) if mathdx_root else None, build_system='CMake', source_generation=False,
         compile_commands_executed=[]))

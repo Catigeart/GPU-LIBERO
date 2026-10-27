@@ -91,7 +91,7 @@ class MultiFieldCopyPlan:
             width, rows = self.widths[index], self.rows[index]
             origin = f"world * {width} + cell" if slot is not None else "cell"
             destination = f"(world * {rows} + row) * {width} + cell" if slot is not None else "cell"
-            admitted = f"cell < {width} and row < {rows}" if slot is not None else f"cell < {width}"
+            admitted = f"cell < {width} and row < {rows}" if slot is not None else f"cell < s{index}.shape[0]"
             body += [f"    if {admitted}: t{index}[{destination}] = s{index}[{origin}]"]
         code = "@wp.kernel(enable_backward=False)\ndef copy_fields(" + ", ".join(args) + "):\n" + "\n".join(body) + "\n"
         self.kernel = _load("backup_fields", code, {"wp": wp}).copy_fields

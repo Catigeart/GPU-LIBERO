@@ -19,6 +19,37 @@ def task_catalog():
             for suite in SUITES for index, task in enumerate(task_maps[suite].values())]
 
 
+def load_catalog(root):
+    """Resolve recorded data locations against the preparation root."""
+    root = Path(root)
+    records = json.loads((root / 'TASK_INSTANCES.json').read_text())['tasks']
+    result = []
+    for record in records:
+        task = dict(record)
+        for name in ('directory', 'constraint_package'):
+            if name in task:
+                task[name] = str(root / task[name])
+        result.append(task)
+    return result
+
+
+def scene_record(root, bddl, scene_seed=None):
+    """Select fixed scene data independently of the episode RNG."""
+    from .compilation import MissingCompiledProduct
+    root = Path(root)
+    index = root / 'TASK_INSTANCES.json'
+    if not index.is_file():
+        raise MissingCompiledProduct('CPU scenes are absent in '+str(root)+'; prepare CPU inputs with '
+            'libero.gpu.host.build.task_catalog (native) or libero.gpu.host.backends.cuda_fp32.catalog '
+            '(independent FP32), using --build-root before the CUDA build')
+    key = Path(bddl).parent.name + '/' + Path(bddl).name
+    task = next((t for t in load_catalog(root) if t['key'] == key), None)
+    if task is None or scene_seed is not None and task['seed'] != scene_seed:
+        raise MissingCompiledProduct('CPU scene or scene_seed is absent: ' + key +
+            '; prepare the selected scene offline in ' + str(root))
+    return task
+
+
 def _prepare_scene(job):
     task, root_string, seed = job
     import mujoco
@@ -31,7 +62,8 @@ def _prepare_scene(job):
     from libero.libero.benchmark.init_state_io import load_init_states
     root = Path(root_string)
     path = Path(task['bddl'])
-    destination = root / 'scenes' / (task['suite'] + '__' + Path(task['key']).stem)
+    destination = root / 'scenes' / (task['suite'] + '__' + Path(task['key']).stem +
+        (f'__seed{seed}' if seed else ''))
     destination.mkdir(parents=True, exist_ok=True)
     saved = destination / 'scene.json'
     bddl_sha = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -43,13 +75,15 @@ def _prepare_scene(job):
         return row
     tick = time.monotonic()
     built = build_task_model(path, use_camera_obs=False, has_renderer=False,
-                             has_offscreen_renderer=False, hard_reset=False)
-    _prepare_shared_fixtures(built, seed)
+                             has_offscreen_renderer=False, hard_reset=False,
+                             static_model_setup=lambda shell, model:
+                                 _prepare_shared_fixtures(shell, model, seed))
     with build_project(root):
         binding = prepare_native_intake(built)
     model = built.native_model
     mujoco.mj_saveModel(model, str(destination / 'model.mjb'), None)
-    (destination / 'scene.xml').write_text(built.xml)
+    from libero.gpu.host.backends.cuda_fp32.scene import relocate_assets
+    (destination / 'scene.xml').write_text(relocate_assets(built.xml, relative=True))
     states_path = Path(get_libero_path('init_states')) / task['suite'] / (Path(task['key']).stem + '.pruned_init')
     initial = np.asarray(load_init_states(states_path), dtype=np.float64)
     if initial.ndim != 2 or initial.shape[1] != 1 + model.nq + model.nv or not np.isfinite(initial).all():
@@ -59,7 +93,7 @@ def _prepare_scene(job):
         seed=seed, bddl_sha256=bddl_sha, model_sha256=built.metadata['model_sha256'],
         dimensions=built.metadata['dimensions'], options=built.metadata['options'],
         static_arrays_sha256=built.metadata['static_arrays_sha256'],
-        constraint_package=str(binding.package), directory=str(destination),
+        constraint_package=str(Path(binding.package).relative_to(root)), directory=str(destination.relative_to(root)),
         initial_states_shape=list(initial.shape), seconds=time.monotonic()-tick)
     if hashlib.sha256((destination / 'model.mjb').read_bytes()).hexdigest() != row['model_sha256']:
         raise ValueError('serialized scene identity differs: ' + task['key'])
@@ -82,7 +116,7 @@ def prepare_catalog(root, *, jobs=1, seed=0, progress=None):
                 progress(row, len(result), len(tasks))
     rows = [result[task['key']] for task in tasks]
     for row in rows:
-        directory = Path(row['directory'])
+        directory = root / row['directory']
         row['files'] = dict({'model.mjb': row['model_sha256']}, **{
             name: hashlib.sha256((directory/name).read_bytes()).hexdigest()
             for name in ('scene.xml', 'initial_states.npy')})

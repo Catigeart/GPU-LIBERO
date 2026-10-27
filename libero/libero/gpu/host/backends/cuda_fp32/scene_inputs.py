@@ -10,7 +10,7 @@ from ..mjwarp.scene_inputs import apply
 def read(root,task,*,verify=False):
     path=Path(root)/'mjwarp/scene-inputs'/(Path(task['directory']).name+'.npz')
     receipt=path.with_suffix('.json')
-    if not receipt.is_file():raise MissingCompiledProduct('Prepare portable CPU scene parameters offline')
+    if not receipt.is_file():raise MissingCompiledProduct('Prepare portable CPU scene parameters in MuJoCo2.3.7: python -m libero.gpu.host.backends.cuda_fp32.catalog --build-root '+str(root))
     row=json.loads(receipt.read_text())
     expected=dict(task=task['key'],seed=task['seed'],model_sha256=task['files']['model.mjb'],
         scene_sha256=task['files']['scene.xml'],init_sha256=task['files']['initial_states.npy'],

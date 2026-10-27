@@ -7,6 +7,7 @@ This module owns contexts and conditional Graphs and imports no Warp modules.
 All pointer bindings are constructed once, before recording any execution.
 """
 from pathlib import Path
+from libero.gpu.host.build.project_paths import cmake_directory
 from types import SimpleNamespace
 from . import device as cuda, constants as types
 from .data import newton_workspace
@@ -33,11 +34,13 @@ from libero.gpu.host.runtime.newton import (mjwarp_hessian as hessian,mjwarp_dir
 
 
 class Products:
-    def __init__(self,build_root,fast_compile=True):
-        self.folder=Path(build_root)/'cmake-control'/('sm80-dev' if fast_compile else 'sm80-release')
+    def __init__(self,build_root,arch,fast_compile=True):
+        self.folder=cmake_directory(build_root, arch, fast_compile=fast_compile)
     def __call__(self,component):
         path=self.folder/('mjwarp_'+component+'_fp32.so')
-        if not path.is_file():raise RuntimeError('Prepare CUDA component offline: '+component)
+        if not path.is_file():
+            from libero.gpu.host.build.compilation import MissingCompiledProduct
+            raise MissingCompiledProduct('Build flash_mjwarp_'+component+'_fp32 offline in '+str(self.folder))
         return path
 
 

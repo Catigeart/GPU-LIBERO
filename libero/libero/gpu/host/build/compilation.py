@@ -29,7 +29,7 @@ def require_compilation(kind, identity):
     if not compilation_allowed():
         raise MissingCompiledProduct(
             f'Prebuilt {kind} is absent: {identity}. '
-            'Run python -m libero.gpu.build before creating environments; '
+            'Prepare this product with its offline build/preparation entry before creating environments; '
             'runtime compilation is disabled.')
 
 

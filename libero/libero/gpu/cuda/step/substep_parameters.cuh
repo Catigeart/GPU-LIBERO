@@ -13,7 +13,6 @@ struct SubstepDimensions {
   static constexpr int newton_hessian_tile_rows = NV <= 43 ? 16 : 8;
   static constexpr int newton_mathdx_cells =
       (NV * NV + 2 * NV * newton_hessian_tile_rows + 1) / 2 * 2;
-  static constexpr bool osc_uncouple = true;
   static_assert(NV > 0 && NQ >= NV && NM >= NV && NJ > 0, "Invalid model dimensions");
 };
 } // namespace flash_libero

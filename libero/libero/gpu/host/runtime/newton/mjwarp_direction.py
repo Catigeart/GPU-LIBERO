@@ -3,7 +3,8 @@ import ctypes as ct
 import hashlib
 from pathlib import Path
 
-FAMILIES = (21, 22, 24, 27, 30, 33, 36, 37, 39, 43, 45, 51, 57)
+from libero.gpu.host.build.substep_catalog import variants
+FAMILIES = tuple(sorted({v.nv for v in variants()}))
 
 
 class DirectionInputs(ct.Structure):
@@ -17,14 +18,14 @@ class DirectionInputs(ct.Structure):
 def source_id():
     from libero.gpu.host.paths import GPU_ROOT
     names = ('cuda/newton/mjwarp_direction.cu', 'cuda/newton/mjwarp_direction.cuh',
-             'cuda/newton/mjwarp_solver_state.cuh','cmake/MjwarpDirection.cmake')
+             'cuda/step/instantiations/libero_models.def','cuda/newton/mjwarp_solver_state.cuh','cmake/MjwarpDirection.cmake')
     hashes = ':'.join(hashlib.sha256((GPU_ROOT / n).read_bytes()).hexdigest() for n in names)
     return hashlib.sha256(hashes.encode()).hexdigest()
 
 
 def unsupported_reason(model):
-    if model.nv not in FAMILIES:
-        return 'unqualified direction NV'
+    if not (model.nv in FAMILIES and model.nv <= 32 or 32 < model.nv < 64):
+        return 'direction NV has no small template or supported padded block'
     expected = 64 if model.nv <= 32 else 32
     field = 'update_gradient_cholesky' if model.nv <= 32 else 'update_gradient_cholesky_blocked'
     if getattr(model.block_dim, field) != expected:

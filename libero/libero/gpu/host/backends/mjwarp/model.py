@@ -27,52 +27,7 @@ def require_upstream():
             raise RuntimeError('installed MJWarp differs from the pinned source: ' + name)
 
 
-def scene_record(root, bddl, seed):
-    catalogue = json.loads((project_paths(root).base / 'TASK_INSTANCES.json').read_text())
-    path = Path(bddl)
-    matches = [t for t in catalogue['tasks'] if t['key'] == path.parent.name + '/' + path.name]
-    if len(matches) != 1 or matches[0]['seed'] != seed:
-        raise ValueError('MJWarp requires a matching offline task scene and seed')
-    return matches[0]
-
-
-def relocate_assets(xml):
-    """Relocate existing offline asset references; preserve numerical XML fields."""
-    import robosuite
-    from libero.gpu.host.paths import REPO_ROOT
-    tree = ET.fromstring(xml)
-    for node in tree.iter():
-        name = node.get('file')
-        if not name or Path(name).is_file():
-            continue
-        if '/site-packages/' in name:
-            replacement = Path(robosuite.__file__).resolve().parent.parent / name.split('/site-packages/', 1)[1]
-        elif '/Flash-LIBERO/' in name:
-            replacement = REPO_ROOT / name.split('/Flash-LIBERO/', 1)[1]
-        else:
-            raise FileNotFoundError(name)
-        if not replacement.is_file():
-            raise FileNotFoundError(replacement)
-        node.set('file', str(replacement))
-    return ET.tostring(tree, encoding='unicode')
-
-
-def capacity_budget(host, *, nconmax=None, njmax=None):
-    """Size rows from actual contact dimensionality and joint/equality limits.
-
-    nconmax is a nominal per-world share of MJWarp's pooled contacts, not a
-    proof that every world's distribution fits. Runtime overflow stays checked.
-    """
-    def power2(value):
-        return 1 << (int(value) - 1).bit_length()
-    contacts = int(nconmax) if nconmax is not None else max(256, power2(4 * host.nv))
-    dim = max(1, int(np.max(host.geom_condim, initial=1)), int(np.max(host.pair_dim, initial=1)))
-    rows_per_contact = dim if host.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC else max(1, 2 * (dim - 1))
-    rows = (int(njmax) if njmax is not None else
-            max(512, power2(rows_per_contact * contacts + 2 * host.nv + 6 * host.neq + 2 * host.ntendon)))
-    if contacts < 1 or rows < 1:
-        raise ValueError('positive MJWarp contact/constraint capacities required')
-    return dict(nconmax=contacts, njmax=rows)
+from ..cuda_fp32.scene import scene_record, relocate_assets, capacity_budget
 
 
 def build_scene(root, bddl, seed, options, *, collision='default',prepare=False):

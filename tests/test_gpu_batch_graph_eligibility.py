@@ -292,7 +292,6 @@ class BatchGraphEligibilityTests(unittest.TestCase):
                 mathdx_root=lambda: self.fail('explicit SDK must be retained'),
                 toolchain_scope=lambda sdk: nullcontext(), cache_root=lambda: Path('/cold/cache'),
                 build_project=lambda root, **kw: nullcontext(project)),
-            'libero.gpu.host.build.native': SimpleNamespace(strict_build_receipts_scope=lambda strict: nullcontext()),
             'libero.gpu.host.build.product_cache': SimpleNamespace(product_cache_scope=lambda root: nullcontext()),
             'libero.gpu.host.build.startup': SimpleNamespace(startup_phase=lambda name: nullcontext()),
         }
@@ -301,7 +300,7 @@ class BatchGraphEligibilityTests(unittest.TestCase):
             result = self.namespace['prepare_native_batch'](built, states=('s0', 's1'),
                 build_root='/cold/project', mathdx_root='/custom/mathdx', strict_build_receipts=True)
         self.assertEqual(result.bundle.observation_build_options, dict(build_root='/cold/project',
-            mathdx_root='/custom/mathdx', strict_build_receipts=True))
+            mathdx_root='/custom/mathdx'))
         self.assertEqual(result.bundle.build_report, dict(directory='/cold/project', events=[]))
         self.assertEqual(built.metadata['decoder_record'], 'decoder')
 

@@ -234,7 +234,6 @@ def prepare_native_batch(built, *, states, strict_build_receipts=False, build_ro
         actual_decoder_record, _native_intake_package)
     from libero.gpu.host.runtime.core.product_paths import (
         product_build, mathdx_root, toolchain_scope, cache_root, build_project)
-    from libero.gpu.host.build.native import strict_build_receipts_scope
     from libero.gpu.host.build.product_cache import product_cache_scope
     states = tuple(states)
     if type(strict_build_receipts) is not bool:
@@ -259,12 +258,12 @@ def prepare_native_batch(built, *, states, strict_build_receipts=False, build_ro
             import warp as wp
             architecture = wp.get_device(kwargs.get('device', 'cuda:0')).arch
             kwargs.setdefault('cuda_build_root', project['root'] / 'cuda' / ('sm' + str(architecture)))
-            cache = product_cache_scope(cache_root() / 'products') if strict_build_receipts else nullcontext()
-            with toolchain_scope(sdk), strict_build_receipts_scope(strict_build_receipts), cache:
+            cache = product_cache_scope(project['root'] / 'products')
+            with toolchain_scope(sdk), cache:
                 bundle = prepare_cuda_physics(built, state=state, nworld=W, mathdx_root=sdk, debug=debug, **kwargs)
         bundle.build_report = dict(directory=str(project['root']), events=list(project['events']))
         bundle.observation_build_options = dict(build_root=str(project['root']),
-            mathdx_root=str(sdk), strict_build_receipts=strict_build_receipts)
+            mathdx_root=str(sdk) if sdk else None)
     try:
         return NativeBatchedPhysics(bundle, debug=debug)
     except BaseException:

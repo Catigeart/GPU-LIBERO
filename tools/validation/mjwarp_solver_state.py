@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -53,7 +54,7 @@ def freeze_real(args):
             if digest(folder/k)!=v:raise ValueError('frozen solver state data changed: '+k)
         return
     if not args.prepare:raise RuntimeError('freeze initialization inputs offline first')
-    tasks=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'];identities={}
+    tasks=load_catalog(args.build_root);identities={}
     for task_id in (4,0):
         t=next(t for t in tasks if t['suite']=='libero_10' and t['task_id']==task_id)
         if task_id==4:

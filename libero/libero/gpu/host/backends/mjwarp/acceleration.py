@@ -13,10 +13,10 @@ def caller_unsupported_reason(model,data):
     return unsupported_reason(model,data)
 
 
-def mass_product(root,*,fast_compile=False,component='mass_solve'):
-    from libero.gpu.host.build.project_paths import project_paths
+def mass_product(root,*,arch,fast_compile=False,component='mass_solve'):
+    from libero.gpu.host.build.project_paths import cmake_directory
     from libero.gpu.host.build.compilation import MissingCompiledProduct
-    folder=project_paths(root).cmake/('sm80-dev' if fast_compile else 'sm80-release')
+    folder=cmake_directory(root, arch, fast_compile=fast_compile)
     if component not in ('mass_solve','smooth_force'):raise ValueError('invalid acceleration product')
     target='flash_mjwarp_'+component+'_fp32'
     library=folder/('mjwarp_'+component+'_fp32.so')

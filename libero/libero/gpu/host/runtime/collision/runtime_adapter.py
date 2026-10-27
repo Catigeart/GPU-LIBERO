@@ -68,7 +68,7 @@ def plan_capacity(static, nworld, *, total_device_budget_bytes=None,
     are explicit, never based on an observed contact maximum masquerading as a
     guaranteed upper bound.
     """
-    nworld = _integer('nworld', nworld, maximum=128)
+    nworld = _integer('nworld', nworld)
     nbody, ngeom = len(static['body_geomnum']), len(static['geom_size'])
     _integer('nbody', nbody)
     _integer('ngeom', ngeom)

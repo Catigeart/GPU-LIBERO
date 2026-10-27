@@ -10,17 +10,17 @@ from .fused_controller import FusedController
 from libero.gpu.host.runtime.dynamics.mjwarp_queries import Jacobian
 
 from libero.gpu.host.build.compilation import MissingCompiledProduct
-from libero.gpu.host.build.project_paths import project_paths
-from libero.gpu.host.runtime.step.substep_types import ControllerSolveData
+from libero.gpu.host.build.project_paths import cmake_directory
+from libero.gpu.host.runtime.control import ControllerSolveData
 
 
-def controller_product(root, *, fast_compile=False):
+def controller_product(root, *, arch, fast_compile=False):
     """Locate the offline product; Controller checks the loaded C ABI.
 
     CMake owns source freshness at build time. Running an environment does not
     require Ninja, nvcc or a writable build tree.
     """
-    folder = project_paths(root).cmake / ('sm80-dev' if fast_compile else 'sm80-release')
+    folder = cmake_directory(root, arch, fast_compile=fast_compile)
     target = 'flash_mjwarp_controller_fp32'
     library = folder / 'mjwarp_controller_fp32.so'
     if not library.is_file():
@@ -48,9 +48,8 @@ class Controller:
                 cfg.get('impedance_mode', 'fixed') != 'fixed' or not cfg.get('control_delta', True) or
                 cfg.get('position_limits') is not None or cfg.get('orientation_limits') is not None or
                 cfg.get('interpolation') is not None or grip['class'] != 'PandaGripper' or
-                grip['speed'] != .01 or host.nu != 9 or cfg.get('input_min') != -1 or
-                cfg.get('input_max') != 1 or cfg.get('output_max') != [.05, .05, .05, .5, .5, .5]):
-            raise NotImplementedError('MJWarp frontend currently supports the default LIBERO Panda OSC profile')
+                host.nu != 9):
+            raise NotImplementedError('MJWarp frontend currently supports the fixed-impedance delta Panda OSC without interpolation or pose limits')
         dev = stream.device
         self.buffers = {name: cuda.zeros((self.n, width), dtype=cuda.float32, device=dev)
                         for name, width in self.WIDTHS.items()}
@@ -83,11 +82,14 @@ class Controller:
         args = ControllerSolveData()
         for name, array in self.buffers.items():
             setattr(args, name, array.ptr)
+        from libero.gpu.host.runtime.control import osc_action_config
+        self.action_config = cuda.array(osc_action_config(cfg, grip).astype(np.float32), dtype=cuda.float32, device=dev)
+        args.action_config = self.action_config.ptr
         args.diagnostics = 0
         args.uncouple = int(cfg.get('uncouple_pos_ori', True))
         self.library_path = Path(library)
         self.library = ct.CDLL(str(library))
-        for symbol, expected in [('scalar_bytes', 4), ('arguments_bytes', ct.sizeof(args))]:
+        for symbol, expected in [('scalar_bytes', 4), ('arguments_bytes', ct.sizeof(args)), ('arch', stream.device.arch)]:
             f = getattr(self.library, 'flash_mjwarp_controller_' + symbol)
             f.restype = ct.c_size_t
             if f() != expected:

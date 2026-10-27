@@ -20,6 +20,7 @@ __global__ void control(const flash_libero::ControllerSolveData *inputs,
     }
 }
 } // namespace
+extern "C" int flash_mjwarp_controller_arch() { return FLASH_CUDA_ARCH; }
 extern "C" int flash_mjwarp_controller_scalar_bytes() { return sizeof(real_t); }
 extern "C" size_t flash_mjwarp_controller_arguments_bytes() {
   return sizeof(flash_libero::ControllerSolveData);

@@ -62,10 +62,13 @@ def install_model_only_gpu_factory(problem_name, runtime_factory, *, replace=Fal
     def construct(*, bddl_file_name, **options):
         from libero.gpu.model import build_task_model
         from .task_driver import GpuTaskEnvironment
+        device = options.pop('device', None)
 
         def rebuild(xml_string, previous=None):
             built = build_task_model(bddl_file_name, problem_name=problem_name,
                                      xml_string_override=xml_string, **options)
+            if device is not None:
+                built._gpu_device = device
             reuse = getattr(runtime_factory, "rebuild_components", None)
             components = reuse(built, previous) if previous is not None and callable(reuse) else runtime_factory(built)
             try:

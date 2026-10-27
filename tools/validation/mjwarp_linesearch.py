@@ -9,6 +9,7 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -57,7 +58,7 @@ def freeze_real(args):
         return
     if not args.prepare:raise RuntimeError('freeze raw line-search inputs offline first')
     f=make_fixtures(args)[0];m,d=f['model'],f['data'];identities={'4':f['model_identity']}
-    tasks=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
+    tasks=load_catalog(args.build_root)
     for task_id in (4,0):
         if task_id==0:
             t=next(t for t in tasks if t['suite']=='libero_10' and t['task_id']==0)

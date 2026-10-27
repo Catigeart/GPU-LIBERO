@@ -1,5 +1,6 @@
 """Common-input prefix/controller/Newton/step2 qualification without retiming."""
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import ctypes as ct
 import json
 import sys
@@ -148,7 +149,7 @@ def main(args):
     from libero.gpu import precision
     precision.select('fp32')
     if args.controls<1:raise ValueError('Positive frozen control window required')
-    tasks=select_tasks(json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'],args.tasks);rows=[]
+    tasks=select_tasks(load_catalog(args.build_root),args.tasks);rows=[]
     for task in tasks:
         row=(export_task if args.reference_export else check_task)(args,task,args.output/(task['suite']+'-'+str(task['task_id'])))
         rows.append(row);print(json.dumps(row),flush=True);save(args.output/'index.json',rows)

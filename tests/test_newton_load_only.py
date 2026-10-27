@@ -74,14 +74,14 @@ class CatalogueProductTests(unittest.TestCase):
         from libero.gpu.host.runtime.newton import catalogue
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root/'cmake-control/sm80-dev/native_newton_nv21.so'
+            path = root/'cmake-control/sm80-dev/native_newton_nv21_nq23_nm86_nj11_nu9.so'
             path.parent.mkdir(parents=True)
             path.write_bytes(b'prebuilt CUDA')
-            config = dict(nv=21,nM=86,rows=30032,contacts=5000,maxiter=100,
+            config = dict(nv=21,nM=86,nq=23,njnt=11,nu=9,rows=30032,contacts=5000,maxiter=100,
                 block_threads=128,precision_bits=64,architecture=80,warmstart=True,
                 use_dx=True,use_blas=True,phase_profiling=False,
                 parameter_bytes=2040,shared_bytes=19232)
-            values = (21,86,30032,5000,100,128,64,80,1,1,1,0)
+            values = (21,86,30032,5000,100,128,64,80,1,1,1,0,23,11,9)
             lib = NS(native_newton_configuration=Mock(side_effect=lambda index:values[index]))
             with patch.dict(os.environ, {'LIBERO_GPU_BUILD_MODE':'dev'}), \
                     patch.object(catalogue,'load_product',return_value=(lib,{})) as load, \

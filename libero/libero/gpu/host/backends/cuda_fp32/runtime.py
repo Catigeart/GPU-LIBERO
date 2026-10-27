@@ -9,11 +9,11 @@ from .fused_control_drive import FusedControlDrive
 class Runtime:
     def __init__(self,env,*,fast_compile=True):
         self.env,self.model,self.data,self.stream=env,env.model,env.data,env.stream
-        self.substeps=env.substeps;products=Products(env.build_root,fast_compile)
+        self.substeps=env.substeps;products=Products(env.build_root,self.stream.device.arch,fast_compile)
         self.physics=Physics(self.model,self.data,self.stream,products)
         self.newton=self.physics.newton
         self.controller=Controller(env.built.native_model,self.model,self.data,env.built.metadata,
-            self.stream,controller_product(env.build_root,fast_compile=fast_compile))
+            self.stream,controller_product(env.build_root,arch=self.stream.device.arch,fast_compile=fast_compile))
         self.control_drive=FusedControlDrive(self.controller,self.physics.actuation_solve,products.folder/'fp32_fused_control_drive.so')
         self.bridge=Bridges(products.folder/'cuda_bridges_fp32.so',self.stream)
         for name in ('integration_count','state_epoch','reset_events','newton_attempts','position_math'):

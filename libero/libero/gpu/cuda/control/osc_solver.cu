@@ -15,6 +15,7 @@ using flash_libero::SubstepShape;
 
 namespace physics_controller {
 
+
 // Project-written register collectives. Every lane in a full warp participates.
 // Callers pad invalid elements with the operation's identity, never skip lanes.
 // These functions do not synchronize shared or global memory.
@@ -34,6 +35,17 @@ namespace osc_cuda {
 static __device__ inline real_t clip(real_t x, real_t lo, real_t hi) {
   return isnan(x) ? x : fmin(hi, fmax(lo, x));
 }
+
+__device__ __forceinline__ real_t action_component(const flash_libero::ControllerSolveData &in, int w, int axis) {
+  real_t action = in.action[w*7+axis];
+  if (!in.action_config)
+    return (axis < 3 ? REAL_C(.05) : REAL_C(.5)) * clip(action, -1, 1);
+  const real_t *p = in.action_config;
+  real_t scale = fabs(p[18+axis]-p[12+axis]) / fabs(p[6+axis]-p[axis]);
+  return (clip(action,p[axis],p[6+axis])-(p[6+axis]+p[axis])*REAL_C(.5))*scale
+         +(p[18+axis]+p[12+axis])*REAL_C(.5);
+}
+
 
 // One-sided Jacobi: retain scale, ordered rotations, cutoff and orthogonality test.
 
@@ -534,9 +546,9 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       if (in.policy[w]) {
         for (int r = 0; r < 3; r++)
           gp[r] = (local_state ? local_state[14 + r] : in.ee_pos[w * 3 + r]) +
-                  REAL_C(.05) * clip(in.action[w * 7 + r], -1, 1);
-        real_t x = REAL_C(.5) * clip(in.action[w * 7 + 3], -1, 1), y = REAL_C(.5) * clip(in.action[w * 7 + 4], -1, 1),
-               z = REAL_C(.5) * clip(in.action[w * 7 + 5], -1, 1);
+                  action_component(in, w, r);
+        real_t x = action_component(in, w, 3), y = action_component(in, w, 4),
+               z = action_component(in, w, 5);
         if (x != 0 || y != 0 || z != 0) {
           rotation_delta(x, y, z, delta, in.quat_input + w * 4, in.quat_cast + w * 4);
           in.quat_valid[w] = 1;
@@ -579,7 +591,7 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       const int lane = threadIdx.x;
       real_t operand = REAL_C(0.0);
       if (lane < 6) {
-        if constexpr (SubstepShape::osc_uncouple) {
+        if (in.uncouple) {
           const int row = lane % 3, offset = lane < 3 ? 0 : 3;
           const real_t *lambda = lane < 3 ? lp3 : lr3;
           for (int k = 0; k < 3; ++k)
@@ -621,7 +633,7 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
     if (threadIdx.x == 0) {
       real_t a6 = in.action[w * 7 + 6], sgn = isnan(a6) ? a6 : (a6 > 0 ? REAL_C(1.) : (a6 < 0 ? -REAL_C(1.) : REAL_C(0.)));
       for (int i = 0; i < 2; i++) {
-        real_t value = clip(in.gripper[w * 2 + i] + REAL_C(.01) * (i == 0 ? -REAL_C(1.) : REAL_C(1.)) * sgn, -1, 1);
+        real_t value = clip(in.gripper[w * 2 + i] + (in.action_config ? in.action_config[24] : REAL_C(.01)) * (i == 0 ? -REAL_C(1.) : REAL_C(1.)) * sgn, -1, 1);
         in.gripper[w * 2 + i] = value;
         real_t lo = in.range[w * 18 + 2 * (i + 7)], hi = in.range[w * 18 + 2 * (i + 7) + 1];
         in.ctrl[w * 9 + i + 7] = (hi + lo) * REAL_C(.5) + (hi - lo) * REAL_C(.5) * value;

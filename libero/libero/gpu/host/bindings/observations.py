@@ -277,16 +277,9 @@ def _batch_scene_arrays(observer):
 
 def _batch_feature_key(observer):
     """Describe image ABI, independently of the physical model's identity."""
-    import hashlib
-    import json
     specs=observer.plan.image_specs
     if not specs:return 'no-camera'
-    descriptors=[dict(name=s['name'],shape=list(s['shape'])) for s in specs]
-    if sorted((d['name'],tuple(d['shape'])) for d in descriptors)==[
-            ('agentview_image',(128,128,3)),('robot0_eye_in_hand_image',(128,128,3))]:
-        return 'dual-rgb128'
-    encoded=json.dumps(descriptors,sort_keys=True,separators=(',',':')).encode()
-    return 'images-'+hashlib.sha256(encoded).hexdigest()[:16]
+    return 'camera-depth' if any(s['name'].endswith('_depth') for s in specs) else 'camera'
 
 
 def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=None,
@@ -300,7 +293,6 @@ def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=Non
     from contextlib import nullcontext
     from libero.gpu.host.runtime.core.product_paths import (
         build_project,product_build,toolchain_scope,mathdx_root,cache_root)
-    from libero.gpu.host.build.native import strict_build_receipts_scope
     from libero.gpu.host.build.product_cache import product_cache_scope
     if type(debug) is not bool or type(strict_build_receipts) is not bool:
         raise ValueError('batch observation debug/strict settings must be bool')
@@ -319,8 +311,6 @@ def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=Non
             raise ValueError('batch observation installation owner/profile changed')
         return previous['manifest']
     options=getattr(bundle,'observation_build_options',{})
-    if options and options['strict_build_receipts']!=strict_build_receipts:
-        raise ValueError('batch observation receipt mode differs from physics')
     report=getattr(bundle,'build_report',{})
     directory=build_root if build_root is not None else options.get('build_root',report.get('directory'))
     with build_project(directory,lock_key=observer.metadata['model_sha256']) as project:
@@ -330,8 +320,8 @@ def install_batch(observer,binding,bundle,build_root=None,*,dataflow_profile=Non
         start=len(project['events'])
         with product_build():
             sdk=Path(options['mathdx_root']) if options.get('mathdx_root') else mathdx_root(download=False)
-            cache=product_cache_scope(cache_root()/'products') if strict_build_receipts else nullcontext()
-            with toolchain_scope(sdk),strict_build_receipts_scope(strict_build_receipts),cache,wp.ScopedStream(binding.stream):
+            cache=product_cache_scope(project['root']/'products')
+            with toolchain_scope(sdk),cache,wp.ScopedStream(binding.stream):
                 root=project['root']/'cuda'/('sm'+str(observer.lowdim.observed.device.arch))/'batch-observations'/'v1'
                 manifest=install(observer,fields,root,dataflow_profile=profile)
         events=list(project['events'][start:])

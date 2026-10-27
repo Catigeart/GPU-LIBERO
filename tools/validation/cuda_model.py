@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import sys
 import numpy as np
 
@@ -85,7 +86,7 @@ def main(args):
     from .common import select_tasks
     from libero.gpu import precision
     precision.select('fp32')
-    tasks=select_tasks(json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'],args.tasks);rows=[]
+    tasks=select_tasks(load_catalog(args.build_root),args.tasks);rows=[]
     candidates={}
     if args.candidate_scene_cache:
         import robosuite

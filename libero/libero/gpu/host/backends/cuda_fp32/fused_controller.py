@@ -3,7 +3,7 @@ import ctypes as ct
 import hashlib
 from pathlib import Path
 from .fused_control_prepare import ControlPrepareInputs
-from libero.gpu.host.runtime.step.substep_types import ControllerSolveData
+from libero.gpu.host.runtime.control import ControllerSolveData
 from libero.gpu.host.runtime.dynamics.mjwarp_motion import bind_array,reject_output_overlap
 
 

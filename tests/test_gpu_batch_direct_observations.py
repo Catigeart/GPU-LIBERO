@@ -68,8 +68,6 @@ class BatchDirectObservationTests(unittest.TestCase):
             mathdx_root=self.sdk_lookup, cache_root=lambda: Path('/cache'))
         self.modules = {
             'libero.gpu.host.runtime.core.product_paths': self.paths,
-            'libero.gpu.host.build.native': SimpleNamespace(
-                strict_build_receipts_scope=lambda enabled: scope(('strict', enabled))),
             'libero.gpu.host.build.product_cache': SimpleNamespace(
                 product_cache_scope=lambda root: scope(('cache', str(root)))),
         }
@@ -164,7 +162,7 @@ class BatchDirectObservationTests(unittest.TestCase):
                 result = self.install(observer, binding)
                 self.assertEqual(len(result['native_artifacts']), 2)
                 self.assertFalse(result['runtime_hook_installed'])
-                self.assertEqual(result['feature_key'], 'dual-rgb128' if not depth else
+                self.assertEqual(result['feature_key'], 'camera' if not depth else
                                  self.namespace['_batch_feature_key'](observer))
                 self.assertEqual(result['scene_capture'], 'schema-v2' if depth else 'handwritten native scene')
                 self.assertTrue(observer.graph_guard())
@@ -272,11 +270,10 @@ class BatchDirectObservationTests(unittest.TestCase):
         observer.scene_transforms.ncam = 2
         self.assertFalse(observer.graph_guard())
 
-    def test_strict_product_mode_uses_parent_sdk_cache_and_preserves_miss_failure(self):
+    def test_legacy_receipt_option_uses_parent_cache_and_preserves_miss_failure(self):
         self.bundle.observation_build_options['strict_build_receipts'] = True
         self.install(strict_build_receipts=True)
-        self.assertIn(('strict', True), self.entries)
-        self.assertIn(('cache', '/cache/products'), self.entries)
+        self.assertIn(('cache', '/bank/products'), self.entries)
         other = self.observer_for()
         self.missing_product = True
         with self.assertRaisesRegex(MissingProduct, 'product absent'):
@@ -284,7 +281,7 @@ class BatchDirectObservationTests(unittest.TestCase):
         self.assertFalse(hasattr(other, '_cuda_direct_sampler'))
         self.assertEqual(self.active, [])
 
-    def test_rejects_capture_foreign_binding_and_receipt_mismatch_before_install(self):
+    def test_rejects_capture_and_foreign_binding_before_install(self):
         self.stream.is_capturing = True
         with self.assertRaisesRegex(ValueError, 'cold stream'):
             self.install()
@@ -293,9 +290,9 @@ class BatchDirectObservationTests(unittest.TestCase):
         foreign.prepared = object()
         with self.assertRaisesRegex(ValueError, 'retained physics binding'):
             self.install(binding=foreign)
-        with self.assertRaisesRegex(ValueError, 'receipt mode'):
-            self.install(strict_build_receipts=True)
         self.assertFalse(self.installs)
+        self.install(strict_build_receipts=True)
+        self.assertTrue(self.installs)
 
     def test_direct_sampling_guard_precedes_any_sampler_validation_or_launch(self):
         cls = next(n for n in ast.parse(SOURCE.read_text()).body

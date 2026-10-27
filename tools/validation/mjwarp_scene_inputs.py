@@ -6,6 +6,7 @@ prepared fixed-fixture parameters, independently of later sampler versions.
 """
 import argparse,hashlib,json
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 import numpy as np
 
 
@@ -20,7 +21,7 @@ def main(argv=None,*,args=None):
     if args is None:args=add_arguments(argparse.ArgumentParser(description=__doc__)).parse_args(argv)
     import mujoco
     if mujoco.__version__!='2.3.7':raise RuntimeError('Export scene parameters using actual CPU reference2.3.7')
-    output=args.output or args.build_root/'mjwarp/scene-inputs';output.mkdir(parents=True,exist_ok=True);tasks=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks'];library=next(Path(mujoco.__file__).parent.glob('libmujoco.so*'));libhash=digest(library);rows=[]
+    output=args.output or args.build_root/'mjwarp/scene-inputs';output.mkdir(parents=True,exist_ok=True);tasks=load_catalog(args.build_root);library=next(Path(mujoco.__file__).parent.glob('libmujoco.so*'));libhash=digest(library);rows=[]
     for task in tasks:
         if not any(v in ('all',task['suite'],task['suite']+':'+str(task['task_id'])) for v in args.tasks):continue
         directory=Path(task['directory']);model=directory/'model.mjb';bank=directory/'initial_states.npy'

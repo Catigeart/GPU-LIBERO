@@ -55,5 +55,6 @@ class Bridges:
         self.library=libraries[self.path]
 
     def call(self,name,*args):
-        code=getattr(self.library,'flash_bridge_'+name)(*args,self.stream.cuda_stream)
+        with self.stream.device.scope():
+            code=getattr(self.library,'flash_bridge_'+name)(*args,self.stream.cuda_stream)
         if code:raise RuntimeError('CUDA bridge '+name+': error '+str(code))

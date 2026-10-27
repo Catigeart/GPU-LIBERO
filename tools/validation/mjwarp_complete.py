@@ -7,6 +7,7 @@ packaging is timed. Original numerical operators are prepared offline first.
 """
 import argparse,gc,hashlib,inspect,json,subprocess,sys,time
 from pathlib import Path
+from libero.gpu.host.build.task_catalog import load_catalog
 from types import SimpleNamespace as NS
 import numpy as np
 from .mjwarp_public_forward import ROOTS,OUTPUTS,compare,graph_audit
@@ -356,7 +357,7 @@ def main(argv=None,*,args=None):
     precision.select('fp32')
     if args.prepare_and_run:args.prepare=True
     preparation_only=args.prepare and not args.prepare_and_run
-    sig=source_signature();tasks=json.loads((args.build_root/'TASK_INSTANCES.json').read_text())['tasks']
+    sig=source_signature();tasks=load_catalog(args.build_root)
     sig['protocol']['correctness_only']=getattr(args,'correctness_only',False)
     selected=[t for t in tasks if any(v in ('all',t['suite'],t['suite']+':'+str(t['task_id'])) for v in ([args.worker_task] if args.worker_task else args.tasks))]
     if not selected:raise ValueError('No selected tasks')

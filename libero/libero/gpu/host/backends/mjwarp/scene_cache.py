@@ -10,7 +10,7 @@ from libero.gpu.host.build.compilation import MissingCompiledProduct
 # The supplied scene XML and fixed fixture inputs define the CPU MJB. These
 # robosuite options configure host observations/rendering or episode lifecycle;
 # build_task_model still applies them to each fresh domain shell, not the MJB.
-_HOST_OPTIONS = frozenset(('use_camera_obs', 'use_object_obs', 'camera_names',
+_HOST_OPTIONS = frozenset(('controller_configs', 'use_camera_obs', 'use_object_obs', 'camera_names',
     'camera_heights', 'camera_widths', 'camera_depths', 'camera_segmentations',
     'has_renderer', 'has_offscreen_renderer', 'render_camera',
     'render_collision_mesh', 'render_visual_mesh', 'renderer', 'renderer_config',
@@ -32,6 +32,8 @@ def engine_identity():
 
 def binding(xml, options, task):
     # Hash the already-loaded XML/options, never asset or library files here.
+    from ..cuda_fp32.scene import relocate_assets
+    xml = relocate_assets(xml, relative=True)
     return dict(engine=engine_identity(), task=task['key'], scene=task['files']['scene.xml'],
                 imported_xml_sha256=hashlib.sha256(xml.encode()).hexdigest(), options=_model_options(options))
 
@@ -121,7 +123,8 @@ def finish(folder, built, row, record, *, prepare=False, xml=None, compiled_mode
         if row is None:
             raise MissingCompiledProduct('Runtime scene publication is disabled; prepare offline')
         return
-    processed = hashlib.sha256(built.xml.encode()).hexdigest()
+    from ..cuda_fp32.scene import relocate_assets
+    processed = hashlib.sha256(relocate_assets(built.xml, relative=True).encode()).hexdigest()
     if row is not None:
         if row['processed_xml_sha256'] != processed or row['model_sha256'] != built.metadata['model_sha256']:
             raise MissingCompiledProduct('Modern scene processed XML/model differs; prepare offline: ' + str(folder))

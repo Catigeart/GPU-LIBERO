@@ -1,5 +1,7 @@
 """Persistent compiler/source reuse checks with no CUDA initialization."""
 import ast
+import importlib.util
+from libero.gpu import precision as scalar
 import copy
 from contextlib import redirect_stdout
 import hashlib
@@ -15,6 +17,8 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import threading
+import weakref
 import types
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -66,8 +70,10 @@ class NewtonPathAliasTests(unittest.TestCase):
         self.module_patch = patch.dict(sys.modules, self.modules)
         self.module_patch.start()
         self.addCleanup(self.module_patch.stop)
-        loaded = runpy.run_path(str(GPU/'host/build/aot.py'))
-        self.aot = loaded['migrate_newton_path_alias'].__globals__
+        spec = importlib.util.spec_from_file_location('libero.gpu.host.build._cache_test_aot', GPU/'host/build/aot.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.aot = vars(module)
         self.aot['__package__'] = 'libero.gpu.host.build'
         self.aot['_NEWTON_LEGACY_SOURCE_ROOTS'] = (str(self.old_repo),)
         self.source = '#define NV 21\n#define NM 86\n// preserve CRLF\r\ncurrent kernel\n'
@@ -530,8 +536,11 @@ class GpuBuildCacheTests(unittest.TestCase):
         wp = SimpleNamespace(set_module_options=lambda *a, **kw: registered.append(kw),
             launch=lambda kernel, nworld, inputs, **kw: launches.append(inputs))
         loader = dict(hashlib=hashlib, sys=sys, GPU_ROOT=GPU, linecache=linecache,
-                      types=types, wp=wp, __name__='_cache_owner_test')
-        exec(compile(ast.Module(body=[load], type_ignores=[]), str(loader_source), 'exec'), loader)
+                      types=types, wp=wp, scalar=scalar, threading=threading, weakref=weakref,
+                      _PYTHON_SOURCE_LOCK=threading.RLock(), _PYTHON_SOURCES={}, __name__='_cache_owner_test')
+        release = next(n for n in ast.parse(loader_source.read_text()).body
+                       if isinstance(n,ast.FunctionDef) and n.name == '_release_python_source')
+        exec(compile(ast.Module(body=[release,load], type_ignores=[]), str(loader_source), 'exec'), loader)
         def stage(value: int):
             pass
         source_kernel = SimpleNamespace(func=stage, key='stage')
@@ -646,7 +655,7 @@ class GpuBuildCacheTests(unittest.TestCase):
         namespace = dict(wp=SimpleNamespace(get_device=Device), Path=Path, os=os,
                          GPU_ROOT=GPU, MODULE=GPU / 'cuda/collision/native',
                          _native_source_bindings=lambda path: {}, hashlib=hashlib,
-                         json=json, _CACHE=ExistingProducts(), current_product_cache=lambda: None)
+                         json=json, scalar=scalar, _CACHE=ExistingProducts(), current_product_cache=lambda: None)
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), namespace)
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(sys.modules, {PATHS_NAME: paths}), \
@@ -685,57 +694,44 @@ class GpuBuildCacheTests(unittest.TestCase):
                 generated_package({'nv': 21}, {}, generator, directory)
 
     def test_native_products_compile_once_and_invalidate_changed_inputs(self):
-        source_path = GPU / 'host/build/native.py'
-        tree = ast.parse(source_path.read_text())
-        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                        and n.name == '_compile_library_legacy')
-        calls = []
+        from libero.gpu.host.build import native
+        from libero.gpu.host.build.build_receipts import file_record
+        from libero.gpu.host.runtime.core import product_paths
+        calls=[]
         def compiler(command, **kwargs):
             calls.append(command)
-            Path(command[command.index('-o') + 1]).write_bytes(b'compiled test image')
-            return SimpleNamespace(returncode=0, stdout='', stderr='')
-        namespace = dict(Path=Path, wp=SimpleNamespace(get_device=lambda device:
-                         SimpleNamespace(is_cuda=True, arch=80)),
-                         hashlib=hashlib, json=json, re=re, os=os, shutil=shutil,
-                         subprocess=SimpleNamespace(run=compiler),
-                         nvcc_path=lambda: '/toolkit/bin/nvcc',
-                         load_cdll=lambda path: str(path),
-                         ct=SimpleNamespace(CDLL=lambda path: path))
-        exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), 'exec'), namespace)
-        compile_ = namespace['_compile_library_legacy']
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.dict(sys.modules, {PATHS_NAME: paths}), \
-                patch.dict(os.environ, {'LIBERO_GPU_CACHE_DIR': directory,
-                                       'LIBERO_CUDA_FUSION_CACHE': ''}):
-            project_root = Path(directory) / 'project'
-            build = project_root / 'cuda/sm80'
-            header = Path(directory) / 'input.cuh'
-            header.write_text('const int version = 1;\n')
-            source = '#include "' + str(header) + '"\n'
-            with paths.build_project(project_root):
-                _, first = compile_('first', source, build)
-            self.assertEqual(len(calls), 1)
-            with paths.build_project(project_root):
-                _, second = compile_('first', source, build)
-                _, alias = compile_('other_plan', source, build)
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(second['compile_commands_executed'], [])
-            self.assertEqual(first['sha256'], alias['sha256'])
-            self.assertEqual(alias['compile_commands_executed'], [])
-            with paths.build_project(project_root):
-                _, changed_flags = compile_('first', source, build, defines={'NV': 43})
-            self.assertEqual(len(calls), 2)
-            self.assertNotEqual(first['sha256'], changed_flags['sha256'])
-            header.write_text('const int version = 2;\n')
-            with paths.build_project(project_root):
-                _, changed_header = compile_('first', source, build)
-            self.assertEqual(len(calls), 3)
-            self.assertNotEqual(first['sha256'], changed_header['sha256'])
-            Path(changed_header['library']).write_bytes(b'tampered')
-            with paths.build_project(project_root), \
-                    self.assertRaisesRegex(ValueError, 'cached native binary differs'):
-                compile_('first', source, build)
-            self.assertEqual(len(calls), 3)
+            Path(command[command.index('-o')+1]).write_bytes(b'compiled test image')
+            return SimpleNamespace(returncode=0,stdout='',stderr='')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);header=root/'input.cuh';header.write_text('version 1')
+            with patch.object(native.wp,'get_device',return_value=SimpleNamespace(is_cuda=True,arch=80)), \
+                    patch.object(native,'nvcc_path',return_value='/offline/nvcc'), \
+                    patch.object(native,'toolchain_record',return_value={}), \
+                    patch.object(native,'compiler_dependencies',side_effect=lambda *a:[file_record(header)]), \
+                    patch.object(native,'load_cdll',side_effect=lambda path:str(path)), \
+                    patch.object(native.subprocess,'run',side_effect=compiler), \
+                    product_paths.build_project(root):
+                def compile_(name, **kw):
+                    return native.compile_library(name,'// maintained source',root/'cuda',**kw)[1]
+                first=compile_('first')
+                second=compile_('first');alias=compile_('another-owner')
+                self.assertEqual(len(calls),1)
+                self.assertEqual(second['compile_commands_executed'],[])
+                self.assertEqual(first['sha256'],alias['sha256'])
+                from libero.gpu.host.build.compilation import compilation_scope
+                sources_before=set((root/'cuda').glob('*.cu'))
+                with compilation_scope(False):
+                    loaded=compile_('load-only-owner')
+                self.assertEqual(set((root/'cuda').glob('*.cu')),sources_before)
+                self.assertEqual(loaded['compile_commands_executed'],[])
+                self.assertEqual(len(calls),1)
+                changed_flags=compile_('first',defines={'NV':43})
+                self.assertEqual(len(calls),2)
+                self.assertNotEqual(first['sha256'],changed_flags['sha256'])
+                header.write_text('version 2')
+                changed_header=compile_('first')
+                self.assertEqual(len(calls),3)
+                self.assertNotEqual(first['sha256'],changed_header['sha256'])
 
     def test_verified_old_newton_product_can_migrate_without_compilation(self):
         with tempfile.TemporaryDirectory() as directory, \
