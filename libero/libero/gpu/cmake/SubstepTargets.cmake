@@ -267,6 +267,8 @@ function(flash_add_precision precision_bits)
     target_link_libraries(${mjwarp_controller} PRIVATE "${FLASH_SOLVERDX}")
   endif()
 
+  flash_add_osc_replay_probe(${precision_bits} "${FLASH_OSC_INPUT}" "${FLASH_OSC_TARGET}")
+
   if(NOT FLASH_BUILD_NATIVE)
     return()
   endif()

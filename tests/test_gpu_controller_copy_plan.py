@@ -1,6 +1,7 @@
 """Cold controller packet schedule: world strides, tails and alias fallback."""
 import ctypes as ct
 import unittest
+from libero.gpu import precision as scalar
 from libero.gpu.host.runtime.step.controller_copy_plan import build_packets, access_regions, parallel_gather_allowed
 from libero.gpu.host.runtime.step.substep_types import SubstepArguments, ControllerChannels, DoubleChannel, IntChannel
 
@@ -19,13 +20,13 @@ class ControllerCopyPlanTests(unittest.TestCase):
         p, seed, commit = build_packets(c, 2)
         self.assertEqual((seed, commit), (4, 6))
         self.assertEqual([(x.published, x.width, x.words) for x in p[:seed]],
-                         [(0x10000+8*k, 7, min(2, 7-k)) for k in range(0, 7, 2)])
-        self.assertEqual([(x.published, x.width) for x in p[seed+4:]], [(0x30000, 4), (0x30010, 4)])
+                         [(0x10000+scalar.itemsize*k, 7, min(2, 7-k)) for k in range(0, 7, 2)])
+        self.assertEqual([(x.published, x.width) for x in p[seed+4:]], [(0x30000, 4), (0x30000+2*scalar.itemsize, 4)])
         self.assertEqual(len(build_packets(c, 8)[0]), len(p))
 
     def test_cross_world_and_exact_aliases_select_ordered_path(self):
         c = self.channels()
-        c.floating[0].working = 0x10000+7*8
+        c.floating[0].working = 0x10000+7*scalar.itemsize
         self.assertFalse(build_packets(c, 2)[0])
         c.floating[0].working = c.floating[0].published
         self.assertFalse(build_packets(c, 2)[0])
@@ -37,7 +38,7 @@ class ControllerCopyPlanTests(unittest.TestCase):
 
     def test_protected_gather_and_protocol_spans(self):
         c = self.channels()
-        self.assertFalse(build_packets(c, 2, [(0x20000+13*8, 0x20000+14*8)])[0])
+        self.assertFalse(build_packets(c, 2, [(0x20000+13*scalar.itemsize, 0x20000+14*scalar.itemsize)])[0])
         self.assertFalse(build_packets(c, 2, integer_protected=[(0x60000, 0x60008)])[0])
         self.assertTrue(build_packets(c, 2, [(0x70000, 0x70008)])[0])
 
@@ -104,6 +105,11 @@ class ControllerCopyPlanTests(unittest.TestCase):
         a.controller_bias.epoch += 8
         self.assertFalse(parallel_gather_allowed(a, 2, index_words=7))
 
+    def test_fp64_derived_cache_tail_is_protected_with_fp32_physics(self):
+        a = self.wiring()
+        a.controller_gate.first = a.controller_commit.first = a.controller_solve.derived_data + 2*206*8-4
+        self.assertFalse(parallel_gather_allowed(a, 2, index_words=7))
+
     def test_cooperative_write_alias_chooses_ordered_path(self):
         a = self.wiring()
         a.end_effector_velocity.target = a.controller_inputs.vp
@@ -113,7 +119,7 @@ class ControllerCopyPlanTests(unittest.TestCase):
         self.assertFalse(parallel_gather_allowed(a, 2, index_words=7))
 
     def test_argument_abi(self):
-        self.assertEqual(ct.sizeof(SubstepArguments), 6288)
+        self.assertEqual(ct.sizeof(SubstepArguments), 6288 if scalar.bits == 32 else 6296)
 
 
 if __name__ == '__main__':

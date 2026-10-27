@@ -90,7 +90,7 @@ def install(owner,root,*,dataflow_profile="compatible",diagnostic_profile="compa
     if fast:
         cache={"valid":wp.zeros(c.nworld,dtype=wp.int32,device=c.device),
             "key":wp.zeros((c.nworld,91),dtype=scalar.wp_real,device=c.device),
-            "data":wp.zeros((c.nworld,206),dtype=scalar.wp_real,device=c.device),
+            "data":wp.zeros((c.nworld,206),dtype=wp.float64,device=c.device),
             "ranks":wp.zeros((c.nworld,3),dtype=wp.int32,device=c.device),
             "hits":wp.zeros(c.nworld,dtype=wp.int32,device=c.device)}
         owner._cuda_osc_derived_cache=cache

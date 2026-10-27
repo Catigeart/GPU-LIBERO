@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "substep_shape.cuh"
+#include "../control/osc_precision.cuh"
 
 namespace flash_libero {
 
@@ -48,31 +49,31 @@ struct EulerLayout {
 // problems. Only the phase as a whole overlays Newton/Euler, never its operands.
 struct OscLayout {
   static constexpr std::size_t m = 0;
-  static constexpr std::size_t lu = shared_align(m + 49 * sizeof(real_t));
-  static constexpr std::size_t mi = shared_align(lu + 49 * sizeof(real_t));
-  static constexpr std::size_t j = shared_align(mi + 49 * sizeof(real_t));
-  static constexpr std::size_t jt = shared_align(j + 42 * sizeof(real_t));
-  static constexpr std::size_t jw = shared_align(jt + 42 * sizeof(real_t));
-  static constexpr std::size_t a = shared_align(jw + 42 * sizeof(real_t));
-  static constexpr std::size_t ap = a + 36 * sizeof(real_t), ar = ap + 36 * sizeof(real_t);
-  static constexpr std::size_t lf = ar + 36 * sizeof(real_t), lp = lf + 36 * sizeof(real_t);
-  static constexpr std::size_t lr = lp + 36 * sizeof(real_t);
-  static constexpr std::size_t mjt = lr + 36 * sizeof(real_t);
-  static constexpr std::size_t jbar = shared_align(mjt + 42 * sizeof(real_t));
-  static constexpr std::size_t project = shared_align(jbar + 42 * sizeof(real_t));
-  static constexpr std::size_t delta = project + 49 * sizeof(real_t), current = delta + 9 * sizeof(real_t);
-  static constexpr std::size_t gr = current + 9 * sizeof(real_t), gp = gr + 9 * sizeof(real_t);
-  static constexpr std::size_t desired = gp + 3 * sizeof(real_t), wrench = desired + 6 * sizeof(real_t);
-  static constexpr std::size_t lp3 = wrench + 6 * sizeof(real_t), lr3 = lp3 + 9 * sizeof(real_t);
-  static constexpr std::size_t pd = lr3 + 9 * sizeof(real_t), pose = pd + 7 * sizeof(real_t);
-  static constexpr std::size_t nt = pose + 7 * sizeof(real_t), tau = nt + 7 * sizeof(real_t);
-  static constexpr std::size_t project_t = shared_align(tau + 7 * sizeof(real_t));
-  static constexpr std::size_t info = project_t + 49 * sizeof(real_t), piv = info + sizeof(int);
+  static constexpr std::size_t lu = shared_align(m + 49 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t mi = shared_align(lu + 49 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t j = shared_align(mi + 49 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t jt = shared_align(j + 42 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t jw = shared_align(jt + 42 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t a = shared_align(jw + 42 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t ap = a + 36 * sizeof(physics_controller::compute_t), ar = ap + 36 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t lf = ar + 36 * sizeof(physics_controller::compute_t), lp = lf + 36 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t lr = lp + 36 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t mjt = lr + 36 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t jbar = shared_align(mjt + 42 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t project = shared_align(jbar + 42 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t delta = project + 49 * sizeof(physics_controller::compute_t), current = delta + 9 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t gr = current + 9 * sizeof(physics_controller::compute_t), gp = gr + 9 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t desired = gp + 3 * sizeof(physics_controller::compute_t), wrench = desired + 6 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t lp3 = wrench + 6 * sizeof(physics_controller::compute_t), lr3 = lp3 + 9 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t pd = lr3 + 9 * sizeof(physics_controller::compute_t), pose = pd + 7 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t nt = pose + 7 * sizeof(physics_controller::compute_t), tau = nt + 7 * sizeof(physics_controller::compute_t);
+  static constexpr std::size_t project_t = shared_align(tau + 7 * sizeof(physics_controller::compute_t));
+  static constexpr std::size_t info = project_t + 49 * sizeof(physics_controller::compute_t), piv = info + sizeof(int);
   static constexpr std::size_t admitted = piv + 7 * sizeof(int), reuse = admitted + sizeof(int);
   static constexpr std::size_t serial_load = reuse + sizeof(int), pinv_ranks = serial_load + sizeof(int);
   static constexpr std::size_t pinv_ok = pinv_ranks + 3 * sizeof(int);
   static constexpr std::size_t pinv = shared_align(pinv_ok + 3 * sizeof(int));
-  static constexpr std::size_t local_state = pinv + 3 * 72 * sizeof(real_t);
+  static constexpr std::size_t local_state = pinv + 3 * 72 * sizeof(physics_controller::compute_t);
   static constexpr std::size_t live = local_state + 32 * sizeof(real_t), copy_mode = live + sizeof(int);
   static constexpr std::size_t bytes = shared_align(copy_mode + sizeof(int));
 };

@@ -6,8 +6,10 @@ Select it with `physics_engine="mjwarp"`. Automatic FP32 batch routing now selec
 the [independent CUDA owner](../cuda_fp32/README.md), which requires neither Warp
 package. FP32 is the default precision; explicit FP64 uses native CUDA. The older
 native FP32 comparison path remains available as `physics_engine="native"`.
-Physics and OSC here use FP32. No CPU controller or per-substep device download
-is used.
+Physics and resident controller buffers use FP32. The shared CUDA OSC uses FP64
+for matrix and torque arithmetic, then publishes FP32 controls; see its
+[mixed precision and offline rebuild requirements](../cuda_fp32/README.md#build-and-binding-boundaries).
+No CPU controller or per-substep device download is used.
 
 The explicit `mjwarp_options={"preset": "cuda_libero", "fast_compile": True}`
 selects every migrated numerical leaf required by the130 shipped tasks,

@@ -336,7 +336,7 @@ class NativePlan:
         self.scalar_slots={}; self.pointer_slots={}
         self._retired_owners=[]; self._captured_owners=[]
         self._stage_args=[]
-        dtype_names = {scalar.wp_real:'real_t', wp.float32:'float', wp.int32:'int32_t',
+        dtype_names = {scalar.wp_real:'real_t', wp.float32:'float', wp.float64:'double', wp.int32:'int32_t',
                        wp.int64:'int64_t', wp.uint32:'uint32_t', wp.uint64:'uint64_t',
                        wp.uint8:'uint8_t', wp.int8:'int8_t', wp.int16:'int16_t',
                        wp.uint16:'uint16_t', wp.bool:'bool'}

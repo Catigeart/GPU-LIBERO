@@ -1,3 +1,20 @@
+function(flash_add_osc_replay_probe precision_bits osc_input osc_target)
+  flash_precision_suffix(${precision_bits} precision_suffix)
+  if(EXISTS "${FLASH_GPU}/../../../tests/cuda/osc_mixed_replay_probe.cu")
+    add_library(flash_osc_mixed_replay_probe${precision_suffix} SHARED EXCLUDE_FROM_ALL
+      "${FLASH_GPU}/../../../tests/cuda/osc_mixed_replay_probe.cu" ${osc_input})
+    target_link_libraries(flash_osc_mixed_replay_probe${precision_suffix} PRIVATE flash_cuda_options${precision_suffix})
+    add_dependencies(flash_osc_mixed_replay_probe${precision_suffix} ${osc_target})
+    set_target_properties(flash_osc_mixed_replay_probe${precision_suffix} PROPERTIES
+      CUDA_ARCHITECTURES "${FLASH_CUDA_ARCH}-real" CUDA_SEPARABLE_COMPILATION ON
+      CUDA_RESOLVE_DEVICE_SYMBOLS ON JOB_POOL_LINK flash_cuda_link)
+    if(FLASH_GLOBAL_DEVICE_LTO OR NOT FLASH_BUILD_NATIVE)
+      target_link_options(flash_osc_mixed_replay_probe${precision_suffix} PRIVATE "$<DEVICE_LINK:-dlto>")
+      target_link_libraries(flash_osc_mixed_replay_probe${precision_suffix} PRIVATE "${FLASH_SOLVERDX}")
+    endif()
+  endif()
+endfunction()
+
 # Optional repository fixtures; installed GPU packages configure without them.
 function(flash_add_newton_cone_fixture suffix precision_bits mathdx_input mathdx_target)
   set(source "${FLASH_GPU}/../../../tests/cuda/newton_cone_factor_test.cu")

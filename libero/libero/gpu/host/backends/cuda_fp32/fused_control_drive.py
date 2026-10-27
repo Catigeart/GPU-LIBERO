@@ -16,7 +16,7 @@ def source_id():
         'cuda/runtime/bridge_types.cuh','cuda/dynamics/mjwarp_queries.cuh',
         'cuda/dynamics/mjwarp_actuation.cuh','cuda/dynamics/mjwarp_smooth_force.cuh',
         'cuda/dynamics/mjwarp_mass_solve.cuh','cuda/control/osc_solver.cu',
-        'cuda/control/osc_solver.cuh','cuda/control/osc_profile.cuh',
+        'cuda/control/osc_solver.cuh', 'cuda/control/osc_precision.cuh','cuda/control/osc_profile.cuh',
         'cuda/step/substep_shared_layout.cuh','cuda/step/substep_shared.cuh',
         'cuda/step/forward_workspace.cuh','cuda/step/substep_shape.cuh',
         'cuda/step/substep_parameters.cuh','cuda/step/substep_types.cuh',

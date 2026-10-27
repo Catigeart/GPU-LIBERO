@@ -1,5 +1,6 @@
 #pragma once
 #include <cuda_runtime.h>
+#include "osc_precision.cuh"
 namespace flash_libero {
 struct ControllerSolveData;
 }

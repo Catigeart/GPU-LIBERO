@@ -77,6 +77,7 @@ class OSCDiagnosticProfileTests(unittest.TestCase):
                                    self.calls.append(('copy', target, source)))
         namespace = dict(CONTROL=self.control_names, REFRESH=refresh_names,
                          FusedRuntimeControllerAdapter=Adapter, _make=make,
+                         scalar=SimpleNamespace(wp_real='float64', bits=64),
                          wp=warp, Path=Path, types=types,
                          __package__='libero.gpu.host.bindings')
         nodes = [n for n in ast.parse(SOURCE.read_text()).body

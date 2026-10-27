@@ -192,6 +192,26 @@ MathDx objects. OSC remains in
 [osc_solver.cu](../../../cuda/control/osc_solver.cu); its matrix implementation
 is not copied into a giant forward/Newton source expansion.
 
+OSC keeps FP32 resident inputs, goals, gripper state and control outputs, while
+its mass inverse, operational-space matrices, Jacobi pseudoinverses, nullspace
+projection and torque accumulation use FP64. Conversion occurs while loading
+the existing per-world operands; final limited torques are converted to FP32.
+Derived-matrix caches also retain FP64 values. The 64-sweep limit, relative
+`1e-15` singular-value cutoff and error reporting remain in force; no damping
+is added. Higher arithmetic precision cannot recover information already lost
+in FP32 inputs or establish the appropriate numerical rank by itself.
+
+After updating these sources, rebuild `flash_mjwarp_controller_fp32`,
+`flash_fp32_fused_controller` and `flash_fp32_fused_control_drive` offline in the
+existing target-architecture build directory. Their OSC/MathDx objects and
+shared-memory layout must be updated together. Physics kernels retain FP32.
+Historical trajectory and timing qualifications below predate this change.
+For independent small-matrix SVD and controller-torque checks, build the optional
+`flash_osc_mixed_replay_probe_fp32` target and run
+`LIBERO_OSC_REPLAY_LIBRARY=/path/to/libflash_osc_mixed_replay_probe_fp32.so python -m unittest discover -s tests -p test_osc_mixed_precision.py`.
+The sibling `cuda_runtime.so` and `mjwarp_controller_fp32.so` must be prepared;
+the test never compiles code during execution.
+
 `cuda/runtime/runtime.cu` and `cuda/runtime/bridges.cu` have independent resource
 and transport targets. Shared mathematical leaves live in
 `cuda/{dynamics,newton,collision}/mjwarp*`; the name records algorithm provenance,

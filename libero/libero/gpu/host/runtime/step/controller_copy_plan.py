@@ -184,7 +184,8 @@ def parallel_gather_allowed(a, worlds, *, index_words=0):
         ('mass_inv', 49), ('A_full', 36), ('A_pos', 9), ('A_ori', 9), ('lambda_full', 36),
         ('lambda_pos', 9), ('lambda_ori', 9), ('nullspace_matrix', 49), ('position_error', 3),
         ('orientation_error', 3), ('quat_input', 4), ('quat_result', 9), ('nullspace_torque', 7),
-        ('clipped', 7), ('derived_key', 91), ('derived_data', 206)]]
+        ('clipped', 7), ('derived_key', 91)]]
+    solver.append(span(s, 'derived_data', 206, 8))
     solver.append(span(s, 'quat_cast', 4, 4))
     floating = outputs+sources+site_outputs+[span(p, 'pos', 3*p.ns), span(p, 'mat', 9*p.ns),
                span(v, 'target', 6), selected, span(b, 'bias', b.nv)]+solver

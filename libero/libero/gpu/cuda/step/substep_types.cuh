@@ -669,7 +669,7 @@ struct ControllerSolveData {
   int uncouple;
   int *derived_valid;
   real_t *derived_key;
-  real_t *derived_data;
+  double *derived_data;
   int *derived_ranks;
   int *cache_hits;
   real_t *pm;

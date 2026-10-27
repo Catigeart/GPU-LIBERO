@@ -11,6 +11,7 @@ set(fp32_control_drive_sources
   "${FLASH_GPU}/cuda/dynamics/mjwarp_mass_solve.cuh"
   "${FLASH_GPU}/cuda/control/osc_solver.cu"
   "${FLASH_GPU}/cuda/control/osc_solver.cuh"
+  "${FLASH_GPU}/cuda/control/osc_precision.cuh"
   "${FLASH_GPU}/cuda/control/osc_profile.cuh"
   "${FLASH_GPU}/cuda/step/substep_shared_layout.cuh"
   "${FLASH_GPU}/cuda/step/substep_shared.cuh"

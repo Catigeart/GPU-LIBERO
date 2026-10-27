@@ -9,9 +9,8 @@
 #include <cmath>
 using flash_libero::SubstepShape;
 
-// Fixed-size FP64 OSC numerical implementation, independent of scene NV.
-
-// Shared FP64 controller implementation.
+// Resident inputs/outputs retain real_t. Matrix and torque arithmetic use
+// compute_t throughout, including FP32 physics builds.
 
 namespace physics_controller {
 
@@ -20,16 +19,16 @@ namespace physics_controller {
 // Callers pad invalid elements with the operation's identity, never skip lanes.
 // These functions do not synchronize shared or global memory.
 
-extern "C" __device__ void osc_inverse7(real_t *, real_t *, int *, int *);
+extern "C" __device__ void osc_fp64_inverse7(compute_t *, compute_t *, int *, int *);
 
-extern "C" __device__ void osc_mm_6_6_7(real_t *, real_t *, real_t *);
+extern "C" __device__ void osc_fp64_mm_6_6_7(compute_t *, compute_t *, compute_t *);
 
-extern "C" __device__ void osc_mm_7_6_7(real_t *, real_t *, real_t *);
+extern "C" __device__ void osc_fp64_mm_7_6_7(compute_t *, compute_t *, compute_t *);
 
-extern "C" __device__ void osc_mm_7_6_6(real_t *, real_t *, real_t *);
+extern "C" __device__ void osc_fp64_mm_7_6_6(compute_t *, compute_t *, compute_t *);
 
-extern "C" __device__ void osc_mm_7_7_6(real_t *, real_t *, real_t *);
-extern "C" __device__ void osc_mm_3_3_3(real_t *, real_t *, real_t *);
+extern "C" __device__ void osc_fp64_mm_7_7_6(compute_t *, compute_t *, compute_t *);
+extern "C" __device__ void osc_fp64_mm_3_3_3(compute_t *, compute_t *, compute_t *);
 
 namespace osc_cuda {
 static __device__ inline real_t clip(real_t x, real_t lo, real_t hi) {
@@ -53,14 +52,21 @@ __device__ __forceinline__ real_t action_component(const flash_libero::Controlle
 // remain ordered, while their row arithmetic and the final inverse cooperate.
 // The three independent OSC problems use one full warp and two half warps.
 struct OscPseudoinverseWork {
-  real_t columns[36];
-  real_t vectors[36];
+  compute_t columns[36];
+  compute_t vectors[36];
+};
+
+// Optional small-matrix replay diagnostics. Normal controller instantiations
+// omit all counters and writes through the compile-time Observe argument.
+struct PseudoinverseTrace {
+  compute_t scale, maxcorr, singular[6];
+  int sweeps, rotations;
 };
 
 // Only the first N row lanes carry values. A padded 4/8-lane tree sums
 // those rows, then broadcasts group zero to every participating lane. Padding
 // groups still execute the shuffles; all rotation predicates remain uniform.
-template <int N, int Width> static __device__ real_t pinv_row_sum(real_t value, unsigned mask) {
+template <int N, int Width> static __device__ compute_t pinv_row_sum(compute_t value, unsigned mask) {
   constexpr int padded = N <= 4 ? 4 : 8;
 #pragma unroll
   for (int delta = padded / 2; delta; delta >>= 1)
@@ -72,10 +78,10 @@ template <int N, int Width> static __device__ real_t pinv_row_sum(real_t value, 
 // next ordered column into slot 1; both operands follow the same permutation.
 // The post-sweep norm/correlation tail alone uses the runtime selector.
 template <int N> struct PseudoinverseRow {
-  real_t values[N] = {};
+  compute_t values[N] = {};
 
-  __device__ __forceinline__ real_t get(int column) const {
-    real_t result = REAL_C(0.0);
+  __device__ __forceinline__ compute_t get(int column) const {
+    compute_t result = compute_t(0.0);
 #pragma unroll
     for (int k = 0; k < N; ++k)
       if (column == k)
@@ -83,14 +89,14 @@ template <int N> struct PseudoinverseRow {
     return result;
   }
   __device__ __forceinline__ void rotate_tail_left() {
-    const real_t first = values[1];
+    const compute_t first = values[1];
 #pragma unroll
     for (int k = 1; k < N - 1; ++k)
       values[k] = values[k + 1];
     values[N - 1] = first;
   }
   __device__ __forceinline__ void rotate_left() {
-    const real_t first = values[0];
+    const compute_t first = values[0];
 #pragma unroll
     for (int k = 0; k < N - 1; ++k)
       values[k] = values[k + 1];
@@ -98,12 +104,12 @@ template <int N> struct PseudoinverseRow {
   }
 };
 
-template <int N, int Width>
-static __device__ __noinline__ void pinv_group(const real_t *input, real_t *output,
+template <int N, int Width, bool Observe = false>
+static __device__ __noinline__ void pinv_group(const compute_t *input, compute_t *output,
                                                OscPseudoinverseWork &work, int *rank, int *ok,
-                                               unsigned mask) {
+                                               unsigned mask, PseudoinverseTrace *trace = nullptr) {
   const int lane = threadIdx.x & (Width - 1);
-  real_t scale = REAL_C(0.0);
+  compute_t scale = compute_t(0.0);
   if (lane < N)
     for (int col = 0; col < N; ++col)
       scale = fmax(scale, fabs(input[lane * 6 + col]));
@@ -111,12 +117,16 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
   for (int row = 0; row < N; ++row)
     scale = fmax(scale, __shfl_sync(mask, scale, row, Width));
   for (int z = lane; z < 36; z += Width)
-    output[z] = REAL_C(0.0);
+    output[z] = compute_t(0.0);
   if (lane == 0) {
     *rank = 0;
     *ok = 1;
+    if constexpr (Observe) {
+      *trace = {};
+      trace->scale = scale;
+    }
   }
-  if (!(scale > REAL_C(0.0)))
+  if (!(scale > compute_t(0.0)))
     return;
   // Each row lane owns N column values and N right-singular-vector values.
   // Sweep updates and permutations use constant indices. Runtime selection
@@ -126,36 +136,39 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
 #pragma unroll
     for (int col = 0; col < N; ++col) {
       columns.values[col] = input[lane * 6 + col] / scale;
-      vectors.values[col] = col == lane ? REAL_C(1.0) : REAL_C(0.0);
+      vectors.values[col] = col == lane ? compute_t(1.0) : compute_t(0.0);
     }
   }
   bool converged = false;
+  int observed_sweeps = 0, observed_rotations = 0;
   CF_OSC_PROFILE_PINV_COUNTERS();
 #pragma unroll 1
   for (int sweep = 0; sweep < 64; ++sweep) {
+    if constexpr (Observe) ++observed_sweeps;
     CF_OSC_PROFILE_SWEEP();
     int rotations = 0;
 #pragma unroll 1
     for (int p = 0; p < N - 1; ++p) {
 #pragma unroll 1
       for (int q = p + 1; q < N; ++q) {
-        const real_t bp = columns.values[0];
-        const real_t bq = columns.values[1];
-        const real_t alpha = pinv_row_sum<N, Width>(bp * bp, mask);
-        const real_t beta = pinv_row_sum<N, Width>(bq * bq, mask);
-        const real_t gamma = pinv_row_sum<N, Width>(bp * bq, mask);
-        if (fabs(gamma) > real_t(REAL_EPSILON) * sqrt(alpha) * sqrt(beta)) {
-          const real_t zeta = (beta - alpha) / (2 * gamma);
-          const real_t t = (zeta < 0 ? -REAL_C(1.0) : REAL_C(1.0)) / (fabs(zeta) + sqrt(1 + zeta * zeta));
-          const real_t c = 1 / sqrt(1 + t * t), s = c * t;
+        const compute_t bp = columns.values[0];
+        const compute_t bq = columns.values[1];
+        const compute_t alpha = pinv_row_sum<N, Width>(bp * bp, mask);
+        const compute_t beta = pinv_row_sum<N, Width>(bq * bq, mask);
+        const compute_t gamma = pinv_row_sum<N, Width>(bp * bq, mask);
+        if (fabs(gamma) > compute_t(DBL_EPSILON) * sqrt(alpha) * sqrt(beta)) {
+          const compute_t zeta = (beta - alpha) / (2 * gamma);
+          const compute_t t = (zeta < 0 ? -compute_t(1.0) : compute_t(1.0)) / (fabs(zeta) + sqrt(1 + zeta * zeta));
+          const compute_t c = 1 / sqrt(1 + t * t), s = c * t;
           if (lane < N) {
-            const real_t vp = vectors.values[0], vq = vectors.values[1];
+            const compute_t vp = vectors.values[0], vq = vectors.values[1];
             columns.values[0] = c * bp - s * bq;
             columns.values[1] = s * bp + c * bq;
             vectors.values[0] = c * vp - s * vq;
             vectors.values[1] = s * vp + c * vq;
           }
           ++rotations;
+          if constexpr (Observe) ++observed_rotations;
           CF_OSC_PROFILE_ROTATION();
         }
         columns.rotate_tail_left();
@@ -180,11 +193,11 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
       break;
     }
   }
-  real_t norms[N] = {}, singular[N] = {}, weights[N] = {}, maxnorm = REAL_C(0.0);
+  compute_t norms[N] = {}, singular[N] = {}, weights[N] = {}, maxnorm = compute_t(0.0);
   bool retained[N] = {};
 #pragma unroll 1
   for (int p = 0; p < N; ++p) {
-    const real_t value = columns.get(p);
+    const compute_t value = columns.get(p);
     norms[p] = pinv_row_sum<N, Width>(value * value, mask);
     singular[p] = sqrt(norms[p]);
     maxnorm = fmax(maxnorm, singular[p]);
@@ -192,25 +205,25 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
   int retained_count = 0;
 #pragma unroll 1
   for (int p = 0; p < N; ++p) {
-    retained[p] = singular[p] > REAL_C(1e-15) * maxnorm;
+    retained[p] = singular[p] > compute_t(1e-15) * maxnorm;
     if (retained[p]) {
       ++retained_count;
       weights[p] = (1 / norms[p]) / scale;
     }
   }
-  real_t maxcorr = REAL_C(0.0);
+  compute_t maxcorr = compute_t(0.0);
 #pragma unroll 1
   for (int p = 0; p < N; ++p) {
 #pragma unroll 1
     for (int q = p + 1; q < N; ++q)
       if (retained[p] && retained[q]) {
-        const real_t bp = columns.get(p);
-        const real_t bq = columns.get(q);
-        const real_t gamma = pinv_row_sum<N, Width>(bp * bq, mask);
+        const compute_t bp = columns.get(p);
+        const compute_t bq = columns.get(q);
+        const compute_t gamma = pinv_row_sum<N, Width>(bp * bq, mask);
         maxcorr = fmax(maxcorr, fabs(gamma) / (singular[p] * singular[q]));
       }
   }
-  if (maxcorr < REAL_C(2e-15))
+  if (maxcorr < compute_t(2e-15))
     converged = true;
   // Only reconstruction needs another lane's row. Publish the two completed
   // matrices once, then retain the existing cell-owned output distribution.
@@ -224,7 +237,7 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
   __syncwarp(mask);
   for (int z = lane; z < 36; z += Width) {
     const int row = z / 6, col = z % 6;
-    real_t value = REAL_C(0.0);
+    compute_t value = compute_t(0.0);
     if (row < N && col < N)
       for (int k = 0; k < N; ++k)
         if (retained[k])
@@ -235,16 +248,22 @@ static __device__ __noinline__ void pinv_group(const real_t *input, real_t *outp
     CF_OSC_PROFILE_PINV_RESULT();
     *rank = retained_count;
     *ok = converged;
+    if constexpr (Observe) {
+      trace->maxcorr = maxcorr;
+      trace->sweeps = observed_sweeps;
+      trace->rotations = observed_rotations;
+      for (int k = 0; k < N; ++k) trace->singular[k] = singular[k] * scale;
+    }
   }
 }
 
 // All world-block threads enter. The caller owns the block publication barrier.
-static __device__ void pinv_three_block(const real_t *full, const real_t *position, const real_t *orientation,
-                                        real_t *full_inverse, real_t *position_inverse,
-                                        real_t *orientation_inverse, int *ranks, int *ok,
+static __device__ void pinv_three_block(const compute_t *full, const compute_t *position, const compute_t *orientation,
+                                        compute_t *full_inverse, compute_t *position_inverse,
+                                        compute_t *orientation_inverse, int *ranks, int *ok,
                                         unsigned char *shared) {
   auto *work = flash_libero::shared_at<OscPseudoinverseWork>(shared, flash_libero::OscLayout::pinv);
-  static_assert(sizeof(OscPseudoinverseWork) == 72 * sizeof(real_t), "OSC pinv shared layout");
+  static_assert(sizeof(OscPseudoinverseWork) == 72 * sizeof(compute_t), "OSC pinv shared layout");
   if (threadIdx.x < 32)
     pinv_group<6, 32>(full, full_inverse, work[0], ranks, ok, 0xffffffffu);
   else if (threadIdx.x < 64) {
@@ -294,28 +313,28 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
   real_t *mass = live ? in.pm : in.mass, *jacobian = live ? in.pj : in.jacobian;
   real_t *persist_m = live ? in.mass : nullptr, *persist_j = live ? in.jacobian : nullptr;
 
-  real_t *m = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::m);
-  real_t *lu = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lu);
-  real_t *mi = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::mi);
-  real_t *j = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::j);
-  real_t *jt = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::jt);
-  real_t *a = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::a);
-  real_t *ap = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::ap);
-  real_t *ar = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::ar);
-  real_t *lf = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lf);
-  real_t *lp = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lp);
-  real_t *lr = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lr);
-  real_t *mjt = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::mjt);
-  real_t *jbar = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::jbar);
-  real_t *project = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::project);
-  real_t *delta = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::delta);
-  real_t *current = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::current);
-  real_t *gr = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::gr);
-  real_t *gp = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::gp);
-  real_t *desired = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::desired);
-  real_t *lp3 = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lp3);
-  real_t *lr3 = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::lr3);
-  real_t *pd = flash_libero::shared_at<real_t>(shared, flash_libero::OscLayout::pd);
+  compute_t *m = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::m);
+  compute_t *lu = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lu);
+  compute_t *mi = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::mi);
+  compute_t *j = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::j);
+  compute_t *jt = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::jt);
+  compute_t *a = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::a);
+  compute_t *ap = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::ap);
+  compute_t *ar = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::ar);
+  compute_t *lf = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lf);
+  compute_t *lp = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lp);
+  compute_t *lr = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lr);
+  compute_t *mjt = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::mjt);
+  compute_t *jbar = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::jbar);
+  compute_t *project = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::project);
+  compute_t *delta = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::delta);
+  compute_t *current = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::current);
+  compute_t *gr = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::gr);
+  compute_t *gp = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::gp);
+  compute_t *desired = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::desired);
+  compute_t *lp3 = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lp3);
+  compute_t *lr3 = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::lr3);
+  compute_t *pd = flash_libero::shared_at<compute_t>(shared, flash_libero::OscLayout::pd);
   int &info = *flash_libero::shared_at<int>(shared, flash_libero::OscLayout::info);
   int *piv = flash_libero::shared_at<int>(shared, flash_libero::OscLayout::piv);
   int &admitted = *flash_libero::shared_at<int>(shared, flash_libero::OscLayout::admitted);
@@ -337,8 +356,8 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
         const int z = pair * 2;
         if (z + 1 < 49) {
           const real2_t v = libero_vec::load_pair(mass + w * 49 + z);
-          libero_vec::store_pair(m + z, v.x, v.y);
-          libero_vec::store_pair(lu + z, v.x, v.y);
+          m[z] = compute_t(v.x); m[z + 1] = compute_t(v.y);
+          lu[z] = m[z]; lu[z + 1] = m[z + 1];
           mi[z] = z / 7 == z % 7 ? 1 : 0;
           mi[z + 1] = (z + 1) / 7 == (z + 1) % 7 ? 1 : 0;
           if (persist_m)
@@ -354,7 +373,7 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       for (int pair = threadIdx.x; pair < 21; pair += width) {
         const int z = pair * 2;
         const real2_t v = libero_vec::load_pair(jacobian + w * 42 + z);
-        libero_vec::store_pair(j + z, v.x, v.y);
+        j[z] = compute_t(v.x); j[z + 1] = compute_t(v.y);
         jt[(z % 7) * 6 + z / 7] = v.x;
         jt[((z + 1) % 7) * 6 + (z + 1) / 7] = v.y;
         if (persist_j)
@@ -394,7 +413,7 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
   {
     CF_OSC_PROFILE_SCOPE(CacheRestore);
     if (reuse) {
-      const real_t *d = in.derived_data + w * 206;
+      const compute_t *d = in.derived_data + w * 206;
       libero_vec::copy_block(d, mi, 49);
       libero_vec::copy_block(d + 157, project, 49);
       libero_vec::copy_block(d + 49, a, 36);
@@ -421,7 +440,7 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
   if (!reuse) {
     {
       CF_OSC_PROFILE_SCOPE(MassInverse);
-      osc_inverse7(lu, mi, piv, &info);
+      osc_fp64_inverse7(lu, mi, piv, &info);
       if (threadIdx.x == 0 && info != 0) {
         in.error[w] = 2;
         admitted = 0;
@@ -436,12 +455,20 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       CF_OSC_PROFILE_SCOPE(OperationalMatrix);
       // X = M^-1 J^T feeds both the task metric and the nullspace map.
       // Reassociation removes J M^-1; no symmetry assumption is required.
-      osc_mm_7_6_7(mi, jt, mjt);
-      osc_mm_6_6_7(j, mjt, a);
+      osc_fp64_mm_7_6_7(mi, jt, mjt);
+      osc_fp64_mm_6_6_7(j, mjt, a);
       for (int z = threadIdx.x; z < 36; z += blockDim.x) {
         const int row = z / 6, col = z % 6;
         ap[z] = row < 3 && col < 3 ? a[z] : REAL_C(0.0);
         ar[z] = row < 3 && col < 3 ? a[(row + 3) * 6 + col + 3] : REAL_C(0.0);
+        in.A_full[w * 36 + z] = real_t(a[z]);
+      }
+      // Publish the current operands before a possible pseudoinverse failure.
+      // These resident diagnostics do not feed the FP64 calculation back.
+      for (int z = threadIdx.x; z < 9; z += blockDim.x) {
+        const int s = (z / 3) * 6 + z % 3;
+        in.A_pos[w * 9 + z] = real_t(ap[s]);
+        in.A_ori[w * 9 + z] = real_t(ar[s]);
       }
       __syncthreads();
     } // operational matrices
@@ -462,27 +489,24 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
     {
       CF_OSC_PROFILE_SCOPE(Projector);
       for (int z = threadIdx.x; z < 36; z += blockDim.x) {
-        in.A_full[w * 36 + z] = a[z];
         in.lambda_full[w * 36 + z] = lf[z];
       }
       for (int z = threadIdx.x; z < 9; z += blockDim.x) {
         const int s = (z / 3) * 6 + z % 3;
-        in.A_pos[w * 9 + z] = ap[s];
-        in.A_ori[w * 9 + z] = ar[s];
         in.lambda_pos[w * 9 + z] = lp[s];
         in.lambda_ori[w * 9 + z] = lr[s];
         lp3[z] = lp[s];
         lr3[z] = lr[s];
       }
-      osc_mm_7_6_6(mjt, lf, jbar);
-      osc_mm_7_7_6(jbar, j, project);
+      osc_fp64_mm_7_6_6(mjt, lf, jbar);
+      osc_fp64_mm_7_7_6(jbar, j, project);
       for (int z = threadIdx.x; z < 49; z += blockDim.x)
         project[z] = (z / 7 == z % 7 ? REAL_C(1.0) : REAL_C(0.0)) - project[z];
     } // nullspace projector
     {
       CF_OSC_PROFILE_SCOPE(CacheStore);
       if (in.derived_valid) {
-        real_t *d = in.derived_data + w * 206;
+        compute_t *d = in.derived_data + w * 206;
         for (int z = threadIdx.x; z < 49; z += blockDim.x) {
           in.derived_key[w * 91 + z] = m[z];
           d[z] = mi[z];
@@ -545,12 +569,14 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       in.quat_valid[w] = 0;
       if (in.policy[w]) {
         for (int r = 0; r < 3; r++)
-          gp[r] = (local_state ? local_state[14 + r] : in.ee_pos[w * 3 + r]) +
-                  action_component(in, w, r);
+          gp[r] = real_t((local_state ? local_state[14 + r] : in.ee_pos[w * 3 + r]) +
+                  action_component(in, w, r));
         real_t x = action_component(in, w, 3), y = action_component(in, w, 4),
                z = action_component(in, w, 5);
         if (x != 0 || y != 0 || z != 0) {
-          rotation_delta(x, y, z, delta, in.quat_input + w * 4, in.quat_cast + w * 4);
+          real_t rotation[9];
+          rotation_delta(x, y, z, rotation, in.quat_input + w * 4, in.quat_cast + w * 4);
+          for (int i = 0; i < 9; ++i) delta[i] = rotation[i];
           in.quat_valid[w] = 1;
           for (int i = 0; i < 9; i++)
             in.quat_result[w * 9 + i] = delta[i];
@@ -559,24 +585,29 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
     }
     __syncthreads();
     if (in.quat_valid[w])
-      osc_mm_3_3_3(delta, current, gr);
+      osc_fp64_mm_3_3_3(delta, current, gr);
+    if constexpr (sizeof(real_t) < sizeof(compute_t)) {
+      for (int i = threadIdx.x; i < 9; i += blockDim.x) gr[i] = real_t(gr[i]);
+      __syncthreads();
+    }
     if (threadIdx.x < 3) {
       const int r = threadIdx.x, next = (r + 1) % 3, last = (r + 2) % 3;
-      real_t er = REAL_C(0.0);
+      compute_t er = 0.0;
       for (int c = 0; c < 3; c++)
-        er += REAL_C(.5) * (current[next * 3 + c] * gr[last * 3 + c] - current[last * 3 + c] * gr[next * 3 + c]);
-      in.position_error[w * 3 + r] = gp[r] - (local_state ? local_state[14 + r] : in.ee_pos[w * 3 + r]);
+        er += compute_t(.5) * (current[next * 3 + c] * gr[last * 3 + c] - current[last * 3 + c] * gr[next * 3 + c]);
+      const compute_t ep = gp[r] - compute_t(local_state ? local_state[14 + r] : in.ee_pos[w * 3 + r]);
+      in.position_error[w * 3 + r] = real_t(ep);
       in.orientation_error[w * 3 + r] = er;
-      desired[r] = in.gains[w * 12 + r] * in.position_error[w * 3 + r] -
-                   in.gains[w * 12 + r + 6] * (local_state ? local_state[26 + r] : in.ee_velocity[w * 6 + r]);
+      desired[r] = compute_t(in.gains[w * 12 + r]) * ep -
+                   compute_t(in.gains[w * 12 + r + 6]) * (local_state ? local_state[26 + r] : in.ee_velocity[w * 6 + r]);
       desired[r + 3] =
-          in.gains[w * 12 + r + 3] * er -
-          in.gains[w * 12 + r + 9] * (local_state ? local_state[26 + r + 3] : in.ee_velocity[w * 6 + r + 3]);
+          compute_t(in.gains[w * 12 + r + 3]) * er -
+          compute_t(in.gains[w * 12 + r + 9]) * (local_state ? local_state[26 + r + 3] : in.ee_velocity[w * 6 + r + 3]);
     }
     if (threadIdx.x < 7) {
       const int c = threadIdx.x;
-      pd[c] = 10 * (in.q0[w * 7 + c] - (local_state ? local_state[c] : in.q[w * 7 + c])) -
-              REAL_C(6.324555320336759) * (local_state ? local_state[7 + c] : in.qvel[w * 7 + c]);
+      pd[c] = 10 * (compute_t(in.q0[w * 7 + c]) - (local_state ? local_state[c] : in.q[w * 7 + c])) -
+              compute_t(6.324555320336759) * (local_state ? local_state[7 + c] : in.qvel[w * 7 + c]);
     }
     __syncthreads();
   } // goal and PD inputs
@@ -586,14 +617,14 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
     // (lanes 6..12). Phase 2 consumes their register values through warp shuffles.
     // There is no inter-warp consumer until the existing final publication
     // barrier, so these five tiny GEMVs need no block-wide synchronization.
-    real_t task_torque = REAL_C(0.0), posture_torque = REAL_C(0.0);
+    compute_t task_torque = compute_t(0.0), posture_torque = compute_t(0.0);
     if (threadIdx.x < 32) {
       const int lane = threadIdx.x;
-      real_t operand = REAL_C(0.0);
+      compute_t operand = compute_t(0.0);
       if (lane < 6) {
         if (in.uncouple) {
           const int row = lane % 3, offset = lane < 3 ? 0 : 3;
-          const real_t *lambda = lane < 3 ? lp3 : lr3;
+          const compute_t *lambda = lane < 3 ? lp3 : lr3;
           for (int k = 0; k < 3; ++k)
             operand += lambda[row * 3 + k] * desired[offset + k];
         } else {
@@ -608,12 +639,12 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
       // Every lane in the full warp executes every shuffle, including padding
       // lanes. Only the seven torque lanes multiply the broadcast operands.
       for (int k = 0; k < 6; ++k) {
-        const real_t value = __shfl_sync(0xffffffffu, operand, k);
+        const compute_t value = __shfl_sync(0xffffffffu, operand, k);
         if (lane < 7)
           task_torque += jt[lane * 6 + k] * value;
       }
       for (int k = 0; k < 7; ++k) {
-        const real_t value = __shfl_sync(0xffffffffu, operand, k + 6);
+        const compute_t value = __shfl_sync(0xffffffffu, operand, k + 6);
         if (lane < 7)
           posture_torque += project[k * 7 + lane] * value;
       }
@@ -625,10 +656,12 @@ static __device__ inline bool control(const flash_libero::ControllerSolveData &i
     if (threadIdx.x < 7) {
       const int i = threadIdx.x;
       in.nullspace_torque[w * 7 + i] = posture_torque;
-      const real_t t = task_torque + in.bias[w * 7 + i] + posture_torque;
+      const compute_t t = task_torque + in.bias[w * 7 + i] + posture_torque;
       in.raw_tau[w * 7 + i] = t;
-      in.clipped[w * 7 + i] = clip(t, in.range[w * 18 + 2 * i], in.range[w * 18 + 2 * i + 1]);
-      in.ctrl[w * 9 + i] = in.clipped[w * 7 + i];
+      const compute_t limited = isnan(t) ? t : fmin(compute_t(in.range[w * 18 + 2 * i + 1]),
+          fmax(compute_t(in.range[w * 18 + 2 * i]), t));
+      in.clipped[w * 7 + i] = real_t(limited);
+      in.ctrl[w * 9 + i] = real_t(limited);
     }
     if (threadIdx.x == 0) {
       real_t a6 = in.action[w * 7 + 6], sgn = isnan(a6) ? a6 : (a6 > 0 ? REAL_C(1.) : (a6 < 0 ? -REAL_C(1.) : REAL_C(0.)));

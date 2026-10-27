@@ -119,7 +119,7 @@ __device__ inline void control(int w,real_t*mass,real_t*jacobian,real_t*q,real_t
  int*active,real_t*gains,real_t*range,real_t*ctrl,real_t*raw_tau,int*error,int*ranks,int*policy,int*needs,
  real_t*mass_inv,real_t*A_full,real_t*A_pos,real_t*A_ori,real_t*lambda_full,real_t*lambda_pos,real_t*lambda_ori,
  real_t*nullspace_matrix,real_t*position_error,real_t*orientation_error,real_t*quat_input,float*quat_cast,
- real_t*quat_result,int*quat_valid,real_t*nullspace_torque,real_t*clipped,int diagnostics,int uncouple, int* derived_valid=nullptr, real_t* derived_key=nullptr, real_t* derived_data=nullptr, int* derived_ranks=nullptr, int* cache_hits=nullptr,real_t* persist_m=nullptr,real_t* persist_j=nullptr,real_t* local_state=nullptr) {
+ real_t*quat_result,int*quat_valid,real_t*nullspace_torque,real_t*clipped,int diagnostics,int uncouple, int* derived_valid=nullptr, real_t* derived_key=nullptr, double* derived_data=nullptr, int* derived_ranks=nullptr, int* cache_hits=nullptr,real_t* persist_m=nullptr,real_t* persist_j=nullptr,real_t* local_state=nullptr) {
     __shared__ real_t m[49],lu[49],mi[49],j[42],jt[42],jw[42],a[36],ap[36],ar[36],lf[36],lp[36],lr[36];
     __shared__ real_t mjt[42],jbar[42],project[49],delta[9],current[9],gr[9],gp[3],desired[6],wrench[6];
     __shared__ real_t lp3[9],lr3[9],pd[7],pose[7],nt[7],tau[7],project_t[49];
@@ -183,9 +183,9 @@ __device__ inline void control(int w,real_t*mass,real_t*jacobian,real_t*q,real_t
     }
     __syncthreads();
     if(threadIdx.x==0){
-        if(reuse){real_t* d=derived_data+w*206;
-            libero_vec::copy_serial(d,mi,49);libero_vec::copy_serial(d+157,project,49);
-            libero_vec::copy_serial(d+49,a,36);libero_vec::copy_serial(d+103,lf,36);
+        if(reuse){double* d=derived_data+w*206;
+            for(int z=0;z<49;z++){mi[z]=d[z];project[z]=d[157+z];}
+            for(int z=0;z<36;z++){a[z]=d[49+z];lf[z]=d[103+z];}
             for(int z=0;z<36;z++)ap[z]=ar[z]=lp[z]=lr[z]=0;
             for(int r=0;r<3;r++)for(int c=0;c<3;c++){int z=r*3+c,t=r*6+c;
                 ap[t]=d[85+z];ar[t]=d[94+z];lp[t]=d[139+z];lr[t]=d[148+z];lp3[z]=lp[t];lr3[z]=lr[t];}
@@ -213,7 +213,7 @@ __device__ inline void control(int w,real_t*mass,real_t*jacobian,real_t*q,real_t
     osc_mm_7_6_7(mi,jt,mjt);osc_mm_7_6_6(mjt,lf,jbar);osc_mm_7_7_6(jbar,j,project);
     if(threadIdx.x==0){
         for(int r=0;r<7;r++)for(int c=0;c<7;c++)project[r*7+c]=(r==c?REAL_C(1.):REAL_C(0.))-project[r*7+c];
-        if(derived_valid){real_t* d=derived_data+w*206;
+        if(derived_valid){double* d=derived_data+w*206;
             for(int z=0;z<49;z++){derived_key[w*91+z]=m[z];d[z]=mi[z];d[157+z]=project[z];}
             for(int z=0;z<42;z++)derived_key[w*91+49+z]=j[z];
             for(int z=0;z<36;z++){d[49+z]=a[z];d[103+z]=lf[z];}
@@ -276,7 +276,7 @@ __device__ inline void control_fast(int w,real_t*mass,real_t*jacobian,real_t*q,r
  int*active,real_t*gains,real_t*range,real_t*ctrl,real_t*raw_tau,int*error,int*ranks,int*policy,int*needs,
  real_t*mass_inv,real_t*A_full,real_t*A_pos,real_t*A_ori,real_t*lambda_full,real_t*lambda_pos,real_t*lambda_ori,
  real_t*nullspace_matrix,real_t*position_error,real_t*orientation_error,real_t*quat_input,float*quat_cast,
- real_t*quat_result,int*quat_valid,real_t*nullspace_torque,real_t*clipped,int diagnostics,int uncouple, int* derived_valid, real_t* derived_key, real_t* derived_data, int* derived_ranks, int* cache_hits, real_t* pm,real_t* pj,real_t* pq,real_t* pv,real_t* pp,real_t* pr,real_t* pe,int* cache_valid) {
+ real_t*quat_result,int*quat_valid,real_t*nullspace_torque,real_t*clipped,int diagnostics,int uncouple, int* derived_valid, real_t* derived_key, double* derived_data, int* derived_ranks, int* cache_hits, real_t* pm,real_t* pj,real_t* pq,real_t* pv,real_t* pp,real_t* pr,real_t* pe,int* cache_valid) {
     __shared__ int live;
     __shared__ real_t local_state[32];
     if(threadIdx.x==0){live=needs[w]!=0;
