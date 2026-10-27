@@ -2,7 +2,7 @@
 
 This backend owns FP32 CUDA buffers, streams, graphs, model preprocessing and
 LIBERO batch lifecycle. Neither `warp` nor `mujoco_warp` is required to prepare
-its modern CPU models or execute physics. Numerical leaves are shared with the
+its modern CPU models or execute physics. Physics leaves are shared with the
 handwritten MJWarp migration path; readable world-local fusion explicitly
 combines accepted phases in `cuda/fp32/`.
 It is the default `GpuBatchEnv` backend when precision is omitted and
@@ -12,7 +12,14 @@ The development environment pins CPU MuJoCo 3.16.0 for model compilation and Ope
 Production intake uses the actual model API; each prepared MJB is bound to its Python/native engine version.
 CPU MuJoCo 2.3.7 remains the independent reference for overlapping semantics.
 
-The algorithm reference is MJWarp commit
+Control uses the shared **CUDA FP64 OSC**, whose control algorithm is ported
+from **robosuite's operational space controller**. The MJWarp backend uses the
+same [CUDA controller](../../../cuda/control/osc_solver.cu). Mass matrices and
+Jacobians are promoted from FP32 to FP64 before matrix solves, pseudoinverses,
+nullspace projection and torque accumulation; physical state, resident goals,
+gripper state and published controls remain FP32.
+
+The physics algorithm reference is MJWarp commit
 `c384ac51df67eb92ab7657cc472ff7494dc036bf`. The deliberate collision corrections
 are documented separately in [NUMERICAL_DEVIATIONS.md](../mjwarp/NUMERICAL_DEVIATIONS.md).
 Removing Warp does not revert those corrections or introduce new solver math.

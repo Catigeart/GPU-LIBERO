@@ -13,6 +13,14 @@ Native CUDA FP64 and the original MJWarp FP32 reference remain available.
 See [recorded throughput](#performance) for current FP64 and historical
 four-backend results with their timing scopes.
 
+Both `physics_engine="mjwarp"` and `physics_engine="cuda_fp32"` use the same
+**CUDA FP64 OSC**, with the control algorithm ported from **robosuite's
+operational space controller**. Physics and resident controller buffers remain
+FP32. The controller promotes mass matrices and Jacobians to FP64 for matrix
+solves, pseudoinverses, nullspace projection and torque accumulation, then
+publishes FP32 controls. The implementation is
+[osc_solver.cu](libero/libero/gpu/cuda/control/osc_solver.cu).
+
 **GPU-LIBERO** adds GPU physics to [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), a benchmark for knowledge transfer in multitask and lifelong robot learning. Install this distribution and keep your existing LIBERO environment code: simulation uses the GPU by default.
 
 - Original LIBERO imports, task definitions, environment interfaces, and benchmark suites.

@@ -1,13 +1,17 @@
 # MJWarp physics backend
 
 This explicit reference backend defaults to upstream MJWarp physics with the
-maintained GPU OSC, GPU observation sampler, and original LIBERO task predicates.
+shared **CUDA FP64 OSC ported from robosuite's operational space controller**,
+GPU observation sampler, and original LIBERO task predicates. The independent
+`cuda_fp32` backend uses this same [CUDA controller](../../../cuda/control/osc_solver.cu).
 Select it with `physics_engine="mjwarp"`. Automatic FP32 batch routing now selects
 the [independent CUDA owner](../cuda_fp32/README.md), which requires neither Warp
 package. FP32 is the default precision; explicit FP64 uses native CUDA. The older
 native FP32 comparison path remains available as `physics_engine="native"`.
-Physics and resident controller buffers use FP32. The shared CUDA OSC uses FP64
-for matrix and torque arithmetic, then publishes FP32 controls; see its
+Physics and resident controller buffers use FP32. OSC promotes mass matrices
+and Jacobians to FP64 for matrix solves, pseudoinverses, nullspace projection
+and torque accumulation, then publishes FP32 controls. Persistent goals and
+gripper state remain FP32; see the
 [mixed precision and offline rebuild requirements](../cuda_fp32/README.md#build-and-binding-boundaries).
 No CPU controller or per-substep device download is used.
 
